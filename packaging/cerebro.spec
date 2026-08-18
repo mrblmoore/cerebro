@@ -40,6 +40,7 @@ hiddenimports = [
     "uvicorn.protocols.websockets", "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan", "uvicorn.lifespan.on",
     "sqlalchemy.dialects.sqlite",
+    "openai", "boto3", "botocore", "botocore.config",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
     # Every service is pinned here rather than left to static discovery: many are

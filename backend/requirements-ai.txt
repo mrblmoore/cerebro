@@ -1,4 +1,5 @@
-# Optional: AI generation via OpenAI or any OpenAI-compatible endpoint.
+# Optional: AI generation via OpenAI-compatible APIs and Amazon Bedrock.
 # Not needed for Ollama or Qwen, which are called over plain HTTP.
 #   pip install -r backend/requirements-ai.txt
 openai>=1.30,<2.0
+boto3>=1.34,<2.0

@@ -84,8 +84,11 @@ Cerebro can draft case summaries and troubleshooting steps. It needs a model:
   Nothing leaves your machine.
 * **Best quality** — `pip install -r backend/requirements-ai.txt`, then paste an
   OpenAI key in the same place.
+* **Your AWS account** — install the same AI requirements, choose **Amazon
+  Bedrock**, and enter your Region plus a model or inference profile ID. Cerebro
+  can use your normal AWS CLI/SSO profile, a named profile, or temporary keys.
 
-Press **Test connection** either way. Then create a case and watch the summary
+Press **Test connection** for whichever provider you choose. Then create a case and watch the summary
 appear:
 
 ```bash

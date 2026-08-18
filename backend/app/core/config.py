@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ llm
     #: ``none`` disables AI generation entirely; Cerebro still tracks context,
     #: events and knowledge search without it.
-    LLM_PROVIDER: str = "none"  # none | openai | ollama | qwen
+    LLM_PROVIDER: str = "none"  # none | openai | ollama | qwen | bedrock
     LLM_TIMEOUT: int = 60
     LLM_MAX_TOKENS: int = 500
     LLM_TEMPERATURE: float = 0.7
@@ -86,6 +86,18 @@ class Settings(BaseSettings):
     QWEN_API_URL: Optional[str] = None
     QWEN_API_KEY: Optional[str] = None
     QWEN_MODEL: str = "qwen-plus"
+
+    #: Amazon Bedrock uses the AWS SDK credential chain by default. A named
+    #: profile or explicit temporary credentials can be selected in the UI for
+    #: workstations that do not already have an AWS identity configured.
+    BEDROCK_REGION: str = "us-east-1"
+    BEDROCK_MODEL_ID: str = ""
+    BEDROCK_AUTH_MODE: str = "default"  # default | profile | keys
+    BEDROCK_AWS_PROFILE: Optional[str] = None
+    BEDROCK_AWS_ACCESS_KEY_ID: Optional[str] = None
+    BEDROCK_AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    BEDROCK_AWS_SESSION_TOKEN: Optional[str] = None
+    BEDROCK_ENDPOINT_URL: Optional[str] = None
 
     # -------------------------------------------------- enterprise bridge
     #: Outlook and Teams reach Cerebro through folders that Power Automate
@@ -195,6 +207,7 @@ class Settings(BaseSettings):
             "openai": self.OPENAI_MODEL,
             "ollama": self.OLLAMA_MODEL,
             "qwen": self.QWEN_MODEL,
+            "bedrock": self.BEDROCK_MODEL_ID,
         }.get(self.LLM_PROVIDER.lower(), "")
 
     @property
@@ -206,6 +219,17 @@ class Settings(BaseSettings):
             return bool(self.OLLAMA_URL)
         if provider == "qwen":
             return bool(self.QWEN_API_URL and self.QWEN_API_KEY)
+        if provider == "bedrock":
+            auth_mode = self.BEDROCK_AUTH_MODE.lower()
+            credentials_ready = (
+                auth_mode == "default"
+                or (auth_mode == "profile" and bool(self.BEDROCK_AWS_PROFILE))
+                or (auth_mode == "keys" and bool(
+                    self.BEDROCK_AWS_ACCESS_KEY_ID
+                    and self.BEDROCK_AWS_SECRET_ACCESS_KEY
+                ))
+            )
+            return bool(self.BEDROCK_REGION and self.BEDROCK_MODEL_ID and credentials_ready)
         return False
 
     @property

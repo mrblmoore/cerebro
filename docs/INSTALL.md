@@ -140,6 +140,11 @@ Then in **Settings → Knowledge Search** set the Qdrant URL to
   `ollama pull llama3.1`, then choose Ollama in **Settings → AI Provider**.
 * **OpenAI**: `pip install -r backend/requirements-ai.txt`, then paste your key
   in **Settings → AI Provider** and press **Test connection**.
+* **Amazon Bedrock**: `pip install -r backend/requirements-ai.txt`, choose
+  Amazon Bedrock in **Settings → AI Provider**, then enter the AWS Region and a
+  Bedrock model or inference profile ID. Use the default AWS credential chain,
+  a named profile, or temporary access keys. The identity needs
+  `bedrock:InvokeModel` permission.
 
 ### Call transcription
 

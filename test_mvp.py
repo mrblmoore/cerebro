@@ -245,6 +245,78 @@ def test_llm_disabled():
     check("Generation returns guidance, not an exception", "Settings" in summary)
 
 
+def test_bedrock_provider():
+    """Bedrock uses Converse and never needs real AWS credentials in tests."""
+    print("\nAI provider (Amazon Bedrock)")
+    import types as _types
+
+    from app.core.config import settings
+
+    captured = {}
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeClient:
+        def converse(self, **kwargs):
+            captured["request"] = kwargs
+            return {"output": {"message": {"content": [
+                {"text": "ready"}, {"text": "to help"},
+            ]}}}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured["session"] = kwargs
+
+        def client(self, service_name, **kwargs):
+            captured["service"] = service_name
+            captured["client"] = kwargs
+            return FakeClient()
+
+    fake_boto3 = _types.ModuleType("boto3")
+    fake_boto3.Session = FakeSession
+    fake_botocore = _types.ModuleType("botocore")
+    fake_config = _types.ModuleType("botocore.config")
+    fake_config.Config = FakeConfig
+
+    module_names = ("boto3", "botocore", "botocore.config")
+    previous_modules = {name: sys.modules.get(name) for name in module_names}
+    keys = (
+        "LLM_PROVIDER", "BEDROCK_REGION", "BEDROCK_MODEL_ID",
+        "BEDROCK_AUTH_MODE", "BEDROCK_AWS_PROFILE",
+    )
+    previous_settings = {key: getattr(settings, key) for key in keys}
+    try:
+        sys.modules["boto3"] = fake_boto3
+        sys.modules["botocore"] = fake_botocore
+        sys.modules["botocore.config"] = fake_config
+        object.__setattr__(settings, "LLM_PROVIDER", "bedrock")
+        object.__setattr__(settings, "BEDROCK_REGION", "us-west-2")
+        object.__setattr__(settings, "BEDROCK_MODEL_ID", "us.example.chat-v1:0")
+        object.__setattr__(settings, "BEDROCK_AUTH_MODE", "profile")
+        object.__setattr__(settings, "BEDROCK_AWS_PROFILE", "support-sso")
+
+        llm = LLMService()
+        reply = llm._dispatch("Help with this case")
+        check("Bedrock is reported as configured", llm.enabled is True)
+        check("Named AWS profile is used",
+              captured["session"] == {"region_name": "us-west-2",
+                                      "profile_name": "support-sso"})
+        check("Bedrock Runtime client is selected", captured["service"] == "bedrock-runtime")
+        check("Configured model is sent to Converse",
+              captured["request"]["modelId"] == "us.example.chat-v1:0")
+        check("Converse text blocks are combined", reply == "ready\nto help")
+    finally:
+        for key, value in previous_settings.items():
+            object.__setattr__(settings, key, value)
+        for name, module in previous_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
 # ------------------------------------------------- enterprise bridge
 def test_enterprise_normalisation():
     """Power Automate payloads vary; the normaliser must absorb the variation."""
@@ -1234,6 +1306,7 @@ def main() -> int:
 
     for suite in (test_version_source, test_event_detector, test_context_engine, test_event_flow,
                   test_embeddings, test_knowledge_search, test_llm_disabled,
+                  test_bedrock_provider,
                   test_enterprise_normalisation, test_enterprise_ingest_and_reply,
                   test_document_reading, test_document_editing,
                   test_sharepoint_resolution, test_document_tracking,

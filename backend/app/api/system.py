@@ -44,6 +44,7 @@ VERSION = _read_version()
 
 OPTIONAL_PACKAGES = {
     "openai": ("AI generation via OpenAI", "backend/requirements-ai.txt"),
+    "boto3": ("AI generation via Amazon Bedrock", "backend/requirements-ai.txt"),
     "qdrant_client": ("Qdrant vector database", "backend/requirements-search.txt"),
     "docx": ("Word documents", "backend/requirements-documents.txt"),
     "openpyxl": ("Excel workbooks", "backend/requirements-documents.txt"),

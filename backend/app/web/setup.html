@@ -72,6 +72,19 @@ function textField(key, extra = '') {
   </label>`;
 }
 
+function selectField(key) {
+  const meta = fieldMeta[key] || {};
+  const value = pending[key] !== undefined ? pending[key] : (config[key] ?? '');
+  return `<label class="field">
+    <span class="name">${esc(meta.label || key)}</span>
+    ${meta.help ? `<span class="help">${esc(meta.help)}</span>` : ''}
+    <select data-key="${esc(key)}">
+      ${(meta.options || []).map((option) => `
+        <option value="${esc(option.value)}"${String(option.value) === String(value) ? ' selected' : ''}>${esc(option.label)}</option>`).join('')}
+    </select>
+  </label>`;
+}
+
 // ------------------------------------------------------------------- steps
 async function renderWelcome() {
   const el = document.getElementById('step');
@@ -160,6 +173,8 @@ function renderAI() {
         'Most private')}
       ${choice('LLM_PROVIDER', 'openai', 'OpenAI or compatible API',
         'Best quality. Requires an API key; prompts are sent to the provider.')}
+      ${choice('LLM_PROVIDER', 'bedrock', 'Amazon Bedrock',
+        'Use a Bedrock foundation model or inference profile through your AWS account.')}
       ${choice('LLM_PROVIDER', 'qwen', 'Qwen', 'Any Qwen-compatible chat completions endpoint.')}
     </div>
     <div id="ai-fields" style="margin-top:18px"></div>`;
@@ -182,6 +197,7 @@ function renderAIFields(fallback) {
     openai: textField('OPENAI_API_KEY') + textField('OPENAI_MODEL'),
     ollama: textField('OLLAMA_URL') + textField('OLLAMA_MODEL'),
     qwen: textField('QWEN_API_URL') + textField('QWEN_API_KEY') + textField('QWEN_MODEL'),
+    bedrock: renderBedrockFields(),
   };
 
   host.innerHTML = groups[provider] || '';
@@ -193,6 +209,31 @@ function renderAIFields(fallback) {
     };
   }
   bindInputs();
+  const auth = document.querySelector('[data-key="BEDROCK_AUTH_MODE"]');
+  if (auth) auth.onchange = () => {
+    pending.BEDROCK_AUTH_MODE = auth.value;
+    renderAIFields();
+  };
+}
+
+function renderBedrockFields() {
+  const auth = pending.BEDROCK_AUTH_MODE !== undefined
+    ? pending.BEDROCK_AUTH_MODE : (config.BEDROCK_AUTH_MODE || 'default');
+  let credentials = '';
+  if (auth === 'profile') credentials = textField('BEDROCK_AWS_PROFILE');
+  if (auth === 'keys') {
+    credentials = textField('BEDROCK_AWS_ACCESS_KEY_ID') +
+      textField('BEDROCK_AWS_SECRET_ACCESS_KEY') + textField('BEDROCK_AWS_SESSION_TOKEN') +
+      `<div class="callout warn"><span class="icon">⚠️</span><span>
+        Prefer temporary credentials. Cerebro stores these values only in its local configuration file.
+      </span></div>`;
+  }
+  return textField('BEDROCK_REGION') + textField('BEDROCK_MODEL_ID') +
+    selectField('BEDROCK_AUTH_MODE') + credentials +
+    `<div class="callout"><span class="icon">ℹ️</span><span>
+      The selected AWS identity needs <code class="inline">bedrock:InvokeModel</code> permission.
+      Use the model or inference profile ID shown in the Amazon Bedrock console.
+    </span></div>`;
 }
 
 function renderKnowledge() {

@@ -106,7 +106,7 @@ Cerebro works fully without any of these. Add them when you want them:
 | Extra | What it adds | How |
 |---|---|---|
 | AI provider | Case summaries, troubleshooting steps, reply drafts, document Q&A | Settings → AI Provider. A local [Ollama](https://ollama.com) model needs no API key. |
-| OpenAI SDK | Required for the OpenAI provider | `pip install -r backend/requirements-ai.txt` |
+| Cloud AI SDKs | Required for OpenAI and Amazon Bedrock | `pip install -r backend/requirements-ai.txt` |
 | Outlook & Teams | Mail and chat as live context | Two Power Automate flows and a folder — [guide](docs/POWER_AUTOMATE.md) |
 | PostgreSQL | Shared database for a team | `docker compose up -d postgres`, then Settings → Database |
 | Qdrant | Vector search at scale | `docker compose up -d qdrant`, then Settings → Knowledge Search |

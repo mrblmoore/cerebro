@@ -58,6 +58,9 @@ class Field:
     #: ``show_if=("LLM_PROVIDER", ["openai"])``. Keeps each provider's settings
     #: out of sight until it is the one selected.
     show_if: Optional[tuple] = None
+    #: All conditions must match. Used for provider-specific fields that also
+    #: depend on a second choice, such as Bedrock's credential mode.
+    show_if_all: List[tuple] = field(default_factory=list)
 
     @property
     def secret(self) -> bool:
@@ -170,6 +173,7 @@ FIELDS: List[Field] = [
               {"value": "openai", "label": "OpenAI (or compatible API)"},
               {"value": "ollama", "label": "Ollama (local models)"},
               {"value": "qwen", "label": "Qwen"},
+              {"value": "bedrock", "label": "Amazon Bedrock"},
           ]),
     Field("OPENAI_API_KEY", "OpenAI API key", "ai", "Stored locally in backend/.env.",
           type="password", placeholder="sk-...", show_if=("LLM_PROVIDER", ["openai"])),
@@ -189,12 +193,46 @@ FIELDS: List[Field] = [
           show_if=("LLM_PROVIDER", ["qwen"])),
     Field("QWEN_MODEL", "Qwen model", "ai", placeholder="qwen-plus",
           show_if=("LLM_PROVIDER", ["qwen"])),
+    Field("BEDROCK_REGION", "AWS Region", "ai",
+          "The Region where Cerebro sends Bedrock Runtime requests.",
+          placeholder="us-east-1", show_if=("LLM_PROVIDER", ["bedrock"])),
+    Field("BEDROCK_MODEL_ID", "Model or inference profile ID", "ai",
+          "Paste a Bedrock model ID, inference profile ID, or provisioned model ARN.",
+          placeholder="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          show_if=("LLM_PROVIDER", ["bedrock"])),
+    Field("BEDROCK_AUTH_MODE", "AWS credentials", "ai",
+          "The default AWS SDK chain is recommended and supports AWS CLI, SSO, roles, and environment credentials.",
+          type="select", options=[
+              {"value": "default", "label": "Default AWS credential chain (recommended)"},
+              {"value": "profile", "label": "Named AWS profile"},
+              {"value": "keys", "label": "Access keys stored by Cerebro"},
+          ], show_if=("LLM_PROVIDER", ["bedrock"])),
+    Field("BEDROCK_AWS_PROFILE", "AWS profile name", "ai",
+          "Profile from your shared AWS config or credentials file.", placeholder="default",
+          show_if_all=[("LLM_PROVIDER", ["bedrock"]),
+                       ("BEDROCK_AUTH_MODE", ["profile"])]),
+    Field("BEDROCK_AWS_ACCESS_KEY_ID", "AWS access key ID", "ai",
+          "Use temporary credentials where possible. Stored locally in backend/.env.",
+          type="password", placeholder="AKIA...",
+          show_if_all=[("LLM_PROVIDER", ["bedrock"]),
+                       ("BEDROCK_AUTH_MODE", ["keys"])]),
+    Field("BEDROCK_AWS_SECRET_ACCESS_KEY", "AWS secret access key", "ai",
+          "Stored locally in backend/.env and never returned by the settings API.",
+          type="password", show_if_all=[("LLM_PROVIDER", ["bedrock"]),
+                                         ("BEDROCK_AUTH_MODE", ["keys"])]),
+    Field("BEDROCK_AWS_SESSION_TOKEN", "AWS session token", "ai",
+          "Required only for temporary access-key credentials.", type="password",
+          show_if_all=[("LLM_PROVIDER", ["bedrock"]),
+                       ("BEDROCK_AUTH_MODE", ["keys"])]),
+    Field("BEDROCK_ENDPOINT_URL", "Bedrock Runtime endpoint override", "ai",
+          "Optional custom or VPC endpoint URL.", type="url", advanced=True,
+          show_if=("LLM_PROVIDER", ["bedrock"])),
     Field("LLM_TEMPERATURE", "Temperature", "ai", type="number", advanced=True,
-          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen"])),
+          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
     Field("LLM_MAX_TOKENS", "Max tokens", "ai", type="number", advanced=True,
-          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen"])),
+          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
     Field("LLM_TIMEOUT", "Request timeout (s)", "ai", type="number", advanced=True,
-          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen"])),
+          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
 
     # Knowledge
     Field("VECTOR_BACKEND", "Vector backend", "knowledge",
@@ -401,6 +439,12 @@ def describe(include_values: bool = True) -> Dict[str, Any]:
             "show_if": ({"key": f.show_if[0], "values": [str(v).lower() if isinstance(v, bool) else v
                                                           for v in f.show_if[1]]}
                         if f.show_if else None),
+            "show_if_all": [
+                {"key": condition[0],
+                 "values": [str(v).lower() if isinstance(v, bool) else v
+                            for v in condition[1]]}
+                for condition in f.show_if_all
+            ],
         }
         if include_values:
             value = getattr(settings, f.key, None)
