@@ -36,7 +36,7 @@ does this on every push and attaches the installer to any semantic-version tag,
 with or without a leading `v`.
 
 The release tag must match the repository's `VERSION` file. For example, set
-`VERSION` to `0.3.3` before creating either `v0.3.3` or `0.3.3`. This keeps the
+`VERSION` to `0.3.5` before creating either `v0.3.5` or `0.3.5`. This keeps the
 API, dashboard, Windows metadata and installer label on the same version.
 
 ## What the installer does
