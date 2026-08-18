@@ -67,9 +67,24 @@ jobs:
           Write-Host "Packaged build started and answered /health."
 
       - name: Build the installer
-        run: |
-          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
         shell: pwsh
+        run: |
+          # $env:ProgramFiles(x86) must be brace-wrapped — without the braces
+          # PowerShell reads "$env:ProgramFiles" and appends a literal "(x86)",
+          # producing "C:\Program Files(x86)\..." (no space) which does not exist.
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host "Inno Setup not found on the runner; installing it."
+            choco install innosetup --no-progress -y
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Could not find ISCC.exe after install attempt." }
+          Write-Host "Using $iscc"
+          & $iscc packaging\installer.iss
 
       - name: Upload the installer
         uses: actions/upload-artifact@v4
