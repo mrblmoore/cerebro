@@ -3,13 +3,16 @@ name: Build Windows installer
 # Builds the packaged Cerebro executable and installer. PyInstaller can only
 # build for the platform it runs on, so this must run on Windows.
 #
-# Every push to main gets a downloadable artifact; pushing a v* tag also
-# attaches the installer to a GitHub release.
+# Every push to main gets a downloadable artifact; pushing a version tag also
+# attaches the installer to a GitHub release. Both "v0.3.0" and a bare "0.3.0"
+# are accepted, so it doesn't matter which style you reach for.
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"   # v0.3.0, v1.2.3-rc1
+      - "[0-9]+.[0-9]+.[0-9]+*"    # 0.3.0 (no leading v)
   pull_request:
     paths:
       - "packaging/**"
@@ -76,7 +79,9 @@ jobs:
           if-no-files-found: error
 
       - name: Attach the installer to the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # Any version tag, with or without a leading "v". Creating the release
+        # if one does not exist, or adding the exe to an existing one.
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/CerebroSetup.exe
