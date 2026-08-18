@@ -8,7 +8,12 @@
 ; the runtime, and the install goes to the user's own profile.
 
 #define AppName        "Cerebro"
-#define AppVersion     "0.3.0"
+#ifndef AppVersion
+  #define AppVersion   "0.0.0-dev"
+#endif
+#ifndef VersionInfoVersion
+  #define VersionInfoVersion "0.0.0.0"
+#endif
 #define AppPublisher   "Cerebro"
 #define AppExeName     "Cerebro.exe"
 #define WidgetExeName  "CerebroWidget.exe"
@@ -17,8 +22,11 @@
 AppId={{8F2C4E1A-9D3B-4A57-B6E0-1C7A5D9E3B21}
 AppName={#AppName}
 AppVersion={#AppVersion}
+AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#VersionInfoVersion}
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#AppVersion}
 
 ; Per-user install: no UAC prompt, no admin rights, works on a locked-down
 ; machine where users cannot write to Program Files.
@@ -34,6 +42,7 @@ OutputBaseFilename=CerebroSetup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 UninstallDisplayName={#AppName}

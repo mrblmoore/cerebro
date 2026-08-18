@@ -23,6 +23,7 @@ datas = [
     (str(BACKEND / "app" / "web"), "app/web"),
     (str(ROOT / "browser-extension" / "src"), "browser-extension"),
     (str(BACKEND / ".env.example"), "."),
+    (str(ROOT / "VERSION"), "."),
 ]
 for name in ("README.md", "GETTING_STARTED.md"):
     if (ROOT / name).exists():

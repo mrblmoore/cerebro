@@ -65,6 +65,15 @@ def session():
     return SessionLocal()
 
 
+# --------------------------------------------------------------- versioning
+def test_version_source():
+    print("\nVersioning")
+    from app.api.system import VERSION
+
+    declared = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    check("Runtime version matches VERSION", VERSION == declared)
+
+
 # --------------------------------------------------------------- detectors
 def test_event_detector():
     print("\nEvent detection")
@@ -1223,7 +1232,7 @@ def main() -> int:
     print("Running Cerebro tests…")
     init_db()
 
-    for suite in (test_event_detector, test_context_engine, test_event_flow,
+    for suite in (test_version_source, test_event_detector, test_context_engine, test_event_flow,
                   test_embeddings, test_knowledge_search, test_llm_disabled,
                   test_enterprise_normalisation, test_enterprise_ingest_and_reply,
                   test_document_reading, test_document_editing,

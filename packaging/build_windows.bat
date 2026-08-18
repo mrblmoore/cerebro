@@ -30,6 +30,14 @@ if not exist ".venv-build\Scripts\python.exe" (
   %PY% -m venv .venv-build || exit /b 1
 )
 set "BUILDPY=.venv-build\Scripts\python.exe"
+set /p "APP_VERSION="<VERSION
+if not defined APP_VERSION set "APP_VERSION=0.0.0-dev"
+for /f "tokens=1-3 delims=." %%A in ("%APP_VERSION%") do (
+  set "VERSION_MAJOR=%%A"
+  set "VERSION_MINOR=%%B"
+  for /f "tokens=1 delims=-+" %%D in ("%%C") do set "VERSION_PATCH=%%D"
+)
+set "VERSION_INFO_VERSION=!VERSION_MAJOR!.!VERSION_MINOR!.!VERSION_PATCH!.0"
 
 %BUILDPY% -m pip install --quiet --upgrade pip
 %BUILDPY% -m pip install --quiet -r backend\requirements.txt || exit /b 1
@@ -66,8 +74,13 @@ if not defined ISCC (
   exit /b 0
 )
 
-"%ISCC%" packaging\installer.iss
+"%ISCC%" "/DAppVersion=%APP_VERSION%" "/DVersionInfoVersion=%VERSION_INFO_VERSION%" packaging\installer.iss
 if errorlevel 1 exit /b 1
+
+if not exist "dist\CerebroSetup.exe" (
+  echo   Inno Setup completed but dist\CerebroSetup.exe was not created.
+  exit /b 1
+)
 
 echo.
 echo   Done.

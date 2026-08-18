@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core import check_database, logger, settings, settings_store
-from app.core.paths import ENV_FILE, PROJECT_ROOT
+from app.core.paths import BUNDLE_ROOT, ENV_FILE, PROJECT_ROOT
 from app.core.database import get_db
 from app.services import document_service, enterprise_service
 from app.services.memory_service import MemoryService
@@ -30,7 +30,17 @@ from app.services.screenpipe_client import ScreenpipeClient
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
-VERSION = "0.3.0"
+
+def _read_version() -> str:
+    """Read the same version file used by release packaging."""
+    try:
+        value = (BUNDLE_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0-dev"
+    return value or "0.0.0-dev"
+
+
+VERSION = _read_version()
 
 OPTIONAL_PACKAGES = {
     "openai": ("AI generation via OpenAI", "backend/requirements-ai.txt"),

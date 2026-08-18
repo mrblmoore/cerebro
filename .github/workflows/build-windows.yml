@@ -67,9 +67,42 @@ jobs:
           Write-Host "Packaged build started and answered /health."
 
       - name: Build the installer
-        run: |
-          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
         shell: pwsh
+        run: |
+          $declaredVersion = (Get-Content VERSION -Raw).Trim()
+          if ($declaredVersion -notmatch '^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$') {
+            throw "VERSION must use semantic versioning (for example 1.2.3 or 1.2.3-rc1); got '$declaredVersion'."
+          }
+
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($tagVersion -ne $declaredVersion) {
+              throw "Tag '$env:GITHUB_REF_NAME' does not match VERSION '$declaredVersion'."
+            }
+            $appVersion = $tagVersion
+          } else {
+            $appVersion = "$declaredVersion-dev.$env:GITHUB_RUN_NUMBER"
+          }
+
+          $versionInfoVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+          $compilerCandidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $compiler = $compilerCandidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $compiler) {
+            throw "Inno Setup 6 compiler not found. Checked: $($compilerCandidates -join ', ')"
+          }
+
+          & $compiler "/DAppVersion=$appVersion" "/DVersionInfoVersion=$versionInfoVersion" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE."
+          }
+          if (-not (Test-Path -LiteralPath 'dist\CerebroSetup.exe')) {
+            throw 'Inno Setup completed without producing dist\CerebroSetup.exe.'
+          }
 
       - name: Upload the installer
         uses: actions/upload-artifact@v4
