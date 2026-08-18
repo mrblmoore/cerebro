@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cerebro · Dashboard</title>
+  <link rel="stylesheet" href="/static/cerebro.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+  <div id="topbar"></div>
+
+  <div class="wrap">
+    <div id="banner"></div>
+
+    <div class="section-title">Live context</div>
+    <div class="grid cols-3" id="context-stats"></div>
+    <div id="suggestion"></div>
+
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card">
+        <header>
+          <h2>Recent events</h2>
+          <span class="pill" id="event-count">—</span>
+        </header>
+        <div id="events"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card">
+        <header><h2>Knowledge</h2>
+          <button class="btn-sm" id="add-doc">+ Add document</button>
+        </header>
+        <div class="body" style="padding-bottom:8px">
+          <div class="input-row">
+            <input type="text" id="kb-query" placeholder="Search your indexed documents…">
+            <button id="kb-search">Search</button>
+          </div>
+        </div>
+        <div id="kb-results"></div>
+      </div>
+    </div>
+
+    <div class="section-title">System</div>
+    <div class="grid cols-2">
+      <div class="card">
+        <header><h2>Status</h2>
+          <button class="btn-sm ghost" id="recheck">Re-run checks</button>
+        </header>
+        <div id="checks"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card">
+        <header><h2>Activity log</h2>
+          <button class="btn-sm ghost" id="refresh-logs">Refresh</button>
+        </header>
+        <pre class="logs" id="logs">Loading…</pre>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="doc-dialog" style="border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);max-width:560px;width:92vw;padding:0">
+    <form method="dialog" style="margin:0">
+      <div style="padding:16px 18px;border-bottom:1px solid var(--border)"><h2>Index a document</h2></div>
+      <div style="padding:18px">
+        <label class="field"><span class="name">Title</span>
+          <input type="text" id="doc-title" placeholder="KB-1043 — Outlook 0x80040115"></label>
+        <label class="field"><span class="name">Source</span>
+          <input type="text" id="doc-source" placeholder="RightAnswers, SharePoint, runbook…"></label>
+        <label class="field"><span class="name">Link (optional)</span>
+          <input type="url" id="doc-url" placeholder="https://…"></label>
+        <label class="field" style="margin-bottom:0"><span class="name">Content</span>
+          <textarea id="doc-content" placeholder="Paste the article text…"></textarea></label>
+      </div>
+      <div style="padding:14px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+        <button value="cancel" class="ghost">Cancel</button>
+        <button value="save" class="primary" id="doc-save">Index document</button>
+      </div>
+    </form>
+  </dialog>
+
+<script src="/static/cerebro.js"></script>
+<script>
+document.getElementById('topbar').innerHTML = topbar('/');
+
+const EVENT_ICONS = {
+  CRM_CASE_OPENED: '📋', CRM_CASE_CLOSED: '📁', CALL_STARTED: '☎️', CALL_ENDED: '📴',
+  REMOTE_SESSION_CONNECTED: '🔗', REMOTE_SESSION_DISCONNECTED: '🔌',
+  APPLICATION_CHANGED: '🪟', TRANSCRIPT: '📝',
+};
+
+function stat(label, value, sub, muted) {
+  return `<div class="card stat">
+    <div class="label">${esc(label)}</div>
+    <div class="value ${muted ? 'muted' : ''}">${esc(value)}</div>
+    ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
+  </div>`;
+}
+
+async function loadContext() {
+  const context = await API.get('/api/context/current');
+  const sessions = [
+    context.call_active ? '☎️ Call active' : null,
+    context.remote_session_active ? `🔗 Remote${context.remote_host ? ` · ${context.remote_host}` : ''}` : null,
+  ].filter(Boolean);
+
+  document.getElementById('context-stats').innerHTML = [
+    stat('Current case', context.crm_case || 'No case open',
+         context.crm_system || '', !context.crm_case),
+    stat('Customer', context.customer || 'Unknown', '', !context.customer),
+    stat('Session', sessions.join(' · ') || 'Idle',
+         context.updated_at ? `updated ${relativeTime(context.updated_at)}` : '', !sessions.length),
+    stat('Active application', context.active_application || 'Not reported',
+         context.window_title || '', !context.active_application),
+  ].join('');
+
+  // Suggestions are full sentences, so they get a wrapping row of their own
+  // rather than a fixed-width stat tile that would truncate them.
+  document.getElementById('suggestion').innerHTML = context.last_suggestion
+    ? `<div class="card stat" style="margin-top:16px">
+         <div class="label">Latest suggestion</div>
+         <div style="font-size:15px;margin-top:3px">${esc(context.last_suggestion)}</div>
+       </div>`
+    : '';
+}
+
+async function loadEvents() {
+  const events = await API.get('/api/events/?limit=12');
+  document.getElementById('event-count').textContent = `${events.length} recent`;
+  const host = document.getElementById('events');
+
+  if (!events.length) {
+    host.innerHTML = `<div class="empty"><span class="big">📡</span>
+      No events yet. Load the browser extension or start the desktop widget,
+      then open a case.</div>`;
+    return;
+  }
+
+  host.innerHTML = `<ul class="list">${events.map((event) => {
+    const data = event.data || {};
+    const detail = data.case_id || data.title || data.application || data.url || event.source;
+    return `<li>
+      <span class="icon">${EVENT_ICONS[event.event_type] || '•'}</span>
+      <span class="main">
+        <div class="title">${esc(event.event_type.replaceAll('_', ' ').toLowerCase())}</div>
+        <div class="meta">${esc(String(detail).slice(0, 90))} · ${esc(relativeTime(event.created_at))}</div>
+      </span>
+    </li>`;
+  }).join('')}</ul>`;
+}
+
+async function loadChecks() {
+  const host = document.getElementById('checks');
+  try {
+    const data = await API.get('/api/system/diagnostics');
+    host.innerHTML = data.checks.map((check) => {
+      const optional = check.optional_package;
+      const icon = optional ? (check.installed ? '✅' : '○') : (check.ok ? '✅' : (check.required ? '❌' : '⚠️'));
+      return `<div class="check"><span class="status">${icon}</span><span>
+        <div class="label">${esc(check.label)}</div>
+        <div class="detail">${esc(check.detail || '')}</div></span></div>`;
+    }).join('');
+  } catch (error) {
+    host.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+}
+
+async function loadLogs() {
+  const host = document.getElementById('logs');
+  try {
+    const data = await API.get('/api/system/logs?lines=120');
+    host.innerHTML = data.lines.length
+      ? data.lines.map((line) => {
+          const level = (line.match(/\[(DEBUG|INFO|WARN|ERROR)\]/) || [])[1] || 'INFO';
+          return `<span class="log-${level}">${esc(line)}</span>`;
+        }).join('\n')
+      : 'No log entries yet.';
+    host.scrollTop = host.scrollHeight;
+  } catch (error) {
+    host.textContent = error.message;
+  }
+}
+
+async function searchKnowledge() {
+  const query = document.getElementById('kb-query').value.trim();
+  const host = document.getElementById('kb-results');
+  if (query.length < 2) {
+    host.innerHTML = '<div class="empty">Type at least two characters.</div>';
+    return;
+  }
+  host.innerHTML = '<div class="empty">Searching…</div>';
+  try {
+    const data = await API.get(`/api/knowledge/search?query=${encodeURIComponent(query)}&limit=6`);
+    host.innerHTML = data.results.length
+      ? `<ul class="list">${data.results.map((result) => `
+          <li><span class="icon">📄</span><span class="main">
+            <div class="title">${result.url
+              ? `<a href="${esc(result.url)}" target="_blank" rel="noopener">${esc(result.title)}</a>`
+              : esc(result.title)}</div>
+            <div class="meta">${esc(result.source || 'unknown source')} · match ${
+              result.score !== null ? Math.round(result.score * 100) : '–'}%</div>
+            <div class="meta">${esc(result.excerpt)}</div>
+          </span></li>`).join('')}</ul>`
+      : `<div class="empty">No matches. Index some documents first.</div>`;
+  } catch (error) {
+    host.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+}
+
+async function loadDocuments() {
+  const host = document.getElementById('kb-results');
+  try {
+    const data = await API.get('/api/knowledge/documents?limit=6');
+    host.innerHTML = data.count
+      ? `<ul class="list">${data.documents.map((doc) => `
+          <li><span class="icon">📄</span><span class="main">
+            <div class="title">${esc(doc.title)}</div>
+            <div class="meta">${esc(doc.source || 'unknown source')}</div>
+          </span></li>`).join('')}</ul>`
+      : `<div class="empty"><span class="big">📚</span>
+          Nothing indexed yet. Add your first runbook or KB article to make search useful.</div>`;
+  } catch (error) {
+    host.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+}
+
+// ------------------------------------------------------------------ wiring
+const dialog = document.getElementById('doc-dialog');
+document.getElementById('add-doc').onclick = () => dialog.showModal();
+dialog.addEventListener('close', async () => {
+  if (dialog.returnValue !== 'save') return;
+  const payload = {
+    title: document.getElementById('doc-title').value.trim(),
+    source: document.getElementById('doc-source').value.trim() || 'manual',
+    url: document.getElementById('doc-url').value.trim() || null,
+    content: document.getElementById('doc-content').value.trim(),
+  };
+  if (!payload.title || !payload.content) {
+    toast('Title and content are both required.', 'err');
+    return;
+  }
+  try {
+    await API.post('/api/knowledge/documents', payload);
+    toast(`Indexed “${payload.title}”.`, 'ok');
+    ['doc-title', 'doc-source', 'doc-url', 'doc-content'].forEach((id) => {
+      document.getElementById(id).value = '';
+    });
+    loadDocuments();
+  } catch (error) { toast(error.message, 'err', 7000); }
+});
+
+document.getElementById('kb-search').onclick = searchKnowledge;
+document.getElementById('kb-query').onkeydown = (event) => {
+  if (event.key === 'Enter') searchKnowledge();
+};
+document.getElementById('recheck').onclick = loadChecks;
+document.getElementById('refresh-logs').onclick = loadLogs;
+
+(async function init() {
+  const info = await refreshConnectionPill();
+  if (info && !info.ai_enabled) {
+    document.getElementById('banner').innerHTML = `<div class="callout">
+      <span class="icon">🧠</span>
+      <span>AI generation is off, so summaries and troubleshooting steps are not produced.
+        <a href="/settings">Connect a provider</a> — a local Ollama model works without any API key.</span>
+    </div>`;
+  }
+  loadDocuments();
+  loadChecks();
+  loadLogs();
+  poll(async () => { await loadContext(); await loadEvents(); }, 5000);
+})();
+</script>
+</body>
+</html>

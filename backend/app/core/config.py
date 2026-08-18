@@ -1,36 +1,128 @@
-from pydantic_settings import BaseSettings
+"""
+Cerebro configuration.
+
+Design goal: **Cerebro must start with no configuration at all.** Every setting
+has a working default, so ``uvicorn app.main:app`` succeeds on a fresh clone and
+the user can fill in the details later from the Setup UI at ``/setup``.
+"""
+
 from typing import Optional
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.paths import (
+    DEFAULT_LOG_PATH,
+    ENV_FILE,
+    default_database_url,
+    ensure_data_dirs,
+)
+
+ensure_data_dirs()
 
 
 class Settings(BaseSettings):
-    # App
-    APP_NAME: str = "Cerebrus API"
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # ------------------------------------------------------------------ app
+    APP_NAME: str = "Cerebro"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
+    HOST: str = "127.0.0.1"
+    PORT: int = 8000
 
-    # Database
-    DATABASE_URL: str
+    #: Flipped to True the first time the setup wizard is completed. While it is
+    #: False the dashboard nudges the user towards ``/setup``.
+    SETUP_COMPLETED: bool = False
+
+    #: Origins allowed to call the API. "*" keeps the browser extension and the
+    #: local widget working out of the box; tighten it for shared deployments.
+    CORS_ORIGINS: str = "*"
+
+    # ------------------------------------------------------------- database
+    #: Defaults to a SQLite file under ``data/`` so nothing needs installing.
+    DATABASE_URL: str = default_database_url()
     SQLALCHEMY_ECHO: bool = False
 
-    # Vector Database
-    QDRANT_URL: str
+    # --------------------------------------------------------- vector store
+    #: ``auto`` uses Qdrant when QDRANT_URL is reachable and falls back to the
+    #: built-in SQLite vector store. ``local`` and ``qdrant`` force a backend.
+    VECTOR_BACKEND: str = "auto"
+    QDRANT_URL: Optional[str] = None
     QDRANT_API_KEY: Optional[str] = None
 
-    # LLM
+    #: ``local`` needs no API key and no network; ``openai`` produces much
+    #: better semantic matches but requires an OpenAI key.
+    EMBEDDING_PROVIDER: str = "local"  # local | openai
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # ------------------------------------------------------------------ llm
+    #: ``none`` disables AI generation entirely; Cerebro still tracks context,
+    #: events and knowledge search without it.
+    LLM_PROVIDER: str = "none"  # none | openai | ollama | qwen
+    LLM_TIMEOUT: int = 60
+    LLM_MAX_TOKENS: int = 500
+    LLM_TEMPERATURE: float = 0.7
+
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-4"
+    OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_ORG_ID: Optional[str] = None
-    LLM_PROVIDER: str = "openai"  # options: openai, ollama, qwen
-    OLLAMA_URL: Optional[str] = "http://localhost:11434"  # Ollama default
+    OPENAI_BASE_URL: Optional[str] = None
+
+    OLLAMA_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "llama3.1"
+
     QWEN_API_URL: Optional[str] = None
     QWEN_API_KEY: Optional[str] = None
+    QWEN_MODEL: str = "qwen-plus"
 
-    # Screenpipe
+    # ------------------------------------------------------------- desktop
     SCREENPIPE_URL: str = "http://localhost:3030"
-    CEREBRO_LOG_PATH: str = ""  # Optional: path to plain-text log file. Defaults to ./cerebro.log
+    SCREENPIPE_ENABLED: bool = False
 
-    class Config:
-        env_file = ".env"
+    # ------------------------------------------------------------- logging
+    CEREBRO_LOG_PATH: str = ""
+    LOG_LEVEL: str = "INFO"
+    LOG_TO_STDOUT: bool = True
+
+    # ---------------------------------------------------------- properties
+    @property
+    def log_path(self) -> str:
+        return self.CEREBRO_LOG_PATH or str(DEFAULT_LOG_PATH)
+
+    @property
+    def llm_model(self) -> str:
+        """The model name for whichever provider is selected."""
+        return {
+            "openai": self.OPENAI_MODEL,
+            "ollama": self.OLLAMA_MODEL,
+            "qwen": self.QWEN_MODEL,
+        }.get(self.LLM_PROVIDER.lower(), "")
+
+    @property
+    def llm_configured(self) -> bool:
+        provider = self.LLM_PROVIDER.lower()
+        if provider == "openai":
+            return bool(self.OPENAI_API_KEY)
+        if provider == "ollama":
+            return bool(self.OLLAMA_URL)
+        if provider == "qwen":
+            return bool(self.QWEN_API_URL and self.QWEN_API_KEY)
+        return False
+
+    @property
+    def using_sqlite(self) -> bool:
+        return self.DATABASE_URL.startswith("sqlite")
+
+    @property
+    def cors_origin_list(self) -> list:
+        if self.CORS_ORIGINS.strip() in ("*", ""):
+            return ["*"]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
 
 settings = Settings()

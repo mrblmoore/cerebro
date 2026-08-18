@@ -7,60 +7,78 @@ A complete enterprise operational copilot MVP for technical support, comprising 
 ## 📁 Project Structure
 
 ```
-cerebrus-mvp/
-├── backend/                           # FastAPI Backend
+cerebro/
+├── cerebro.py                       # One CLI: setup, start, widget, doctor, status
+├── cerebro.sh / cerebro.bat         # Launchers with an interactive menu
+├── setup.sh / setup.bat             # Thin wrappers around `cerebro setup`
+├── start.bat / widget.bat           # Windows double-click launchers
+├── docker-compose.yml               # Optional PostgreSQL + Qdrant
+│
+├── backend/
 │   ├── app/
-│   │   ├── core/                     # Configuration & Database
-│   │   │   ├── config.py            # Settings management
-│   │   │   ├── database.py          # SQLAlchemy setup
-│   │   │   └── __init__.py
-│   │   ├── models/                  # Database Models
-│   │   │   ├── case.py              # Support cases (1,045 chars)
-│   │   │   ├── event.py             # Activity events (914 chars)
-│   │   │   ├── context_state.py     # Current context (1,550 chars)
-│   │   │   ├── document.py          # Knowledge base (844 chars)
-│   │   │   ├── memory.py            # Learned patterns (913 chars)
-│   │   │   └── __init__.py
-│   │   ├── schemas/                 # Pydantic Models
-│   │   │   ├── event.py             # Event request/response (541 chars)
-│   │   │   ├── case.py              # Case schema (630 chars)
-│   │   │   ├── context.py           # Context schema (377 chars)
-│   │   │   └── __init__.py
-│   │   ├── services/                # Business Logic
-│   │   │   ├── context_engine.py   # Event processing & state (4,048 chars)
-│   │   │   ├── rag_service.py      # Vector search (4,114 chars)
-│   │   │   ├── llm_service.py      # AI generation (2,953 chars)
-│   │   │   ├── screenpipe_client.py # Activity monitoring (2,665 chars)
-│   │   │   ├── event_detector.py   # Event detection rules (2,693 chars)
-│   │   │   └── __init__.py
-│   │   ├── api/                     # REST Endpoints
-│   │   │   ├── events.py            # Event ingestion (1,495 chars)
-│   │   │   ├── context.py           # Context state (608 chars)
-│   │   │   ├── cases.py             # Case management (1,839 chars)
-│   │   │   ├── knowledge.py         # Knowledge search (1,062 chars)
-│   │   │   └── __init__.py
-│   │   └── main.py                  # FastAPI app (1,142 chars)
-│   ├── requirements.txt             # Dependencies
-│   ├── .env.example                # Configuration template
-│   └── migrations/
-├── desktop/                        # Desktop Agent
-│   ├── cerebrus_agent.py          # Python agent (3,435 chars)
-│   └── src/
-│       └── generate_ui.py          # React component template (4,176 chars)
-├── browser-extension/              # Chrome/Edge Extension
-│   └── src/
-│       ├── background.js           # Event detection (1,493 chars)
-│       └── manifest.json           # Extension config (523 chars)
-├── docs/                           # Documentation
-│   ├── SCHEMA.md                   # Database schema
-│   ├── INTEGRATION.md              # Integration guide
-│   └── DEPLOYMENT.md               # Production setup (to create)
-├── README.md                       # Main documentation
-├── setup.sh                        # Unix setup script
-├── setup.bat                       # Windows setup script
-└── test_mvp.py                     # Test suite (4,455 chars)
-
-Total Code: 33+ files, 45,000+ characters
+│   │   ├── core/
+│   │   │   ├── config.py            # Settings — every value has a default
+│   │   │   ├── paths.py             # Project layout, resolved from anywhere
+│   │   │   ├── database.py          # Engine, sessions, init + health check
+│   │   │   ├── settings_store.py    # Editable-settings registry, .env writer
+│   │   │   └── logger.py            # Structured, rotating plain-text logs
+│   │   ├── models/                  # Case, Event, ContextState, Document,
+│   │   │                            #   Memory, AudioRecording, Transcription
+│   │   ├── schemas/                 # Pydantic request/response models
+│   │   ├── services/
+│   │   │   ├── context_engine.py    # Event → state machine + recommendations
+│   │   │   ├── rag_service.py       # Built-in or Qdrant vector search
+│   │   │   ├── embeddings.py        # Offline hashed-BoW or OpenAI embeddings
+│   │   │   ├── llm_service.py       # OpenAI / Ollama / Qwen, all optional
+│   │   │   ├── event_detector.py    # Window/URL → event rules
+│   │   │   └── screenpipe_client.py # Optional activity capture
+│   │   ├── api/
+│   │   │   ├── system.py            # Health, diagnostics, settings, tests
+│   │   │   ├── events.py            # Event ingestion
+│   │   │   ├── context.py           # Live context + recommendations
+│   │   │   ├── cases.py             # Case management
+│   │   │   ├── knowledge.py         # Index, browse and search documents
+│   │   │   └── audio.py             # Recordings and transcriptions
+│   │   ├── web/                     # Served UI
+│   │   │   ├── dashboard.html       # Live context, events, knowledge, logs
+│   │   │   ├── setup.html           # Six-step first-run wizard
+│   │   │   ├── settings.html        # Grouped settings with connection tests
+│   │   │   └── static/              # Shared CSS + JS design system
+│   │   └── main.py                  # FastAPI app, pages, startup banner
+│   ├── requirements.txt             # Core dependencies (that is all you need)
+│   ├── requirements-ai.txt          # Optional: OpenAI SDK
+│   ├── requirements-search.txt      # Optional: Qdrant client
+│   ├── requirements-postgres.txt    # Optional: PostgreSQL driver
+│   └── .env.example                 # Documented configuration template
+│
+├── desktop/
+│   ├── widget.py                    # Always-on-top Tkinter widget
+│   ├── widget_config.py             # Per-user widget preferences
+│   ├── win_integration.py           # DPI, tool window, rounded corners, startup
+│   ├── agent.py                     # Foreground-window monitor (Windows)
+│   ├── audio_recorder.py            # Local call capture + transcription
+│   └── requirements*.txt
+│
+├── browser-extension/src/
+│   ├── manifest.json                # MV3
+│   ├── background.js                # Detection, de-duplication, retry queue
+│   ├── detectors.js                 # Salesforce / ServiceNow / Zendesk rules
+│   ├── content.js                   # SPA navigation reporting
+│   ├── popup.html / popup.js        # Status, live context, this-page actions
+│   ├── options.html / options.js    # API URL, toggles, queue management
+│   └── config.js / extension.css
+│
+├── docs/
+│   ├── INSTALL.md                   # Install guide + troubleshooting
+│   ├── CONFIGURATION.md             # Every setting explained
+│   ├── WIDGET.md                    # The desktop widget in detail
+│   ├── SCHEMA.md / INTEGRATION.md / LOGGING.md
+│
+├── data/                            # Runtime only, git-ignored
+│   ├── cerebro.db · logs/ · audio/ · vectors/
+│
+├── README.md · GETTING_STARTED.md · MVP_SUMMARY.md
+└── test_mvp.py                      # Test suite
 ```
 
 ## 🏗️ Architecture Overview
@@ -317,7 +335,7 @@ API docs available at: `http://localhost:8000/docs`
 **Desktop Agent:**
 ```bash
 cd desktop
-python cerebrus_agent.py
+python desktop/agent.py
 ```
 
 **Browser Extension** (Load in Chrome/Edge):

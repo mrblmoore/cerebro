@@ -1,0 +1,4 @@
+# Cerebro desktop widget and agent.
+# The widget itself only needs `requests` — its interface is built on Tkinter,
+# which ships with Python. Audio capture is optional.
+requests>=2.31,<3.0

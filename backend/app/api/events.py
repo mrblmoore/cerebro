@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.core import get_db
+from app.core.database import get_db
 from app.schemas.event import EventCreate, EventResponse
 from app.services.context_engine import ContextEngine
 from typing import List

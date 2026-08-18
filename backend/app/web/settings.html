@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cerebro · Settings</title>
+  <link rel="stylesheet" href="/static/cerebro.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+  <div id="topbar"></div>
+
+  <div class="wrap">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+      <h1 style="flex:1">Settings</h1>
+      <label class="switch" title="Show rarely-needed options">
+        <input type="checkbox" id="advanced"><span class="track"></span>
+        <span class="muted" style="font-size:13px">Advanced</span>
+      </label>
+    </div>
+    <p id="env-path" class="muted" style="font-size:12.5px"></p>
+
+    <div class="tabs" id="tabs"></div>
+    <div id="panel"><div class="empty">Loading…</div></div>
+
+    <div class="wizard-nav">
+      <button id="reset" class="ghost">Discard changes</button>
+      <div class="spacer"></div>
+      <span id="dirty" class="pill hidden">unsaved changes</span>
+      <button id="save" class="primary">Save changes</button>
+    </div>
+  </div>
+
+<script src="/static/cerebro.js"></script>
+<script>
+document.getElementById('topbar').innerHTML = topbar('/settings');
+
+let description = null;
+let active = 'general';
+const pending = {};
+
+const TEST_TARGETS = { database: 'database', ai: 'ai', knowledge: 'knowledge', desktop: 'screenpipe' };
+
+function isDirty() { return Object.keys(pending).length > 0; }
+
+function updateDirty() {
+  const badge = document.getElementById('dirty');
+  badge.classList.toggle('hidden', !isDirty());
+  badge.className = `pill warn ${isDirty() ? '' : 'hidden'}`;
+  badge.textContent = `${Object.keys(pending).length} unsaved change${Object.keys(pending).length === 1 ? '' : 's'}`;
+}
+
+function fieldControl(field) {
+  const value = pending[field.key] !== undefined ? pending[field.key] : field.value;
+
+  if (field.type === 'bool') {
+    return `<label class="switch">
+      <input type="checkbox" data-key="${esc(field.key)}" ${value === true || value === 'true' ? 'checked' : ''}>
+      <span class="track"></span><span>${esc(field.label)}</span>
+    </label>
+    ${field.help ? `<div class="help muted" style="font-size:12px;margin-top:4px">${esc(field.help)}</div>` : ''}`;
+  }
+
+  if (field.type === 'select') {
+    return `<span class="name">${esc(field.label)}</span>
+      ${field.help ? `<span class="help">${esc(field.help)}</span>` : ''}
+      <select data-key="${esc(field.key)}">
+        ${field.options.map((option) => `
+          <option value="${esc(option.value)}"${String(option.value) === String(value) ? ' selected' : ''}>${esc(option.label)}</option>`).join('')}
+      </select>`;
+  }
+
+  const type = { password: 'password', number: 'number', url: 'url' }[field.type] || 'text';
+  const hint = field.secret && field.is_set ? ' <span class="pill ok" style="margin-left:6px">set</span>' : '';
+  return `<span class="name">${esc(field.label)}${hint}</span>
+    ${field.help ? `<span class="help">${esc(field.help)}</span>` : ''}
+    <input type="${type}" data-key="${esc(field.key)}" value="${esc(value)}"
+           placeholder="${esc(field.placeholder || '')}" autocomplete="off"
+           ${field.secret ? 'data-secret="1"' : ''}>`;
+}
+
+/** Current value of a field, preferring an unsaved edit. */
+function valueOf(key) {
+  if (pending[key] !== undefined) return pending[key];
+  const field = description.fields.find((f) => f.key === key);
+  return field ? field.value : undefined;
+}
+
+/** A field with `show_if` only appears while its controlling field matches. */
+function isVisible(field) {
+  if (!field.show_if) return true;
+  const current = valueOf(field.show_if.key);
+  return field.show_if.values.map(String).includes(String(current));
+}
+
+function renderPanel() {
+  const showAdvanced = document.getElementById('advanced').checked;
+  const group = description.groups.find((g) => g.id === active);
+  const fields = description.fields.filter((f) =>
+    f.group === active && isVisible(f) && (showAdvanced || !f.advanced));
+  const hiddenCount = description.fields.filter((f) =>
+    f.group === active && isVisible(f) && f.advanced).length;
+
+  const testTarget = TEST_TARGETS[active];
+
+  document.getElementById('panel').innerHTML = `
+    <div class="card">
+      <header>
+        <span style="font-size:16px">${group.icon}</span>
+        <h2>${esc(group.title)}</h2>
+        ${testTarget ? `<button class="btn-sm" id="test">Test connection</button>` : ''}
+      </header>
+      <div class="body">
+        <p style="margin-top:-4px">${esc(group.description)}</p>
+        ${fields.map((field) => `<label class="field">${fieldControl(field)}</label>`).join('') ||
+          '<div class="empty">No basic options here — turn on Advanced.</div>'}
+        ${!showAdvanced && hiddenCount ? `<p class="muted" style="font-size:12px;margin:0">
+          ${hiddenCount} advanced option${hiddenCount === 1 ? '' : 's'} hidden.</p>` : ''}
+      </div>
+    </div>
+    ${active === 'knowledge' ? `
+      <div class="card" style="margin-top:16px">
+        <header><h2>Maintenance</h2></header>
+        <div class="body">
+          <p>Re-embed every indexed document. Run this after switching embedding provider,
+             otherwise older documents stay in the previous embedding space.</p>
+          <div class="actions"><button id="reindex">Reindex all documents</button></div>
+        </div>
+      </div>` : ''}`;
+
+  const controllers = new Set(description.fields
+    .filter((f) => f.show_if).map((f) => f.show_if.key));
+
+  document.querySelectorAll('[data-key]').forEach((input) => {
+    input.oninput = input.onchange = () => {
+      const key = input.dataset.key;
+      pending[key] = input.type === 'checkbox' ? input.checked : input.value;
+      updateDirty();
+      if (controllers.has(key)) renderPanel();
+    };
+  });
+
+  const test = document.getElementById('test');
+  if (test) test.onclick = async () => {
+    if (isDirty() && !(await save())) return;
+    test.disabled = true;
+    const original = test.textContent;
+    test.textContent = 'Testing…';
+    try {
+      const result = await API.post(`/api/system/test/${testTarget}`);
+      toast(result.detail || (result.ok ? 'OK' : 'Failed'), result.ok ? 'ok' : 'err', 7000);
+    } catch (error) {
+      toast(error.message, 'err', 7000);
+    } finally { test.disabled = false; test.textContent = original; }
+  };
+
+  const reindex = document.getElementById('reindex');
+  if (reindex) reindex.onclick = async () => {
+    reindex.disabled = true;
+    try {
+      const result = await API.post('/api/system/reindex');
+      toast(`Reindexed ${result.updated} of ${result.total} documents.`, 'ok');
+    } catch (error) { toast(error.message, 'err'); }
+    finally { reindex.disabled = false; }
+  };
+}
+
+function renderTabs() {
+  document.getElementById('tabs').innerHTML = description.groups.map((group) => `
+    <button data-tab="${esc(group.id)}" aria-selected="${group.id === active}">
+      ${group.icon} ${esc(group.title)}
+    </button>`).join('');
+
+  document.querySelectorAll('[data-tab]').forEach((button) => {
+    button.onclick = () => { active = button.dataset.tab; renderTabs(); renderPanel(); };
+  });
+}
+
+async function save() {
+  if (!isDirty()) { toast('Nothing to save.'); return true; }
+  const button = document.getElementById('save');
+  button.disabled = true;
+  try {
+    const result = await API.put('/api/system/settings', pending);
+    for (const key of Object.keys(pending)) delete pending[key];
+    updateDirty();
+    await load();
+    toast(result.restart_required
+      ? 'Saved. Restart Cerebro for these changes to take effect.'
+      : `Saved ${result.applied.length} change${result.applied.length === 1 ? '' : 's'}.`, 'ok', 6000);
+    return true;
+  } catch (error) {
+    toast(`Could not save: ${error.message}`, 'err', 8000);
+    return false;
+  } finally { button.disabled = false; }
+}
+
+async function load() {
+  description = await API.get('/api/system/settings');
+  document.getElementById('env-path').innerHTML =
+    `Stored in <code class="inline">${esc(description.env_file)}</code> — safe to edit by hand.`;
+  renderTabs();
+  renderPanel();
+}
+
+document.getElementById('save').onclick = save;
+document.getElementById('reset').onclick = () => {
+  for (const key of Object.keys(pending)) delete pending[key];
+  updateDirty();
+  renderPanel();
+};
+document.getElementById('advanced').onchange = renderPanel;
+
+window.addEventListener('beforeunload', (event) => {
+  if (isDirty()) { event.preventDefault(); event.returnValue = ''; }
+});
+
+refreshConnectionPill();
+load().catch((error) => {
+  document.getElementById('panel').innerHTML =
+    `<div class="empty">Could not load settings: ${esc(error.message)}</div>`;
+});
+</script>
+</body>
+</html>

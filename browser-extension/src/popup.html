@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="extension.css">
+  <style> body { width: 300px; } </style>
+</head>
+<body>
+  <header>
+    <span class="mark">C</span>
+    <h1>Cerebro</h1>
+    <span class="spacer"></span>
+    <span class="pill" id="status"><span class="dot"></span> checking</span>
+  </header>
+
+  <div class="section" id="context-section">
+    <h2>Live context</h2>
+    <div id="context"><p class="hint">Loading…</p></div>
+  </div>
+
+  <div class="section">
+    <h2>This page</h2>
+    <div id="page"><p class="hint">Checking…</p></div>
+  </div>
+
+  <div class="section">
+    <div class="actions">
+      <button id="toggle">Pause</button>
+      <button id="dashboard" class="primary">Dashboard</button>
+    </div>
+    <div style="margin-top:8px"><a href="#" id="options" class="hint">Extension settings →</a></div>
+  </div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

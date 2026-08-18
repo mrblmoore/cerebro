@@ -3,6 +3,9 @@ config.json
 .env
 credentials.json
 
+# Cerebro runtime data (database, logs, audio, vectors)
+data/
+
 # Database and cache
 *.db
 backend_data.db

@@ -1,119 +1,126 @@
-# Cerebrus MVP
+# Cerebro
 
-Enterprise-grade personal operational copilot for technical support workflows.
+A local-first operational copilot for technical support. Cerebro follows the case
+you are working on, keeps the relevant knowledge one search away, and — if you
+connect an AI model — drafts your case notes for you.
 
-## Architecture
+Everything runs on your machine: your database, your documents, your audio.
 
-The MVP is structured into three main components:
+---
 
-### Backend (`/backend`)
-- **FastAPI** application serving as the core API
-- **PostgreSQL** for persistent storage (cases, events, context state)
-- **Qdrant** vector database for semantic search
-- **Services**: Context Engine, RAG Pipeline, LLM Service, Screenpipe Client
+## Install
 
-### Desktop Agent (`/desktop`)
-- **Python** agent that communicates with the backend
-- Monitors for desktop activity and events
-- Integrates with Screenpipe for activity tracking
-- (Production: Tauri + React for native desktop app)
+**Windows** — download or clone the repository, then double-click **`setup.bat`**.
 
-### Browser Extension (`/browser-extension`)
-- Detects Salesforce/CRM pages
-- Extracts case IDs and context
-- Sends events to backend API
-
-## Quick Start
-
-### 1. Setup Backend
+**macOS / Linux**
 
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-pip install -r requirements.txt
+git clone https://github.com/mrblmoore/cerebro.git
+cd cerebro
+./setup.sh
 ```
 
-### 2. Setup Database
+That is the whole install. It checks your Python, builds a virtual environment,
+installs dependencies and prepares the database — nothing else to configure,
+no database server to stand up, no API key required.
+
+## Run
+
+| | Windows | macOS / Linux |
+|---|---|---|
+| Start Cerebro | double-click `start.bat` | `./cerebro.sh start` |
+| Desktop widget | double-click `widget.bat` | `./cerebro.sh widget` |
+| Check the install | `cerebro.bat doctor` | `./cerebro.sh doctor` |
+
+The first start opens a **setup wizard** in your browser. It takes about a
+minute, and every answer can be changed later under **Settings**.
+
+Prefer a menu? Run `cerebro.bat` (or `./cerebro.sh`) with no arguments.
+
+---
+
+## What you get
+
+**Dashboard** — `http://localhost:8000`
+Live context, recent events, knowledge search, system status and the activity log.
+
+**Desktop widget**
+A small always-on-top panel with your current case, the suggested next action and
+instant knowledge search. Drag it anywhere, snap it to an edge, collapse it to a
+single strip while you work, or set it to start with Windows.
+
+**Browser extension**
+Detects Salesforce, ServiceNow and Zendesk cases and keeps Cerebro in sync.
+Load it from `browser-extension/src` — see [docs/INSTALL.md](docs/INSTALL.md).
+
+**API** — `http://localhost:8000/docs`
+Everything the UI does is a documented REST endpoint.
+
+---
+
+## Optional extras
+
+Cerebro works fully without any of these. Add them when you want them:
+
+| Extra | What it adds | How |
+|---|---|---|
+| AI provider | Case summaries, troubleshooting steps | Settings → AI Provider. A local [Ollama](https://ollama.com) model needs no API key. |
+| OpenAI SDK | Required for the OpenAI provider | `pip install -r backend/requirements-ai.txt` |
+| PostgreSQL | Shared database for a team | `docker compose up -d postgres`, then Settings → Database |
+| Qdrant | Vector search at scale | `docker compose up -d qdrant`, then Settings → Knowledge Search |
+| Call transcription | Records and transcribes calls locally | `pip install -r desktop/requirements-audio.txt` |
+| Screenpipe | Continuous desktop capture | Settings → Desktop Capture |
+
+---
+
+## How it works
+
+```
+Browser extension ─┐
+Desktop agent    ──┼──▶  Events  ──▶  Context Engine  ──▶  Context state
+Audio recorder   ─┘                        │
+                                           ├──▶  Knowledge search (RAG)
+                                           ├──▶  AI summaries (optional)
+                                           └──▶  Suggestions
+                                                    │
+                                     Dashboard  ◀───┴───▶  Desktop widget
+```
+
+Events describe what happened (`CRM_CASE_OPENED`, `CALL_STARTED`,
+`REMOTE_SESSION_CONNECTED`, …). The Context Engine folds them into a single
+state — which case, which customer, on a call or not — and every surface reads
+from that one state.
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | Full install guide, per platform, plus troubleshooting |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting and what it does |
+| [docs/WIDGET.md](docs/WIDGET.md) | The desktop widget in detail |
+| [docs/SCHEMA.md](docs/SCHEMA.md) | Database schema |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration patterns |
+| [docs/LOGGING.md](docs/LOGGING.md) | Log format and locations |
+| [MVP_SUMMARY.md](MVP_SUMMARY.md) | Architecture and roadmap |
+
+---
+
+## Something not working?
 
 ```bash
-# Requires PostgreSQL running
-# Update DATABASE_URL in .env
-
-cp .env.example .env
-# Edit .env with your configuration
+./cerebro.sh doctor        # or: cerebro.bat doctor
 ```
 
-### 3. Start Backend
+`doctor` checks your Python, the virtual environment, every dependency and each
+running service, then tells you exactly what to do about anything it finds.
 
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
+---
 
-### 4. Install Screenpipe
+## Privacy
 
-Download and run Screenpipe: https://github.com/mediar-ai/screenpipe
-
-### 5. Start Desktop Agent
-
-```bash
-cd desktop
-python cerebrus_agent.py
-```
-
-## API Endpoints
-
-- `POST /api/events/` - Report a new event
-- `GET /api/context/current` - Get current context state
-- `POST /api/cases/` - Create a new case
-- `GET /api/knowledge/search?query=...` - Search knowledge base
-
-## Event Types
-
-- `CRM_CASE_OPENED` - Salesforce case detected
-- `CALL_STARTED` - Teams/Zoom call started
-- `CALL_ENDED` - Call ended
-- `REMOTE_SESSION_CONNECTED` - Bomgar/RDP session started
-- `REMOTE_SESSION_DISCONNECTED` - Remote session ended
-- `APPLICATION_CHANGED` - Active window/URL changed
-
-## Context State
-
-The system maintains a real-time context state:
-
-```json
-{
-  "crm_case": "12345",
-  "customer": "Contoso",
-  "call_active": true,
-  "remote_session_active": false,
-  "active_application": "Salesforce",
-  "active_url": "https://company.lightning.force.com/..."
-}
-```
-
-## Phase 2 & 3 Roadmap
-
-- **Phase 2**: Personal memory engine, similar case matching, writing style adaptation
-- **Phase 3**: Proactive recommendations, automated CRM updates, workflow execution
-
-## Key Components
-
-### Context Engine
-Event-driven state machine that tracks current case, call status, and remote sessions.
-
-### RAG Pipeline
-Semantic search over knowledge documents (RightAnswers, SharePoint, etc) using Qdrant vector database.
-
-### LLM Service
-Generates case summaries, troubleshooting steps, and recommendations using OpenAI API.
-
-### Event Detector
-Rule-based detection of CRM events, call state, and application changes.
-
-## Security Notes
-
-- Screenpipe runs locally; no data sent to external servers
-- Browser extension uses local-only API calls
-- All context stored in PostgreSQL (local or internal network)
-- Implement proper access controls before production deployment
+Cerebro is local-first by design. The database, indexed documents, logs and any
+recordings stay in `data/` inside the project folder. Nothing is sent anywhere
+unless you configure a cloud AI provider — and choosing Ollama keeps even that
+on your machine.

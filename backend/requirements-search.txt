@@ -1,0 +1,5 @@
+# Optional: Qdrant vector database backend.
+# Cerebro ships with a built-in vector store, so this is only needed if you
+# want to scale knowledge search beyond a single machine.
+#   pip install -r backend/requirements-search.txt
+qdrant-client>=1.9,<2.0

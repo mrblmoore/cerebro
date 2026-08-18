@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cerebro · Setup</title>
+  <link rel="stylesheet" href="/static/cerebro.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+  <div id="topbar"></div>
+
+  <div class="wrap narrow">
+    <div class="steps" id="steps"></div>
+    <div id="step"></div>
+    <div class="wizard-nav">
+      <button id="back" class="ghost">← Back</button>
+      <div class="spacer"></div>
+      <button id="skip" class="ghost">Skip</button>
+      <button id="next" class="primary">Continue →</button>
+    </div>
+  </div>
+
+<script src="/static/cerebro.js"></script>
+<script>
+document.getElementById('topbar').innerHTML = topbar('/setup');
+
+let config = {};     // field key -> current value
+let fieldMeta = {};  // field key -> descriptor
+const pending = {};  // changes staged by the wizard
+let index = 0;
+
+const STEPS = [
+  { id: 'welcome',   title: 'Welcome to Cerebro',  render: renderWelcome,   skippable: false },
+  { id: 'database',  title: 'Choose storage',      render: renderDatabase,  skippable: false },
+  { id: 'ai',        title: 'Connect an AI model', render: renderAI,        skippable: true },
+  { id: 'knowledge', title: 'Knowledge search',    render: renderKnowledge, skippable: true },
+  { id: 'desktop',   title: 'Desktop & browser',   render: renderDesktop,   skippable: true },
+  { id: 'done',      title: 'You are set up',      render: renderDone,      skippable: false },
+];
+
+function head(eyebrow, title, description) {
+  return `<div class="step-head">
+    <div class="eyebrow">${esc(eyebrow)}</div>
+    <h1>${esc(title)}</h1>
+    <p>${description}</p>
+  </div>`;
+}
+
+function choice(name, value, title, desc, tag) {
+  const checked = pending[name] !== undefined ? pending[name] : config[name];
+  const on = String(checked) === value;
+  return `<label class="choice" data-selected="${on}">
+    <input type="radio" name="${esc(name)}" value="${esc(value)}" ${on ? 'checked' : ''}>
+    <span>
+      <span class="title">${esc(title)}${tag ? ` <span class="tag">${esc(tag)}</span>` : ''}</span>
+      <span class="desc">${desc}</span>
+    </span>
+  </label>`;
+}
+
+function textField(key, extra = '') {
+  const meta = fieldMeta[key] || {};
+  const value = pending[key] !== undefined ? pending[key] : (config[key] ?? '');
+  const type = meta.type === 'password' ? 'password' : (meta.type === 'number' ? 'number' : 'text');
+  return `<label class="field" ${extra}>
+    <span class="name">${esc(meta.label || key)}</span>
+    ${meta.help ? `<span class="help">${esc(meta.help)}</span>` : ''}
+    <input type="${type}" data-key="${esc(key)}" value="${esc(value)}"
+           placeholder="${esc(meta.placeholder || '')}" autocomplete="off">
+  </label>`;
+}
+
+// ------------------------------------------------------------------- steps
+async function renderWelcome() {
+  const el = document.getElementById('step');
+  el.innerHTML = head('Step 1 of 6', 'Welcome to Cerebro',
+    'Cerebro runs entirely on this machine. This wizard takes about a minute — every ' +
+    'answer can be changed later in <a href="/settings">Settings</a>.') +
+    `<div class="card"><header><h2>System check</h2>
+       <button class="btn-sm ghost" id="recheck">Re-run</button></header>
+     <div id="checks"><div class="empty">Running checks…</div></div></div>`;
+
+  document.getElementById('recheck').onclick = loadChecks;
+  loadChecks();
+}
+
+async function loadChecks() {
+  const host = document.getElementById('checks');
+  try {
+    const data = await API.get('/api/system/diagnostics');
+    host.innerHTML = data.checks.map((check) => {
+      const optional = check.optional_package;
+      const icon = optional ? (check.installed ? '✅' : '○') : (check.ok ? '✅' : (check.required ? '❌' : '⚠️'));
+      return `<div class="check">
+        <span class="status">${icon}</span>
+        <span>
+          <div class="label">${esc(check.label)}</div>
+          <div class="detail">${esc(check.detail || '')}</div>
+        </span>
+      </div>`;
+    }).join('');
+  } catch (error) {
+    host.innerHTML = `<div class="empty">Could not reach the API: ${esc(error.message)}</div>`;
+  }
+}
+
+function renderDatabase() {
+  const url = pending.DATABASE_URL !== undefined ? pending.DATABASE_URL : config.DATABASE_URL;
+  const isSqlite = String(url || '').startsWith('sqlite');
+  document.getElementById('step').innerHTML = head('Step 2 of 6', 'Where should Cerebro store data?',
+    'Cases, events and context history live here. The built-in option needs nothing installed.') +
+    `<div id="db-choices">
+      ${choice('__db', 'sqlite', 'Built-in database (SQLite)',
+        'Zero setup — one file under <code class="inline">data/cerebro.db</code>. Ideal for a single workstation.',
+        'Recommended')}
+      ${choice('__db', 'external', 'PostgreSQL or another server',
+        'Use when several people or machines share one Cerebro instance.')}
+    </div>
+    <div id="db-url" class="${isSqlite ? 'hidden' : ''}" style="margin-top:16px">
+      ${textField('DATABASE_URL')}
+      <div class="callout warn"><span class="icon">⚠️</span>
+        <span>PostgreSQL also needs its driver:
+          <code class="inline">pip install -r backend/requirements-postgres.txt</code></span></div>
+      <div class="actions"><button id="test-db" class="btn-sm">Test connection</button></div>
+    </div>`;
+
+  // Pre-select the radio matching the saved URL.
+  const target = isSqlite ? 'sqlite' : 'external';
+  document.querySelectorAll('input[name="__db"]').forEach((input) => {
+    input.checked = input.value === target;
+    input.closest('.choice').dataset.selected = input.checked;
+  });
+
+  document.getElementById('db-choices').onchange = (event) => {
+    const external = event.target.value === 'external';
+    document.getElementById('db-url').classList.toggle('hidden', !external);
+    if (!external) pending.DATABASE_URL = '';  // empty resets to the SQLite default
+    else if (!pending.DATABASE_URL) pending.DATABASE_URL = 'postgresql+psycopg://user:password@localhost:5432/cerebro';
+    syncChoices();
+    const input = document.querySelector('[data-key="DATABASE_URL"]');
+    if (input) input.value = pending.DATABASE_URL || '';
+  };
+
+  const test = document.getElementById('test-db');
+  if (test) test.onclick = () => runTest('database', test);
+}
+
+function renderAI() {
+  const provider = pending.LLM_PROVIDER !== undefined ? pending.LLM_PROVIDER : config.LLM_PROVIDER;
+  document.getElementById('step').innerHTML = head('Step 3 of 6', 'Connect an AI model',
+    'Optional. Cerebro tracks context, events and knowledge without it — AI only adds ' +
+    'case summaries and troubleshooting suggestions.') +
+    `<div id="ai-choices">
+      ${choice('LLM_PROVIDER', 'none', 'Not now',
+        'Everything except generated summaries works. You can add a provider any time.')}
+      ${choice('LLM_PROVIDER', 'ollama', 'Ollama — local models',
+        'Runs on your machine, nothing leaves it. Needs <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> installed.',
+        'Most private')}
+      ${choice('LLM_PROVIDER', 'openai', 'OpenAI or compatible API',
+        'Best quality. Requires an API key; prompts are sent to the provider.')}
+      ${choice('LLM_PROVIDER', 'qwen', 'Qwen', 'Any Qwen-compatible chat completions endpoint.')}
+    </div>
+    <div id="ai-fields" style="margin-top:18px"></div>`;
+
+  document.getElementById('ai-choices').onchange = (event) => {
+    pending.LLM_PROVIDER = event.target.value;
+    syncChoices();
+    renderAIFields();
+  };
+  renderAIFields(provider);
+}
+
+function renderAIFields(fallback) {
+  const provider = pending.LLM_PROVIDER !== undefined ? pending.LLM_PROVIDER : (fallback || config.LLM_PROVIDER);
+  const host = document.getElementById('ai-fields');
+  if (!host) return;
+
+  const groups = {
+    none: '',
+    openai: textField('OPENAI_API_KEY') + textField('OPENAI_MODEL'),
+    ollama: textField('OLLAMA_URL') + textField('OLLAMA_MODEL'),
+    qwen: textField('QWEN_API_URL') + textField('QWEN_API_KEY') + textField('QWEN_MODEL'),
+  };
+
+  host.innerHTML = groups[provider] || '';
+  if (provider !== 'none') {
+    host.innerHTML += `<div class="actions"><button id="test-ai" class="btn-sm">Save & test</button></div>`;
+    document.getElementById('test-ai').onclick = async (event) => {
+      await saveStaged();
+      runTest('ai', event.target);
+    };
+  }
+  bindInputs();
+}
+
+function renderKnowledge() {
+  document.getElementById('step').innerHTML = head('Step 4 of 6', 'Knowledge search',
+    'Cerebro searches your indexed documents to surface the right article while you work.') +
+    `<div id="kb-choices">
+      ${choice('VECTOR_BACKEND', 'local', 'Built-in vector store',
+        'No extra services. Vectors are stored next to your documents.', 'Recommended')}
+      ${choice('VECTOR_BACKEND', 'qdrant', 'Qdrant',
+        'For large document sets or a shared index. Needs a running Qdrant server.')}
+    </div>
+    <div id="kb-fields" style="margin-top:18px"></div>`;
+
+  document.getElementById('kb-choices').onchange = (event) => {
+    pending.VECTOR_BACKEND = event.target.value;
+    syncChoices();
+    renderKnowledgeFields();
+  };
+  renderKnowledgeFields();
+}
+
+function renderKnowledgeFields() {
+  const backend = pending.VECTOR_BACKEND !== undefined ? pending.VECTOR_BACKEND : config.VECTOR_BACKEND;
+  const host = document.getElementById('kb-fields');
+  if (!host) return;
+  const meta = fieldMeta.EMBEDDING_PROVIDER || {};
+  const value = pending.EMBEDDING_PROVIDER !== undefined ? pending.EMBEDDING_PROVIDER : config.EMBEDDING_PROVIDER;
+  host.innerHTML = (backend === 'qdrant' ? textField('QDRANT_URL') + textField('QDRANT_API_KEY') : '') +
+    `<label class="field">
+      <span class="name">${esc(meta.label || 'Embeddings')}</span>
+      <span class="help">${esc(meta.help || '')}</span>
+      <select data-key="EMBEDDING_PROVIDER">
+        ${(meta.options || []).map((option) => `
+          <option value="${esc(option.value)}"${option.value === value ? ' selected' : ''}>${esc(option.label)}</option>`).join('')}
+      </select>
+    </label>`;
+  bindInputs();
+}
+
+function renderDesktop() {
+  const origin = window.location.origin;
+  document.getElementById('step').innerHTML = head('Step 5 of 6', 'Desktop widget & browser extension',
+    'These two optional pieces are what make Cerebro feel ambient — a floating panel on your ' +
+    'desktop and automatic case detection in the browser.') +
+    `<div class="card" style="margin-bottom:14px"><header><h2>🪟 Desktop widget</h2></header>
+      <div class="body">
+        <p>An always-on-top panel showing live context, suggestions and knowledge search.
+           It only needs Python — no extra install.</p>
+        <p><strong>Windows:</strong> double-click <code class="inline">widget.bat</code> in the project folder.<br>
+           <strong>macOS / Linux:</strong> run <code class="inline">python cerebro.py widget</code></p>
+      </div></div>
+
+    <div class="card" style="margin-bottom:14px"><header><h2>🌐 Browser extension</h2></header>
+      <div class="body">
+        <p>Detects Salesforce and ServiceNow cases and reports them to Cerebro automatically.</p>
+        <ol style="margin:0 0 12px 18px; padding:0; color:var(--text-dim); font-size:13px">
+          <li>Open <code class="inline">chrome://extensions</code> (or <code class="inline">edge://extensions</code>)</li>
+          <li>Turn on <strong>Developer mode</strong></li>
+          <li>Choose <strong>Load unpacked</strong> and select <code class="inline">browser-extension/src</code></li>
+          <li>Open the extension and confirm the API URL is <code class="inline">${esc(origin)}</code></li>
+        </ol>
+      </div></div>
+
+    <div class="card"><header><h2>🖥️ Screenpipe (optional)</h2></header>
+      <div class="body">
+        <p>Continuous screen and window capture for richer context. Leave this off unless you
+           have Screenpipe installed.</p>
+        <label class="switch">
+          <input type="checkbox" data-key="SCREENPIPE_ENABLED"
+            ${String(pending.SCREENPIPE_ENABLED ?? config.SCREENPIPE_ENABLED) === 'true' ? 'checked' : ''}>
+          <span class="track"></span><span>Enable Screenpipe integration</span>
+        </label>
+      </div></div>`;
+  bindInputs();
+}
+
+function renderDone() {
+  const provider = pending.LLM_PROVIDER ?? config.LLM_PROVIDER;
+  const backend = pending.VECTOR_BACKEND ?? config.VECTOR_BACKEND;
+  const url = pending.DATABASE_URL ?? config.DATABASE_URL;
+
+  document.getElementById('step').innerHTML = head('Step 6 of 6', 'You are set up',
+    'Cerebro is configured and running. Here is what you chose.') +
+    `<div class="card" style="margin-bottom:16px">
+      <ul class="list">
+        <li><span class="icon">🗄️</span><span class="main">
+          <div class="title">Storage</div>
+          <div class="meta">${String(url || '').startsWith('sqlite') || !url ? 'Built-in SQLite database' : esc(url.split('@').pop())}</div>
+        </span></li>
+        <li><span class="icon">🧠</span><span class="main">
+          <div class="title">AI provider</div>
+          <div class="meta">${provider === 'none' ? 'Disabled — add one later in Settings' : esc(provider)}</div>
+        </span></li>
+        <li><span class="icon">📚</span><span class="main">
+          <div class="title">Knowledge search</div>
+          <div class="meta">${backend === 'qdrant' ? 'Qdrant' : 'Built-in vector store'}</div>
+        </span></li>
+      </ul>
+    </div>
+    <div class="callout"><span class="icon">💡</span>
+      <span>Next: index a few knowledge articles from the dashboard, then launch the desktop
+      widget so context follows you around.</span></div>`;
+
+  document.getElementById('next').textContent = 'Open dashboard →';
+}
+
+// ------------------------------------------------------------------ wiring
+function syncChoices() {
+  document.querySelectorAll('.choice').forEach((choiceEl) => {
+    const input = choiceEl.querySelector('input');
+    choiceEl.dataset.selected = input.checked;
+  });
+}
+
+function bindInputs() {
+  document.querySelectorAll('[data-key]').forEach((input) => {
+    input.oninput = input.onchange = () => {
+      pending[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.value;
+    };
+  });
+}
+
+async function runTest(target, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Testing…';
+  try {
+    const result = await API.post(`/api/system/test/${target}`);
+    toast(result.detail || (result.ok ? 'Connection OK' : 'Failed'), result.ok ? 'ok' : 'err', 6000);
+  } catch (error) {
+    toast(error.message, 'err', 6000);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function saveStaged() {
+  const changes = { ...pending };
+  delete changes.__db;
+  if (!Object.keys(changes).length) return true;
+  try {
+    const result = await API.put('/api/system/settings', changes);
+    Object.assign(config, changes);
+    for (const key of Object.keys(changes)) delete pending[key];
+    if (result.restart_required) {
+      toast('Saved. Restart Cerebro for the database change to take effect.', 'ok', 7000);
+    }
+    return true;
+  } catch (error) {
+    toast(`Could not save: ${error.message}`, 'err', 7000);
+    return false;
+  }
+}
+
+function renderSteps() {
+  document.getElementById('steps').innerHTML = STEPS.map((_, i) =>
+    `<div class="step ${i < index ? 'done' : ''} ${i === index ? 'active' : ''}"></div>`).join('');
+}
+
+async function show(newIndex) {
+  index = Math.max(0, Math.min(STEPS.length - 1, newIndex));
+  renderSteps();
+  document.getElementById('back').classList.toggle('hidden', index === 0);
+  document.getElementById('skip').classList.toggle('hidden', !STEPS[index].skippable);
+  document.getElementById('next').textContent =
+    index === STEPS.length - 1 ? 'Open dashboard →' : 'Continue →';
+  await STEPS[index].render();
+  bindInputs();
+  syncChoices();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+document.getElementById('back').onclick = () => show(index - 1);
+document.getElementById('skip').onclick = () => show(index + 1);
+document.getElementById('next').onclick = async () => {
+  if (!(await saveStaged())) return;
+  if (index === STEPS.length - 1) {
+    await API.post('/api/system/setup/complete').catch(() => {});
+    window.location.href = '/';
+    return;
+  }
+  show(index + 1);
+};
+
+(async function init() {
+  refreshConnectionPill();
+  try {
+    const described = await API.get('/api/system/settings');
+    described.fields.forEach((field) => {
+      fieldMeta[field.key] = field;
+      config[field.key] = field.value;
+    });
+  } catch (error) {
+    toast(`Could not load settings: ${error.message}`, 'err', 8000);
+  }
+  show(0);
+})();
+</script>
+</body>
+</html>
