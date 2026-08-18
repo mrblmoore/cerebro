@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Cerebrus Browser Extension",
+  "version": "0.1.0",
+  "description": "Desktop activity monitoring and context detection for Cerebrus",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "webRequest",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*/",
+    "http://*/"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "images/icon-16.png",
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  }
+}

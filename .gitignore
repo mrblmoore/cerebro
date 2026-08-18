@@ -1,0 +1,39 @@
+﻿# Sensitive data
+config.json
+.env
+credentials.json
+
+# Database and cache
+*.db
+backend_data.db
+*.sqlite
+cache/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Node modules
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# User data
+uploads/
+screenshots/
+exports/
