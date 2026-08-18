@@ -40,7 +40,8 @@ let active = 'general';
 const pending = {};
 
 const TEST_TARGETS = { database: 'database', ai: 'ai', knowledge: 'knowledge',
-                       enterprise: 'enterprise', documents: 'documents', desktop: 'screenpipe' };
+                       enterprise: 'enterprise', documents: 'documents', desktop: 'screenpipe',
+                       copilot: 'copilot', capture: 'activity' };
 
 function isDirty() { return Object.keys(pending).length > 0; }
 
@@ -105,6 +106,7 @@ function renderPanel() {
   const testTarget = TEST_TARGETS[active];
 
   document.getElementById('panel').innerHTML = `
+    ${active === 'copilot' ? '<div id="copilot-guide"></div>' : ''}
     <div class="card">
       <header>
         <span style="font-size:16px">${group.icon}</span>
@@ -155,6 +157,8 @@ function renderPanel() {
     } finally { test.disabled = false; test.textContent = original; }
   };
 
+  if (active === 'copilot') renderCopilotGuide();
+
   const reindex = document.getElementById('reindex');
   if (reindex) reindex.onclick = async () => {
     reindex.disabled = true;
@@ -164,6 +168,116 @@ function renderPanel() {
     } catch (error) { toast(error.message, 'err'); }
     finally { reindex.disabled = false; }
   };
+}
+
+/**
+ * The Copilot setup guide: numbered steps, the instructions to copy, and the
+ * tools and knowledge to add. Written for someone who has never opened Copilot
+ * Studio before, so every step says exactly what to click.
+ */
+async function renderCopilotGuide() {
+  const host = document.getElementById('copilot-guide');
+  if (!host) return;
+
+  let guide;
+  try {
+    guide = await API.get('/api/copilot/guide');
+  } catch (error) {
+    host.innerHTML = `<div class="callout warn"><span class="icon">⚠️</span>
+      <span>Could not load the setup guide: ${esc(error.message)}</span></div>`;
+    return;
+  }
+
+  const steps = guide.steps.map((step, index) => `
+    <li style="margin-bottom:14px">
+      <div style="font-weight:600">${index + 1}. ${esc(step.title)}</div>
+      <div style="color:var(--text-dim);font-size:13px">${bold(step.body)}</div>
+      ${step.detail ? `<div style="color:var(--text-faint);font-size:12px;margin-top:2px">
+        ${bold(step.detail)}</div>` : ''}
+    </li>`).join('');
+
+  const tools = guide.tools.map((tool) => `
+    <li style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div><strong>${esc(tool.name)}</strong>
+        ${tool.required
+          ? '<span class="pill accent" style="margin-left:6px">required</span>'
+          : '<span class="pill" style="margin-left:6px">optional</span>'}</div>
+      <div style="color:var(--text-dim);font-size:12.5px">${esc(tool.why)}</div>
+      <div style="color:var(--text-faint);font-size:12px;margin-top:3px">
+        Actions: ${tool.actions.map((a) => `<code class="inline">${esc(a)}</code>`).join(' ')}
+      </div>
+    </li>`).join('');
+
+  const knowledge = guide.knowledge.map((item) => `
+    <li style="padding:6px 0">
+      <strong>${esc(item.name)}</strong>
+      <div style="color:var(--text-dim);font-size:12.5px">${esc(item.why)}</div>
+    </li>`).join('');
+
+  host.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <header><span style="font-size:16px">🤝</span><h2>Setting this up</h2></header>
+      <div class="body">
+        <p>This is optional — Cerebro works completely on its own. Connecting a
+           Copilot Studio agent lets you reach it from Teams or your phone.</p>
+        <ol style="margin:0;padding-left:18px;list-style:none">${steps}</ol>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <header><h2>Instructions to paste into your agent</h2>
+        <button class="btn-sm" id="copy-instructions">Copy</button>
+      </header>
+      <div class="body">
+        <p>In Copilot Studio, open your agent and paste this into the
+           <strong>Instructions</strong> box, replacing whatever is there.</p>
+        <textarea id="agent-instructions" readonly rows="12"
+                  style="font-size:12px">${esc(guide.instructions)}</textarea>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <header><h2>Tools to add</h2></header>
+      <div class="body">
+        <p>In Copilot Studio these are under <strong>Tools</strong>. Add the
+           required one first — the rest depend on what you want the agent to do.</p>
+        <ul class="list" style="margin:0;padding:0;list-style:none">${tools}</ul>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <header><h2>Knowledge to add</h2>
+        <a class="btn-sm" href="/api/copilot/knowledge-file"
+           download="cerebro-agent-knowledge.md">Download the file</a>
+      </header>
+      <div class="body">
+        <ul style="margin:0;padding-left:18px;list-style:none">${knowledge}</ul>
+        <p style="margin-top:10px;font-size:12.5px">Upload the downloaded file
+           under <strong>Knowledge → Files</strong> so the agent knows how to read
+           what Cerebro shares.</p>
+      </div>
+    </div>`;
+
+  document.getElementById('copy-instructions').onclick = async () => {
+    const text = document.getElementById('agent-instructions').value;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Instructions copied — paste them into your agent.', 'ok');
+    } catch {
+      // Clipboard access can be refused; selecting the text still lets them copy.
+      const field = document.getElementById('agent-instructions');
+      field.focus();
+      field.select();
+      toast('Press Ctrl+C to copy the selected text.', 'ok', 6000);
+    }
+  };
+}
+
+/** Render **bold** and *italic* markers in guide copy, escaping everything else. */
+function bold(text) {
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+?)\*/g, '$1<em>$2</em>');
 }
 
 function renderTabs() {

@@ -26,6 +26,7 @@ _stop = threading.Event()
 #: retention run less often, counted in ticks.
 _last_nudge_scan = 0.0
 _last_retention = 0.0
+_last_copilot_sync = 0.0
 
 
 def _sweep_once() -> None:
@@ -67,11 +68,11 @@ def _scheduler_loop() -> None:
     """Drive tasks, nudges and retention on a timer."""
     import time
 
-    from app.services import nudge_service, task_service
+    from app.services import copilot_bridge, nudge_service, task_service
     from app.services.activity_service import apply_retention
 
     logger.info("scheduler", "Task scheduler started")
-    global _last_nudge_scan, _last_retention
+    global _last_nudge_scan, _last_retention, _last_copilot_sync
 
     while not _stop.is_set():
         now = time.time()
@@ -86,6 +87,12 @@ def _scheduler_loop() -> None:
             if settings.NUDGES_ENABLED and now - _last_nudge_scan > 120:
                 nudge_service.scan_for_nudges(db)
                 _last_nudge_scan = now
+
+            # Publish to, and collect commands from, the Copilot bridge.
+            if (settings.COPILOT_BRIDGE_ENABLED
+                    and now - _last_copilot_sync > max(15, settings.COPILOT_SYNC_SECONDS)):
+                copilot_bridge.sync(db)
+                _last_copilot_sync = now
 
             # Retention sweep every ~6 hours.
             if now - _last_retention > 6 * 3600:

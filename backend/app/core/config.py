@@ -142,6 +142,25 @@ class Settings(BaseSettings):
     #: Learn the user's writing voice from their sent messages and transcripts.
     STYLE_LEARNING_ENABLED: bool = True
 
+    # ------------------------------------------------- copilot studio bridge
+    #: Entirely optional. Cerebro is complete without it; this shares a slice of
+    #: what it knows with a Microsoft Copilot Studio agent, and lets that agent
+    #: ask Cerebro to do local things.
+    COPILOT_BRIDGE_ENABLED: bool = False
+    #: A OneDrive-synced folder both sides can reach. No app registration, no
+    #: token — the sync client does the crossing.
+    COPILOT_BRIDGE_DIR: str = ""
+    COPILOT_PUBLISH_CONTEXT: bool = True
+    COPILOT_PUBLISH_MEMORY: bool = True
+    COPILOT_PUBLISH_STYLE: bool = True
+    #: How many memories to share. Raw activity is never shared at any setting.
+    COPILOT_MEMORY_LIMIT: int = 100
+    COPILOT_ACCEPT_COMMANDS: bool = True
+    #: approve — anything that changes something waits for you in the widget.
+    #: auto    — Cerebro carries it out immediately.
+    COPILOT_COMMAND_MODE: str = "approve"  # approve | auto
+    COPILOT_SYNC_SECONDS: int = 45
+
     # ------------------------------------------------------------- tasks
     TASKS_ENABLED: bool = True
     #: Seconds between task-scheduler ticks.

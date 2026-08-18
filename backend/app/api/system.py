@@ -23,6 +23,7 @@ from app.services.nudge_service import NudgeService
 from app.services.style_service import StyleService
 from app.services.task_service import TaskService
 from app.services.activity_service import ActivityService
+from app.services.copilot_bridge import CopilotBridge
 from app.services.llm_service import LLMService
 from app.services.rag_service import RAGService
 from app.services.screenpipe_client import ScreenpipeClient
@@ -161,6 +162,10 @@ def diagnostics(db: Session = Depends(get_db)) -> Dict[str, Any]:
             **ActivityService(db).status(),
         },
         {
+            "id": "copilot", "label": "Microsoft Copilot bridge", "required": False,
+            **CopilotBridge(db).status(),
+        },
+        {
             "id": "screenpipe",
             "label": "Screenpipe capture",
             "required": False,
@@ -232,6 +237,10 @@ def test_connection(target: str, db: Session = Depends(get_db)) -> Dict[str, Any
         return MemoryService(db).status()
     if target == "activity":
         return ActivityService(db).status()
+    if target == "copilot":
+        from app.api.copilot import test_bridge
+
+        return test_bridge(db)
     raise HTTPException(status_code=404, detail=f"Unknown test target: {target}")
 
 

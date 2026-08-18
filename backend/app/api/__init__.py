@@ -4,6 +4,7 @@ from app.api.audio import router as audio_router
 from app.api.cases import router as cases_router
 from app.api.activity import router as activity_router
 from app.api.context import router as context_router
+from app.api.copilot import router as copilot_router
 from app.api.documents import router as documents_router
 from app.api.enterprise import router as enterprise_router
 from app.api.events import router as events_router
@@ -25,6 +26,7 @@ ROUTERS = [
     memory_router,
     style_router,
     tasks_router,
+    copilot_router,
     audio_router,
 ]
 
@@ -40,6 +42,7 @@ __all__ = [
     "memory_router",
     "style_router",
     "tasks_router",
+    "copilot_router",
     "audio_router",
     "system_router",
 ]

@@ -32,6 +32,8 @@ os.environ["MEMORY_ENABLED"] = "true"
 os.environ["STYLE_LEARNING_ENABLED"] = "true"
 os.environ["TASKS_ENABLED"] = "true"
 os.environ["NUDGES_ENABLED"] = "true"
+os.environ["COPILOT_BRIDGE_ENABLED"] = "true"
+os.environ["COPILOT_BRIDGE_DIR"] = str(Path(_TEMP_DIR) / "copilot")
 
 from app.core.database import SessionLocal, init_db  # noqa: E402
 from app.schemas.event import EventCreate  # noqa: E402
@@ -781,6 +783,217 @@ def test_nudges():
     check("Re-scan does not duplicate", second["raised"] == 0)
 
 
+# ------------------------------------------------------ copilot bridge
+def test_copilot_bridge():
+    """Publishing, command execution, and the boundaries that must hold."""
+    print("\nCopilot bridge")
+    import json as _json
+
+    from app.core.config import settings
+    from app.services.copilot_bridge import ALLOWED_COMMANDS, CopilotBridge
+
+    object.__setattr__(settings, "COPILOT_BRIDGE_ENABLED", True)
+    object.__setattr__(settings, "COPILOT_COMMAND_MODE", "auto")
+
+    folder = Path(_TEMP_DIR) / "copilot"
+    db = session()
+    bridge = CopilotBridge(db)
+
+    published = bridge.publish()
+    check("Publishes the shared files", published["ok"])
+    check("Context published", (folder / "context.json").exists())
+    check("Memory published", (folder / "memory.json").exists())
+    check("Style published", (folder / "style.json").exists())
+
+    context = _json.loads((folder / "context.json").read_text())
+    check("Context carries a freshness stamp", "generated_at" in context)
+    check("Context includes suggestions", "suggestions" in context)
+
+    memory = _json.loads((folder / "memory.json").read_text())
+    check("Memory payload has no raw activity",
+          not any(key in memory for key in ("screenshots", "keystrokes", "activity")))
+
+    # A permitted command runs.
+    commands = folder / "commands"
+    commands.mkdir(parents=True, exist_ok=True)
+    good = commands / "cmd-good.json"
+    good.write_text(_json.dumps({"action": "get_context"}), encoding="utf-8")
+    os.utime(good, (0, 0))
+    result = bridge.drain_commands()
+    check("Permitted command executed", result["executed"] == 1)
+    check("Command file archived", not good.exists())
+
+    results = list((folder / "results").glob("*.json"))
+    check("Result written back for the agent", bool(results))
+
+    # A command outside the whitelist is refused, not executed.
+    bad = commands / "cmd-bad.json"
+    bad.write_text(_json.dumps({"action": "send_email", "to": "ceo@company.com"}),
+                   encoding="utf-8")
+    os.utime(bad, (0, 0))
+    bridge.drain_commands()
+    refusal = _json.loads(
+        sorted((folder / "results").glob("*cmd-bad*"))[0].read_text())
+    check("Non-permitted command refused", refusal["ok"] is False)
+    check("Refusal explains why", "not-permitted" in refusal["error"]
+          or "Unknown" in refusal["error"])
+    check("Sending is not a permitted action", "send_email" not in ALLOWED_COMMANDS)
+
+    # Approval mode stages changes instead of doing them.
+    object.__setattr__(settings, "COPILOT_COMMAND_MODE", "approve")
+    staged = commands / "cmd-change.json"
+    staged.write_text(_json.dumps({
+        "action": "append_document", "name": "nope.docx", "text": "hi"}),
+        encoding="utf-8")
+    os.utime(staged, (0, 0))
+    bridge.drain_commands()
+    outcome = _json.loads(
+        sorted((folder / "results").glob("*cmd-change*"))[0].read_text())
+    check("Changes wait for approval in approve mode", outcome.get("staged") is True)
+
+    status = bridge.status()
+    check("Status reports the folder", status["enabled"] and status["ok"])
+    db.close()
+
+
+def test_copilot_guide():
+    """The pasteable instructions must actually describe the real contract."""
+    print("\nCopilot guide")
+    from app.services.copilot_bridge import ALLOWED_COMMANDS
+    from app.services.copilot_guide import guide
+
+    payload = guide()
+    check("Guide has steps", len(payload["steps"]) >= 5)
+    check("OneDrive is the required tool",
+          any(t["required"] and "OneDrive" in t["name"] for t in payload["tools"]))
+
+    instructions = payload["instructions"]
+    check("Instructions mention context.json", "context.json" in instructions)
+    check("Instructions mention style.json", "style.json" in instructions)
+    check("Instructions forbid sending without approval",
+          "without showing the user the draft" in instructions)
+    check("Instructions tell it not to invent desktop state",
+          "Never invent desktop state" in instructions)
+
+    # Every command the instructions advertise must really be permitted, or the
+    # agent will be told to do things Cerebro refuses.
+    advertised = {name for name in ALLOWED_COMMANDS if f'"{name}"' in instructions}
+    check("Every advertised command is permitted",
+          advertised and advertised.issubset(set(ALLOWED_COMMANDS)))
+    check("All permitted commands are documented",
+          set(ALLOWED_COMMANDS).issubset(advertised))
+
+
+def test_copilot_approval_flow():
+    """A change staged in approve mode must actually run when approved."""
+    print("\nCopilot approval flow")
+    import json as _json
+
+    import docx
+
+    from app.core.config import settings
+    from app.models.nudge import Nudge
+    from app.services.copilot_bridge import CopilotBridge
+    from app.services.document_service import DocumentService
+    from app.services.nudge_service import NudgeService
+
+    object.__setattr__(settings, "COPILOT_BRIDGE_ENABLED", True)
+    object.__setattr__(settings, "COPILOT_COMMAND_MODE", "approve")
+
+    folder = Path(_TEMP_DIR) / "approve"
+    (folder / "commands").mkdir(parents=True, exist_ok=True)
+    object.__setattr__(settings, "COPILOT_BRIDGE_DIR", str(folder))
+
+    # A tracked document with a section that is the user's.
+    document = docx.Document()
+    document.add_heading("Log", 0)
+    document.add_heading("My updates", 1)
+    document.add_paragraph("2026-08-16 — started.")
+    path = folder / "log.docx"
+    document.save(str(path))
+
+    db = session()
+    DocumentService(db).observe(str(path))
+
+    # Stub the LLM so the append can produce text.
+    import app.services.llm_service as llm_module
+
+    original_enabled = llm_module.LLMService.enabled
+    original_call = llm_module.LLMService._call_llm
+    llm_module.LLMService.enabled = property(lambda self: True)
+    llm_module.LLMService._call_llm = lambda self, prompt: "reviewed the migration."
+    try:
+        bridge = CopilotBridge(db)
+        command = {"action": "append_document", "name": "log.docx",
+                   "section": "mine", "text": "add a status line"}
+
+        # Stage via the real path: write a command file and drain.
+        cmd = folder / "commands" / "cmd-approve.json"
+        cmd.write_text(_json.dumps(command), encoding="utf-8")
+        os.utime(cmd, (0, 0))
+        bridge.drain_commands()
+
+        # The shared test DB may hold copilot_request nudges from earlier tests;
+        # take the most recent, which is the one we just staged.
+        nudge = (db.query(Nudge)
+                 .filter(Nudge.kind == "copilot_request")
+                 .order_by(Nudge.id.desc()).first())
+        check("Change staged as a nudge", nudge is not None)
+
+        # Approving the nudge must actually perform the append.
+        from app.api.tasks import act
+
+        act(nudge.id, db)
+        after = [p.text for p in docx.Document(str(path)).paragraphs]
+        check("Approved command actually ran",
+              any("reviewed the migration" in p for p in after))
+        check("Entry landed under the user's section",
+              after.index([p for p in after if "reviewed the migration" in p][0])
+              > after.index("My updates"))
+
+        # A duplicate stage does not silently vanish.
+        cmd2 = folder / "commands" / "cmd-approve-2.json"
+        cmd2.write_text(_json.dumps(command), encoding="utf-8")
+        os.utime(cmd2, (0, 0))
+        bridge.drain_commands()
+        result2 = _json.loads(
+            sorted((folder / "results").glob("*cmd-approve-2*"))[0].read_text())
+        check("Duplicate stage reports it is already pending",
+              result2.get("duplicate") is True)
+    finally:
+        llm_module.LLMService.enabled = original_enabled
+        llm_module.LLMService._call_llm = original_call
+    db.close()
+
+
+def test_copilot_memory_redaction():
+    """Memory published to the cloud folder must be redacted."""
+    print("\nCopilot memory redaction")
+    import json as _json
+
+    from app.core.config import settings
+    from app.services.copilot_bridge import CopilotBridge
+    from app.services.memory_service import MemoryService
+
+    folder = Path(_TEMP_DIR) / "redact-pub"
+    folder.mkdir(parents=True, exist_ok=True)
+    object.__setattr__(settings, "COPILOT_BRIDGE_ENABLED", True)
+    object.__setattr__(settings, "COPILOT_BRIDGE_DIR", str(folder))
+
+    db = session()
+    # A memory that (wrongly) captured a secret in its content.
+    MemoryService(db).remember(
+        "Server access", "The admin password is Hunter2 for the Contoso box.",
+        memory_type="fact")
+
+    CopilotBridge(db).publish()
+    published = _json.loads((folder / "memory.json").read_text())
+    blob = _json.dumps(published)
+    check("Secret redacted before publishing", "Hunter2" not in blob)
+    check("Memory still published", published["count"] >= 1)
+    db.close()
+
+
 # ------------------------------------------------------------- regressions
 def test_embedding_signature_matches_vector():
     """A fallback vector must be labelled with the space it actually belongs to."""
@@ -1014,6 +1227,8 @@ def main() -> int:
                   test_redaction, test_activity_capture, test_memory,
                   test_style_and_persona, test_task_parsing_and_scheduling,
                   test_document_update_task, test_nudges,
+                  test_copilot_bridge, test_copilot_guide,
+                  test_copilot_approval_flow, test_copilot_memory_redaction,
                   test_settings_store):
         try:
             suite()

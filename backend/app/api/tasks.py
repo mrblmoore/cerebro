@@ -146,18 +146,26 @@ def act(nudge_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Nudge not found")
 
     action = nudge.to_dict().get("action") or {}
-    result: Dict[str, Any] = {"handled": action.get("type", "none")}
+    action_type = action.get("type", "none")
+    result: Dict[str, Any] = {"handled": action_type}
 
-    if action.get("type") == "draft_reply" and action.get("message_id"):
+    if action_type == "draft_reply" and action.get("message_id"):
         from app.api.enterprise import DraftRequest, draft_reply
 
         try:
             result["draft"] = draft_reply(action["message_id"], DraftRequest(), db)
         except HTTPException as exc:
             result["error"] = exc.detail
-    elif action.get("type") == "summarise_case" and action.get("case_id"):
+    elif action_type == "summarise_case" and action.get("case_id"):
         result["hint"] = (f"Open case {action['case_id']} and choose Summarise, "
                           "or POST /api/cases/{id}/summarise.")
+    elif action_type == "copilot_command" and action.get("command"):
+        # A change the Copilot agent asked for, held for approval. Approving it
+        # is what runs it — without this the request was silently discarded.
+        from app.services.copilot_bridge import CopilotBridge
+
+        result["command"] = CopilotBridge(db).run_approved_command(action["command"])
+        result["ok"] = bool(result["command"].get("ok"))
 
     NudgeService(db).resolve(nudge, status="acted")
-    return {"ok": True, "result": result}
+    return {"ok": result.get("ok", True), "result": result}

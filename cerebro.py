@@ -8,6 +8,7 @@ Cerebro — one command for everything.
     python cerebro.py watch      Watch for documents you open
     python cerebro.py capture    Record activity for the second-brain memory
     python cerebro.py inbox      Import Outlook/Teams messages from the bridge folder
+    python cerebro.py copilot    Sync now with a Copilot Studio agent
     python cerebro.py doctor     Diagnose a broken install
     python cerebro.py status     Check whether Cerebro is running
     python cerebro.py stop       Stop a running Cerebro
@@ -350,6 +351,35 @@ def cmd_capture(args) -> int:
     return run(command)
 
 
+def cmd_copilot(args) -> int:
+    """Publish to, and collect commands from, the Copilot Studio bridge."""
+    if not is_running():
+        fail(f"Cerebro is not running at {api_base()}. Start it first.")
+        return 1
+
+    import urllib.error
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(f"{api_base()}/api/copilot/sync", method="POST")
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        fail(json.loads(exc.read().decode("utf-8") or "{}").get("detail", str(exc)))
+        return 1
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        fail(str(exc))
+        return 1
+
+    published = payload.get("published", {})
+    commands = payload.get("commands", {})
+    ok(f"Shared {len(published.get('written', []))} file(s) with your agent")
+    if commands.get("executed"):
+        ok(f"Carried out {commands['executed']} request(s) from the agent")
+    print(f"  {Style.dim(published.get('folder', ''))}")
+    return 0
+
+
 def cmd_inbox(args) -> int:
     """Import Outlook/Teams JSON files written by Power Automate."""
     command = [str(python_for()), str(BACKEND / "enterprise_ingest.py")]
@@ -535,6 +565,10 @@ def main() -> int:
     inbox.add_argument("--api", help="send to a Cerebro at this URL instead of "
                                      "the local database")
     inbox.set_defaults(func=cmd_inbox)
+
+    subparsers.add_parser(
+        "copilot", help="sync now with the Copilot Studio agent"
+    ).set_defaults(func=cmd_copilot)
 
     subparsers.add_parser("doctor", help="diagnose problems").set_defaults(func=cmd_doctor)
     subparsers.add_parser("status", help="show whether Cerebro is running").set_defaults(func=cmd_status)

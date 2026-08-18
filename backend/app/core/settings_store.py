@@ -115,6 +115,14 @@ GROUPS = [
         "description": "Tasks Cerebro runs for you, and the nudges it raises.",
     },
     {
+        "id": "copilot",
+        "title": "Microsoft Copilot",
+        "icon": "🤝",
+        "description": "Optional. Share what Cerebro knows with a Copilot Studio "
+                       "agent, so you can reach it from Teams or your phone. "
+                       "Cerebro works fully without this.",
+    },
+    {
         "id": "capture",
         "title": "Activity Capture",
         "icon": "👁️",
@@ -279,6 +287,38 @@ FIELDS: List[Field] = [
           type="bool"),
     Field("TASK_TICK_SECONDS", "Scheduler interval (s)", "secretary",
           type="number", advanced=True),
+
+    # Microsoft Copilot bridge
+    Field("COPILOT_BRIDGE_ENABLED", "Connect a Copilot Studio agent", "copilot",
+          "Shares a folder with your agent so it can see what you're working on.",
+          type="bool"),
+    Field("COPILOT_BRIDGE_DIR", "Shared folder", "copilot",
+          "A folder inside OneDrive. Create one called Cerebro and point here — "
+          "your agent reads it, so it must be somewhere OneDrive syncs.",
+          placeholder=r"C:\Users\you\OneDrive - Contoso\Cerebro\copilot",
+          show_if=("COPILOT_BRIDGE_ENABLED", [True])),
+    Field("COPILOT_PUBLISH_CONTEXT", "Share what I'm working on", "copilot",
+          "Current case, customer, whether you're on a call, documents you have open.",
+          type="bool", show_if=("COPILOT_BRIDGE_ENABLED", [True])),
+    Field("COPILOT_PUBLISH_MEMORY", "Share what Cerebro has learned", "copilot",
+          "Distilled facts only. Screenshots and typed text never leave this machine.",
+          type="bool", show_if=("COPILOT_BRIDGE_ENABLED", [True])),
+    Field("COPILOT_PUBLISH_STYLE", "Share my writing voice", "copilot",
+          "So the agent drafts in your voice too, not a generic one.",
+          type="bool", show_if=("COPILOT_BRIDGE_ENABLED", [True])),
+    Field("COPILOT_ACCEPT_COMMANDS", "Let the agent ask Cerebro to do things", "copilot",
+          "Local actions only — search, read a document, add to your log. It can "
+          "never send mail or messages through Cerebro.",
+          type="bool", show_if=("COPILOT_BRIDGE_ENABLED", [True])),
+    Field("COPILOT_COMMAND_MODE", "When the agent asks for a change", "copilot",
+          type="select", options=[
+              {"value": "approve", "label": "Ask me first (recommended)"},
+              {"value": "auto", "label": "Just do it"},
+          ], show_if=("COPILOT_BRIDGE_ENABLED", [True])),
+    Field("COPILOT_SYNC_SECONDS", "Update the folder every (seconds)", "copilot",
+          type="number", advanced=True, show_if=("COPILOT_BRIDGE_ENABLED", [True])),
+    Field("COPILOT_MEMORY_LIMIT", "Memories to share", "copilot",
+          type="number", advanced=True, show_if=("COPILOT_BRIDGE_ENABLED", [True])),
 
     # Activity capture
     Field("ACTIVITY_CAPTURE_ENABLED", "Enable activity capture", "capture",

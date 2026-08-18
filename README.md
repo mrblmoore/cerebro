@@ -74,6 +74,12 @@ SharePoint files, via the locally synced copy — so you can ask about them. It
 can edit Word and Excel too, with a dry run first and a backup every time.
 See [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
 
+**Microsoft Copilot (optional)**
+Connect a Copilot Studio agent and reach Cerebro from Teams or your phone. The
+two sides share a OneDrive folder — no code package, no app registration. Cerebro
+stays the primary assistant; this is an addition, not a replacement. See
+[docs/COPILOT_STUDIO.md](docs/COPILOT_STUDIO.md).
+
 **Second brain & secretary**
 Remembers how you solved things and recalls it when drafting; learns your
 writing voice; takes plain-language tasks ("keep this doc updated daily under my
@@ -139,6 +145,7 @@ from that one state.
 | [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md) | Outlook and Teams integration, flow by flow |
 | [docs/DOCUMENTS.md](docs/DOCUMENTS.md) | Reading and editing Word, Excel and PDF |
 | [docs/SECOND_BRAIN.md](docs/SECOND_BRAIN.md) | Memory, writing voice, tasks, nudges, activity capture |
+| [docs/COPILOT_STUDIO.md](docs/COPILOT_STUDIO.md) | Connecting a Microsoft Copilot Studio agent |
 | [docs/PACKAGING.md](docs/PACKAGING.md) | Building the Windows installer |
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Database schema |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration patterns |

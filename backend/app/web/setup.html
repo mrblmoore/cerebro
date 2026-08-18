@@ -36,6 +36,7 @@ const STEPS = [
   { id: 'ai',        title: 'Connect an AI model', render: renderAI,        skippable: true },
   { id: 'knowledge', title: 'Knowledge search',    render: renderKnowledge, skippable: true },
   { id: 'desktop',   title: 'Desktop & browser',   render: renderDesktop,   skippable: true },
+  { id: 'copilot',   title: 'Microsoft Copilot',   render: renderCopilot,   skippable: true },
   { id: 'done',      title: 'You are set up',      render: renderDone,      skippable: false },
 ];
 
@@ -74,7 +75,7 @@ function textField(key, extra = '') {
 // ------------------------------------------------------------------- steps
 async function renderWelcome() {
   const el = document.getElementById('step');
-  el.innerHTML = head('Step 1 of 6', 'Welcome to Cerebro',
+  el.innerHTML = head('Step 1 of 7', 'Welcome to Cerebro',
     'Cerebro runs entirely on this machine. This wizard takes about a minute — every ' +
     'answer can be changed later in <a href="/settings">Settings</a>.') +
     `<div class="card"><header><h2>System check</h2>
@@ -108,7 +109,7 @@ async function loadChecks() {
 function renderDatabase() {
   const url = pending.DATABASE_URL !== undefined ? pending.DATABASE_URL : config.DATABASE_URL;
   const isSqlite = String(url || '').startsWith('sqlite');
-  document.getElementById('step').innerHTML = head('Step 2 of 6', 'Where should Cerebro store data?',
+  document.getElementById('step').innerHTML = head('Step 2 of 7', 'Where should Cerebro store data?',
     'Cases, events and context history live here. The built-in option needs nothing installed.') +
     `<div id="db-choices">
       ${choice('__db', 'sqlite', 'Built-in database (SQLite)',
@@ -148,7 +149,7 @@ function renderDatabase() {
 
 function renderAI() {
   const provider = pending.LLM_PROVIDER !== undefined ? pending.LLM_PROVIDER : config.LLM_PROVIDER;
-  document.getElementById('step').innerHTML = head('Step 3 of 6', 'Connect an AI model',
+  document.getElementById('step').innerHTML = head('Step 3 of 7', 'Connect an AI model',
     'Optional. Cerebro tracks context, events and knowledge without it — AI only adds ' +
     'case summaries and troubleshooting suggestions.') +
     `<div id="ai-choices">
@@ -195,7 +196,7 @@ function renderAIFields(fallback) {
 }
 
 function renderKnowledge() {
-  document.getElementById('step').innerHTML = head('Step 4 of 6', 'Knowledge search',
+  document.getElementById('step').innerHTML = head('Step 4 of 7', 'Knowledge search',
     'Cerebro searches your indexed documents to surface the right article while you work.') +
     `<div id="kb-choices">
       ${choice('VECTOR_BACKEND', 'local', 'Built-in vector store',
@@ -233,7 +234,7 @@ function renderKnowledgeFields() {
 
 function renderDesktop() {
   const origin = window.location.origin;
-  document.getElementById('step').innerHTML = head('Step 5 of 6', 'Desktop widget & browser extension',
+  document.getElementById('step').innerHTML = head('Step 5 of 7', 'Desktop widget & browser extension',
     'These two optional pieces are what make Cerebro feel ambient — a floating panel on your ' +
     'desktop and automatic case detection in the browser.') +
     `<div class="card" style="margin-bottom:14px"><header><h2>🪟 Desktop widget</h2></header>
@@ -268,12 +269,50 @@ function renderDesktop() {
   bindInputs();
 }
 
+function renderCopilot() {
+  const enabled = String(pending.COPILOT_BRIDGE_ENABLED ?? config.COPILOT_BRIDGE_ENABLED) === 'true';
+  document.getElementById('step').innerHTML = head('Step 6 of 7', 'Microsoft Copilot',
+    'Optional. Cerebro is complete on its own — this lets you also reach it from ' +
+    'Teams or your phone through a Copilot Studio agent.') +
+    `<div class="card" style="margin-bottom:14px">
+      <div class="body">
+        <p>With this on, Cerebro shares a folder in OneDrive that your agent can
+           read: what you're working on, what it has learned, and how you write.
+           Your agent can also ask Cerebro to do things on this machine.</p>
+        <p style="margin-bottom:0"><strong>Screenshots and typed text never leave
+           this machine</strong> — only the facts Cerebro has already distilled.</p>
+      </div>
+    </div>
+
+    <label class="switch" style="margin-bottom:14px">
+      <input type="checkbox" data-key="COPILOT_BRIDGE_ENABLED" ${enabled ? 'checked' : ''}>
+      <span class="track"></span><span>Connect a Copilot Studio agent</span>
+    </label>
+
+    <div id="copilot-fields" class="${enabled ? '' : 'hidden'}">
+      ${textField('COPILOT_BRIDGE_DIR')}
+      <div class="callout"><span class="icon">💡</span>
+        <span>Create a folder in OneDrive first — something like
+          <code class="inline">OneDrive\\Cerebro\\copilot</code> — then paste its
+          full path here. Settings → Microsoft Copilot has the full walkthrough,
+          including the text to paste into your agent.</span></div>
+    </div>`;
+
+  // bindInputs assigns onchange, so attach with addEventListener *after* it —
+  // otherwise the generic handler replaces this one and the fields never hide.
+  bindInputs();
+  const toggle = document.querySelector('[data-key="COPILOT_BRIDGE_ENABLED"]');
+  toggle.addEventListener('change', () => {
+    document.getElementById('copilot-fields').classList.toggle('hidden', !toggle.checked);
+  });
+}
+
 function renderDone() {
   const provider = pending.LLM_PROVIDER ?? config.LLM_PROVIDER;
   const backend = pending.VECTOR_BACKEND ?? config.VECTOR_BACKEND;
   const url = pending.DATABASE_URL ?? config.DATABASE_URL;
 
-  document.getElementById('step').innerHTML = head('Step 6 of 6', 'You are set up',
+  document.getElementById('step').innerHTML = head('Step 7 of 7', 'You are set up',
     'Cerebro is configured and running. Here is what you chose.') +
     `<div class="card" style="margin-bottom:16px">
       <ul class="list">
@@ -288,6 +327,12 @@ function renderDone() {
         <li><span class="icon">📚</span><span class="main">
           <div class="title">Knowledge search</div>
           <div class="meta">${backend === 'qdrant' ? 'Qdrant' : 'Built-in vector store'}</div>
+        </span></li>
+        <li><span class="icon">🤝</span><span class="main">
+          <div class="title">Microsoft Copilot</div>
+          <div class="meta">${String(pending.COPILOT_BRIDGE_ENABLED ?? config.COPILOT_BRIDGE_ENABLED) === 'true'
+            ? 'Connected — finish the agent setup in Settings'
+            : 'Not connected'}</div>
         </span></li>
       </ul>
     </div>
