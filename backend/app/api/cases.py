@@ -78,4 +78,13 @@ async def summarise_case(case_id: str, db: Session = Depends(get_db)):
     case.troubleshooting_steps = llm.generate_troubleshooting_steps(payload, {})
     db.commit()
     db.refresh(case)
+
+    # A summarised case is a resolution worth remembering next time.
+    try:
+        from app.services.memory_service import MemoryService
+
+        MemoryService(db).distil_case(case)
+    except Exception:
+        pass
+
     return case

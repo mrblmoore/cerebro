@@ -28,6 +28,10 @@ os.environ["ENTERPRISE_INBOX_DIR"] = str(Path(_TEMP_DIR) / "inbox")
 os.environ["ENTERPRISE_OUTBOX_DIR"] = str(Path(_TEMP_DIR) / "outbox")
 os.environ["ENTERPRISE_ENABLED"] = "true"
 os.environ["SHAREPOINT_SYNC_ROOTS"] = str(Path(_TEMP_DIR) / "sync")
+os.environ["MEMORY_ENABLED"] = "true"
+os.environ["STYLE_LEARNING_ENABLED"] = "true"
+os.environ["TASKS_ENABLED"] = "true"
+os.environ["NUDGES_ENABLED"] = "true"
 
 from app.core.database import SessionLocal, init_db  # noqa: E402
 from app.schemas.event import EventCreate  # noqa: E402
@@ -522,6 +526,261 @@ def test_document_tracking():
     db.close()
 
 
+# --------------------------------------------------------------- redaction
+def test_redaction():
+    print("\nRedaction — secrets and sensitive windows")
+    from app.services.redaction import looks_sensitive, redact
+
+    cleaned, fired = redact("my password is Hunter2! and the api key: sk-abc123def456ghi789jkl")
+    check("Password removed", "Hunter2" not in cleaned and "password" in fired)
+    check("Secret removed", "sk-abc123" not in cleaned)
+
+    cleaned, fired = redact("card 4532 0151 1283 0366 today", redact_pii=True)
+    check("Valid card number removed", "4532" not in cleaned)
+    cleaned, _ = redact("order 1234 5678 9012 3456 7890")
+    check("Non-Luhn long number kept", "1234 5678" in cleaned)
+
+    clean_text = "Outlook error 0x80040115 after the VPN change."
+    cleaned, fired = redact(clean_text)
+    check("Clean text is untouched", cleaned == clean_text and not fired)
+
+    check("Login window flagged sensitive", looks_sensitive("Sign in - Portal"))
+    check("Password manager flagged", looks_sensitive("1Password"))
+    check("Ordinary window not flagged", not looks_sensitive("Case 500XY7 - Salesforce"))
+
+
+def test_activity_capture():
+    print("\nActivity capture — storage and guards")
+    import os as _os
+
+    _os.environ["ACTIVITY_CAPTURE_ENABLED"] = "true"
+    _os.environ["ACTIVITY_EXCLUDED_APPS"] = "notepad"
+    from app.core.config import settings
+    from app.services.activity_service import ActivityService
+
+    for key in ("ACTIVITY_CAPTURE_ENABLED", "ACTIVITY_EXCLUDED_APPS"):
+        object.__setattr__(settings, key,
+                           True if key.endswith("ENABLED") else "notepad")
+
+    db = session()
+    service = ActivityService(db)
+
+    kept = service.record(kind="keystrokes", application="Teams",
+                          window_title="Chat", text="the password is Hunter2 ok")
+    check("Frame stored", kept is not None)
+    check("Secret redacted before storage", "Hunter2" not in (kept.text or ""))
+
+    dropped = service.record(kind="screenshot", window_title="Bank - Sign in")
+    check("Sensitive window dropped", dropped is None)
+
+    excluded = service.record(kind="window", application="notepad.exe",
+                              window_title="notepad - secret")
+    check("Excluded app dropped", excluded is None)
+
+    result = service.purge(everything=True)
+    check("Purge clears everything", result["ok"])
+
+
+# --------------------------------------------------------------- memory
+def test_memory():
+    print("\nMemory — store, recall, dedupe")
+    from app.services.memory_service import MemoryService
+
+    db = session()
+    service = MemoryService(db)
+    service.remember("Contoso Outlook fix",
+                     "For Contoso, Outlook 0x80040115 after a VPN change was fixed "
+                     "by rebuilding the MAPI profile.",
+                     memory_type="case_resolution", case_id="500XY7", customer="Contoso")
+    service.remember("Northwind prefers email",
+                     "Northwind's IT lead prefers email over Teams.",
+                     memory_type="customer_fact", customer="Northwind")
+
+    results = service.recall("contoso outlook cannot connect after vpn",
+                             case_id="500XY7", customer="Contoso")
+    check("Relevant memory recalled", results and "MAPI" in results[0]["content"])
+    check("Recall bumps use count", results[0]["use_count"] >= 1)
+
+    before = len(service.list_memories())
+    service.remember("Contoso Outlook",
+                     "Contoso Outlook error 0x80040115 after VPN fixed by rebuilding "
+                     "the MAPI profile.",
+                     memory_type="case_resolution", case_id="500XY7", customer="Contoso")
+    check("Near-duplicate merged, not added", len(service.list_memories()) == before)
+
+    text = service.recall_text("how to reach northwind")
+    check("Recall block is prompt-ready", "Northwind" in text)
+
+
+# ------------------------------------------------------------- style
+def test_style_and_persona():
+    print("\nStyle & persona")
+    from app.core.config import settings
+    from app.services.style_service import StyleService, persona_directive
+
+    db = session()
+    style = StyleService(db)
+    for sample in [
+        "Hey Randy — got it working, mail's flowing again. Lmk if anything pops up. Thanks!",
+        "Hi team, quick update: VPN change caused it. Fixed now. Cheers",
+        "Thanks for the heads up, I'll take a look this afternoon. Best",
+    ]:
+        style.add_sample(sample)
+
+    result = style.learn()
+    check("Voice learned from samples", result["ok"])
+    check("Casual tone detected", result["profile"]["formality"] == "casual")
+    check("Greeting picked up", result["profile"]["typical_greeting"] == "hey")
+
+    directive = style.drafting_directive()
+    check("Drafting directive produced", "voice" in directive.lower())
+
+    style.add_sample("the login password is Hunter2 use that")
+    import json as _json
+    last = _json.loads(style._row().samples)[-1]["text"]
+    check("Secrets redacted from samples", "Hunter2" not in last)
+
+    object.__setattr__(settings, "PERSONA", "partner")
+    check("Partner persona says we/us", "we" in persona_directive().lower())
+    object.__setattr__(settings, "PERSONA", "assistant")
+    check("Assistant persona says you", "you" in persona_directive().lower())
+
+
+# ------------------------------------------------------------- tasks
+def test_task_parsing_and_scheduling():
+    print("\nTasks — parsing and scheduling")
+    from datetime import datetime
+
+    from app.services.task_service import (TaskService, compute_next_run,
+                                           parse_instruction)
+
+    parsed = parse_instruction("keep the project log updated daily at 9am under my name")
+    check("Daily schedule parsed", parsed["schedule"] == "daily")
+    check("Time parsed", parsed["at_time"] == "09:00")
+    check("Attribution parsed", parsed["attribution"] == "user")
+    check("Document-update kind inferred", parsed["kind"] == "document_update")
+
+    parsed = parse_instruction("remind me to call Randy at 3pm")
+    check("3pm parsed as 15:00", parsed["at_time"] == "15:00")
+
+    nxt = compute_next_run("daily", "09:00")
+    check("Next run is in the future", nxt and nxt > datetime.now())
+    check("Manual schedule never fires", compute_next_run("manual") is None)
+
+    db = session()
+    task = TaskService(db).create_from_instruction("remind me to update Northwind daily at 9am")
+    check("Task created and scheduled", task.next_run is not None)
+
+    # A one-off task must finish after firing, not silently become recurring.
+    from datetime import datetime as _dt
+    from app.models.task import Task as _Task
+    once = _Task(title="call Randy", kind="reminder", schedule="once",
+                 at_time="15:00", status="active",
+                 next_run=_dt.now())
+    db.add(once); db.commit(); db.refresh(once)
+    TaskService(db).run(once)
+    check("One-off task completes after firing", once.status == "done")
+    check("One-off task does not reschedule", once.next_run is None)
+
+    # A weekly task steps a full week, not a day.
+    from app.services.task_service import compute_next_run as _next
+    first = _next("weekly", "09:00")
+    second = _next("weekly", "09:00", after=first)
+    check("Weekly reschedule advances seven days",
+          (second - first).days == 7)
+
+
+def test_document_update_task():
+    print("\nTasks — autonomous document maintenance")
+    import json as _json
+
+    import docx
+
+    from app.models.task import Task
+    from app.services import document_readers
+    from app.services.task_executors import _find_user_section, execute
+
+    folder = Path(_TEMP_DIR) / "tasklog"
+    folder.mkdir(parents=True, exist_ok=True)
+    document = docx.Document()
+    document.add_heading("Project Log", 0)
+    document.add_heading("Team updates", 1)
+    document.add_paragraph("2026-08-15 — Kickoff.")
+    document.add_heading("My daily log", 1)
+    document.add_paragraph("2026-08-16 — Reviewed plan.")
+    path = folder / "log.docx"
+    document.save(str(path))
+
+    content = document_readers.read(path)
+    mine = _find_user_section(content, "mine", "user")
+    paragraphs = [p.text for p in docx.Document(str(path)).paragraphs]
+    check("'Mine' resolves to the user's section",
+          mine is not None and paragraphs[mine - 1] == "My daily log")
+
+    # With a stub LLM, the autonomous write lands under the user's section.
+    import app.services.llm_service as llm_module
+
+    original_enabled = llm_module.LLMService.enabled
+    original_call = llm_module.LLMService._call_llm
+    llm_module.LLMService.enabled = property(lambda self: True)
+    llm_module.LLMService._call_llm = lambda self, prompt: "Cut over two servers."
+    try:
+        db = session()
+        task = Task(title="daily log", kind="document_update", autonomous=True,
+                    attribution="user", status="active",
+                    spec=_json.dumps({"document": str(path), "section": "mine"}))
+        db.add(task); db.commit(); db.refresh(task)
+        result = execute(db, task)
+        check("Autonomous write succeeded", result.get("status") == "active")
+
+        after = [p.text for p in docx.Document(str(path)).paragraphs]
+        entry = [p for p in after if "Cut over two servers" in p]
+        check("Entry written", bool(entry))
+        check("Entry under the user's section",
+              after.index(entry[0]) > after.index("My daily log"))
+        check("Team section untouched", "Kickoff." in " ".join(after))
+    finally:
+        llm_module.LLMService.enabled = original_enabled
+        llm_module.LLMService._call_llm = original_call
+
+
+# ------------------------------------------------------------- nudges
+def test_nudges():
+    print("\nNudges — detection, dedupe, persona")
+    from datetime import datetime, timedelta
+
+    from app.core.config import settings
+    from app.models.case import Case
+    from app.models.enterprise import EnterpriseMessage
+    from app.models.event import Event
+    from app.services.nudge_service import NudgeService
+
+    db = session()
+    db.add(EnterpriseMessage(source="outlook", type="email", external_id="nudge-1",
+        sender="randy@company.com", sender_name="Randy", subject="Follow-up",
+        urgency="high", handled=False,
+        ingested_at=datetime.utcnow() - timedelta(hours=5)))
+    db.add(Event(event_type="REMOTE_SESSION_DISCONNECTED", source="agent",
+                 case_id="500ZZ9", data={"case_id": "500ZZ9"},
+                 created_at=datetime.utcnow() - timedelta(hours=2)))
+    db.add(Case(case_id="500ZZ9", system="Salesforce", customer="Fabrikam",
+                title="Migration", status="open"))
+    db.commit()
+
+    service = NudgeService(db)
+    object.__setattr__(settings, "PERSONA", "partner")
+    first = service.scan()
+    check("Nudges raised", first["raised"] >= 2)
+
+    nudges = {n.kind: n for n in service.open_nudges()}
+    check("Unanswered-mail nudge raised", "unanswered_email" in nudges)
+    check("Case-not-updated nudge raised", "case_not_updated" in nudges)
+    check("Partner voice used", "we" in nudges["case_not_updated"].body.lower())
+
+    second = service.scan()
+    check("Re-scan does not duplicate", second["raised"] == 0)
+
+
 # ------------------------------------------------------------- regressions
 def test_embedding_signature_matches_vector():
     """A fallback vector must be labelled with the space it actually belongs to."""
@@ -752,6 +1011,9 @@ def main() -> int:
                   test_env_round_trip, test_urgency_word_boundaries,
                   test_empty_batch_file, test_office_lock_detection,
                   test_spreadsheet_value_coercion, test_failed_edit_leaves_no_litter,
+                  test_redaction, test_activity_capture, test_memory,
+                  test_style_and_persona, test_task_parsing_and_scheduling,
+                  test_document_update_task, test_nudges,
                   test_settings_store):
         try:
             suite()

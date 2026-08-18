@@ -112,6 +112,43 @@ class Settings(BaseSettings):
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 
+    # ------------------------------------------------------- activity capture
+    #: The whole activity-capture subsystem is off unless this is true. It is the
+    #: single switch IT or the user flips to enable screenshots and typed-text
+    #: capture, and nothing here records until it is on.
+    ACTIVITY_CAPTURE_ENABLED: bool = False
+    #: Periodic downscaled screenshots of the active window.
+    ACTIVITY_SCREENSHOTS: bool = False
+    ACTIVITY_SCREENSHOT_SECONDS: int = 60
+    #: Longest edge of a stored screenshot, in pixels. Small on purpose — enough
+    #: to recognise "the Q3 spreadsheet", not to read fine print back.
+    ACTIVITY_SCREENSHOT_MAX_PX: int = 1280
+    #: Capture typed text (keystrokes assembled into words).
+    ACTIVITY_KEYSTROKES: bool = False
+    #: Redact anything that looks like a name, email or phone number as well as
+    #: secrets. Secrets are always redacted regardless.
+    ACTIVITY_REDACT_PII: bool = True
+    #: Delete captured activity older than this many days. 0 keeps it forever.
+    ACTIVITY_RETENTION_DAYS: int = 14
+    #: Applications and window titles never captured, one per line. Matched as a
+    #: case-insensitive substring against the window title and process name.
+    ACTIVITY_EXCLUDED_APPS: str = ""
+
+    # ------------------------------------------------------- memory & voice
+    MEMORY_ENABLED: bool = True
+    #: How Cerebro refers to itself and the user. "partner" speaks as we/us;
+    #: "assistant" speaks as your secretary would.
+    PERSONA: str = "assistant"  # assistant | partner
+    #: Learn the user's writing voice from their sent messages and transcripts.
+    STYLE_LEARNING_ENABLED: bool = True
+
+    # ------------------------------------------------------------- tasks
+    TASKS_ENABLED: bool = True
+    #: Seconds between task-scheduler ticks.
+    TASK_TICK_SECONDS: int = 30
+    #: Surface proactive nudges (unanswered mail, cases resolved but not updated).
+    NUDGES_ENABLED: bool = True
+
     # ------------------------------------------------------------- browser
     #: Report every page visited, not just recognised CRM cases.
     BROWSER_TRACK_ALL_TABS: bool = False
@@ -163,6 +200,12 @@ class Settings(BaseSettings):
     @property
     def sharepoint_root_list(self) -> list:
         return _split_paths(self.SHAREPOINT_SYNC_ROOTS)
+
+    @property
+    def activity_excluded_apps(self) -> list:
+        return [line.strip().lower()
+                for line in re.split(r"[;\n]", self.ACTIVITY_EXCLUDED_APPS or "")
+                if line.strip()]
 
     @property
     def excluded_domain_list(self) -> list:

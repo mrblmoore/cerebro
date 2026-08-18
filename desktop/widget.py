@@ -50,7 +50,7 @@ THEMES = {
     },
 }
 
-TABS = [("context", "Context"), ("assist", "Assist"), ("inbox", "Inbox"),
+TABS = [("ask", "Ask"), ("context", "Context"), ("inbox", "Inbox"),
         ("docs", "Docs"), ("search", "Search")]
 
 PRIORITY_ICON = {"high": "●", "medium": "●", "low": "○"}
@@ -91,6 +91,7 @@ class ApiClient:
             ("inbox", "/api/enterprise/messages?limit=8"),
             ("bridge", "/api/enterprise/status"),
             ("documents", "/api/documents?limit=8"),
+            ("nudges", "/api/tasks/nudges?limit=8"),
         ):
             try:
                 snapshot[key] = self.request(path, timeout=4)
@@ -136,6 +137,9 @@ class CerebroWidget:
         self.search_results = None
         self.search_query = ""
         self.searching = False
+        self.ask_reply = None
+        self.expanded = False
+        self._normal_size = None
         self._stop = threading.Event()
         self._drag = None
         self._menu_vars = {}
@@ -366,6 +370,9 @@ class CerebroWidget:
         self.config["active_tab"] = key
         if self.config.get("compact"):
             self.toggle_compact()
+        # Leaving the Ask tab collapses any expansion it caused.
+        if key != "ask" and self.expanded:
+            self.restore_size()
         self.render()
 
     def render(self):
@@ -381,8 +388,8 @@ class CerebroWidget:
             child.destroy()
 
         renderer = {
+            "ask": self._render_ask,
             "context": self._render_context,
-            "assist": self._render_assist,
             "inbox": self._render_inbox,
             "docs": self._render_docs,
             "search": self._render_search,
@@ -474,6 +481,105 @@ class CerebroWidget:
                            lambda: self.open_url("/settings")).pack(
                     anchor="w", padx=10, pady=(0, 9))
 
+    def _render_ask(self, area):
+        """Type an instruction; see Cerebro's reply and its open nudges."""
+        theme = self.theme
+
+        box = tk.Frame(area.inner, bg=theme["bg"])
+        box.pack(fill="x", padx=10, pady=(2, 6))
+        self.ask_entry = tk.Entry(
+            box, bg=theme["surface2"], fg=theme["text"], font=self.font(9),
+            insertbackground=theme["text"], relief="flat", highlightthickness=1,
+            highlightbackground=theme["border"], highlightcolor=theme["accent"])
+        self.ask_entry.pack(fill="x", ipady=6, ipadx=6)
+        self.ask_entry.bind("<Return>", lambda _e: self._send_instruction())
+        placeholder = ("Tell me what to do — “remind me…”, "
+                       "“keep this doc updated daily under my name”…")
+        tk.Label(area.inner, text=placeholder, bg=theme["bg"], fg=theme["faint"],
+                 font=self.font(8), anchor="w", justify="left",
+                 wraplength=self.root.winfo_width() - 30).pack(fill="x", padx=12, pady=(0, 8))
+
+        if getattr(self, "ask_reply", None):
+            card = tk.Frame(area.inner, bg=theme["accent_soft"] if "accent_soft" in theme
+                            else theme["surface"])
+            card.pack(fill="x", padx=10, pady=(0, 8))
+            tk.Label(card, text=self.ask_reply, bg=card["bg"], fg=theme["text"],
+                     font=self.font(9), justify="left", anchor="w",
+                     wraplength=self.root.winfo_width() - 50).pack(
+                fill="x", padx=10, pady=8)
+
+        nudges = (self.snapshot.get("nudges") or {}).get("nudges") or []
+        if nudges:
+            self._heading(area.inner, "Nudges")
+            for nudge in nudges:
+                self._nudge_card(area.inner, nudge)
+        elif not getattr(self, "ask_reply", None):
+            self._empty(area.inner, "💬",
+                        "Ask me to do something,\nor I'll raise things here\nwhen they need you.")
+
+    def _nudge_card(self, parent, nudge):
+        theme = self.theme
+        colour = {"high": theme["err"], "medium": theme["warn"]}.get(
+            nudge.get("priority"), theme["faint"])
+        card = tk.Frame(parent, bg=theme["surface"])
+        card.pack(fill="x", padx=10, pady=(0, 6))
+
+        header = tk.Frame(card, bg=theme["surface"])
+        header.pack(fill="x", padx=10, pady=(8, 0))
+        tk.Label(header, text="●", bg=theme["surface"], fg=colour,
+                 font=self.font(8)).pack(side="left", padx=(0, 6))
+        tk.Label(header, text=nudge.get("title", ""), bg=theme["surface"],
+                 fg=theme["text"], font=self.font(9, "bold"), anchor="w").pack(side="left")
+
+        tk.Label(card, text=nudge.get("body", ""), bg=theme["surface"], fg=theme["dim"],
+                 font=self.font(9), justify="left", anchor="w",
+                 wraplength=self.root.winfo_width() - 60).pack(fill="x", padx=10, pady=(3, 6))
+
+        buttons = tk.Frame(card, bg=theme["surface"])
+        buttons.pack(fill="x", padx=10, pady=(0, 9))
+        action = nudge.get("action")
+        if action:
+            self._link(buttons, "Yes, do it",
+                       lambda n=nudge: self._act_nudge(n)).pack(side="left", padx=(0, 12))
+        self._link(buttons, "Dismiss",
+                   lambda n=nudge: self._dismiss_nudge(n)).pack(side="left")
+
+    def _send_instruction(self):
+        instruction = self.ask_entry.get().strip()
+        if len(instruction) < 3:
+            return
+        self.ask_reply = "Working on it…"
+        self.render()
+
+        def worker():
+            try:
+                result = self.api.request("/api/tasks/instruct", method="POST",
+                                          payload={"instruction": instruction})
+                self.results.put(("ask", result.get("message", "Done.")))
+            except Exception as exc:
+                self.results.put(("ask", f"Couldn't do that: {_friendly_error(exc)}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _act_nudge(self, nudge):
+        def worker():
+            try:
+                self.api.request(f"/api/tasks/nudges/{nudge['id']}/act", method="POST")
+                self.results.put(("status", "On it."))
+            except Exception as exc:
+                self.results.put(("status", _friendly_error(exc)))
+            self.results.put(("poll", self.api.poll()))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _dismiss_nudge(self, nudge):
+        def worker():
+            try:
+                self.api.request(f"/api/tasks/nudges/{nudge['id']}/dismiss", method="POST")
+            except Exception:
+                pass
+            self.results.put(("poll", self.api.poll()))
+        threading.Thread(target=worker, daemon=True).start()
+
     def _render_inbox(self, area):
         """Outlook and Teams messages, most urgent first."""
         if not self.online:
@@ -533,6 +639,43 @@ class CerebroWidget:
                          anchor="w").pack(fill="x", padx=10)
 
             tk.Frame(card, bg=theme["surface"], height=8).pack()
+
+    def show_media(self, image_path: str, caption: str = "") -> None:
+        """
+        Pull a screenshot into the widget itself, expanding to fit it.
+
+        This is the "if it can, it pulls the reference up in the widget" piece:
+        rather than opening another window, the panel grows, shows the image
+        inline, and shrinks back when closed.
+        """
+        try:
+            from tkinter import PhotoImage
+
+            image = PhotoImage(file=image_path)
+        except Exception:
+            webbrowser.open(image_path)
+            return
+
+        self.expand_for(image.height() + 60)
+        theme = self.theme
+        overlay = tk.Frame(self.content, bg=theme["bg"])
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        bar = tk.Frame(overlay, bg=theme["title_bg"])
+        bar.pack(fill="x")
+        tk.Label(bar, text=caption or "Reference", bg=theme["title_bg"],
+                 fg=theme["dim"], font=self.font(9, "bold")).pack(side="left", padx=10, pady=6)
+
+        def close():
+            overlay.destroy()
+            self.restore_size()
+        tk.Label(bar, text="✕", bg=theme["title_bg"], fg=theme["faint"],
+                 font=self.font(10), cursor="hand2", padx=10).pack(side="right")
+        bar.winfo_children()[-1].bind("<Button-1>", lambda _e: close())
+
+        label = tk.Label(overlay, image=image, bg=theme["bg"])
+        label.image = image  # keep a reference so it is not garbage-collected
+        label.pack(pady=10)
 
     def _render_docs(self, area):
         """Documents Cerebro is currently reading."""
@@ -751,6 +894,10 @@ class CerebroWidget:
         if urgent:
             parts.append(f"✉{urgent}")
 
+        nudges = len((self.snapshot.get("nudges") or {}).get("nudges") or [])
+        if nudges:
+            parts.append(f"💬{nudges}")
+
         return _shorten(" · ".join(parts), 30) if parts else "Cerebro"
 
     def open_menu(self, event=None):
@@ -917,6 +1064,51 @@ class CerebroWidget:
         threading.Thread(target=lambda: self.results.put(("poll", self.api.poll())),
                          daemon=True).start()
 
+    # -------------------------------------------------------------- expand
+    def expand_for(self, extra_height: int = 240) -> None:
+        """
+        Grow the widget to show a screenshot or a long answer it is referencing.
+
+        The current size is remembered so the widget can shrink back to its
+        normal footprint once the reference is dismissed — the "swells to fit the
+        media, then collapses onto its small self" behaviour.
+        """
+        if self.expanded or self.config.get("compact"):
+            return
+        self._normal_size = (self.root.winfo_width(), self.root.winfo_height())
+        width = max(self.root.winfo_width(), 420)
+        height = min(self.root.winfo_screenheight() - 80,
+                     self.root.winfo_height() + extra_height)
+        self.expanded = True
+        self._animate_to(width, height)
+
+    def restore_size(self) -> None:
+        """Shrink back to the size the widget had before it expanded."""
+        if not self.expanded or not self._normal_size:
+            self.expanded = False
+            return
+        width, height = self._normal_size
+        self.expanded = False
+        self._animate_to(width, height)
+        self._normal_size = None
+
+    def _animate_to(self, width: int, height: int, steps: int = 8) -> None:
+        """A short size animation so the change reads as the panel breathing."""
+        start_w, start_h = self.root.winfo_width(), self.root.winfo_height()
+        dw = (width - start_w) / steps
+        dh = (height - start_h) / steps
+
+        def frame(step: int):
+            if step > steps:
+                self.root.geometry(f"{width}x{height}")
+                self._persist_geometry()
+                return
+            self.root.geometry(
+                f"{int(start_w + dw * step)}x{int(start_h + dh * step)}")
+            self.root.after(16, lambda: frame(step + 1))
+
+        frame(1)
+
     # ------------------------------------------------------------ settings
     def open_settings(self):
         SettingsDialog(self)
@@ -956,6 +1148,13 @@ class CerebroWidget:
                     self.search_results = payload
                     if self.active_tab == "search":
                         self.render()
+                elif kind == "ask":
+                    self.ask_reply = payload
+                    # A substantial reply is worth more room; a short "on it" is not.
+                    if len(payload) > 160:
+                        self.expand_for(180)
+                    if self.active_tab == "ask":
+                        self.render()
                 elif kind == "status":
                     self._flash_status(payload)
         except queue.Empty:
@@ -982,7 +1181,7 @@ class CerebroWidget:
 
         if self.config.get("compact"):
             self.title_label.configure(text=self._compact_title())
-        elif self.active_tab in ("context", "assist", "inbox", "docs"):
+        elif self.active_tab in ("ask", "context", "inbox", "docs"):
             self.render()
 
     @staticmethod

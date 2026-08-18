@@ -38,6 +38,24 @@ class EventDetector:
                     "url": url,
                 }
 
+        if "dynamics.com" in url:
+            # Dynamics addresses records by GUID; the readable ticket number
+            # (CAS-01234-ABCDEF) appears only in the page title.
+            entity = re.search(r"[?&]etn=([a-z_]+)", url, re.IGNORECASE)
+            if entity is None or entity.group(1).lower() in ("incident", "case"):
+                ticket = re.search(r"\b(CAS-\d{4,}-[A-Z0-9]{5,})\b", title, re.IGNORECASE)
+                guid = re.search(
+                    r"[?&]id=%?7?B?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
+                    r"-[0-9a-f]{4}-[0-9a-f]{12})", url, re.IGNORECASE)
+                identifier = ticket.group(1) if ticket else (guid.group(1) if guid else None)
+                if identifier:
+                    return "CRM_CASE_OPENED", {
+                        "system": "Dynamics 365",
+                        "case_id": identifier.upper(),
+                        "customer": EventDetector._customer_from_dynamics_title(title),
+                        "url": url,
+                    }
+
         if "service-now.com" in url:
             match = (re.search(r"number(?:%3D|=)([A-Z]{2,5}\d{5,})", url, re.IGNORECASE)
                      or re.search(r"/((?:INC|CS|RITM|SCTASK|CHG)\d{5,})", url, re.IGNORECASE))
@@ -60,6 +78,18 @@ class EventDetector:
                 }
 
         return None
+
+    @staticmethod
+    def _customer_from_dynamics_title(title: str) -> Optional[str]:
+        """
+        Dynamics titles read "Case: CAS-0123-ABCDEF - Contoso Ltd - Dynamics 365",
+        so the customer sits between the record and the product, separated by
+        dashes rather than the pipes every other CRM uses.
+        """
+        parts = [part.strip() for part in re.split(r"\s+-\s+", title or "") if part.strip()]
+        if len(parts) >= 3:
+            return parts[-2]
+        return EventDetector._customer_from_title(title)
 
     @staticmethod
     def _customer_from_title(title: str) -> Optional[str]:

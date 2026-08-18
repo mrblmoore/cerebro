@@ -52,6 +52,7 @@ EXTENSION_DIR = PROJECT_ROOT / "browser-extension"
 LOG_DIR = DATA_DIR / "logs"
 AUDIO_DIR = DATA_DIR / "audio"
 VECTOR_DIR = DATA_DIR / "vectors"
+ACTIVITY_DIR = DATA_DIR / "activity"
 
 ENV_EXAMPLE = BACKEND_DIR / ".env.example"
 
@@ -61,7 +62,7 @@ DEFAULT_LOG_PATH = LOG_DIR / "cerebro.log"
 
 def ensure_data_dirs() -> None:
     """Create the runtime directories if they are missing."""
-    for directory in (DATA_DIR, LOG_DIR, AUDIO_DIR, VECTOR_DIR):
+    for directory in (DATA_DIR, LOG_DIR, AUDIO_DIR, VECTOR_DIR, ACTIVITY_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 

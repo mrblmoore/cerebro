@@ -62,6 +62,35 @@ export const DETECTORS = [
     customer: customerFromTitle,
   },
   {
+    id: 'dynamics',
+    label: 'Dynamics 365',
+    match: (url) => /\.(crm\d*|dynamics)\.(dynamics\.com|com)|\.crm\d*\.dynamics\.com/.test(url)
+                    || /\.dynamics\.com/.test(url),
+    // Dynamics addresses records by GUID, not by case number:
+    //   /main.aspx?...&etn=incident&id=%7Bguid%7D&pagetype=entityrecord
+    // The human-readable ticket number (CAS-01234-ABCDEF) only appears in the
+    // page title, so prefer that and fall back to the GUID.
+    caseId: (url, title) => {
+      const ticket = String(title || '').match(/\b(CAS-\d{4,}-[A-Z0-9]{5,})\b/i);
+      if (ticket) return ticket[1].toUpperCase();
+
+      const entity = url.match(/[?&]etn=([a-z_]+)/i);
+      const isCase = !entity || /^(incident|case)$/i.test(entity[1]);
+      if (!isCase) return null;
+
+      const guid = url.match(/[?&]id=%?7?B?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+      return guid ? guid[1].toUpperCase() : null;
+    },
+    // Dynamics titles read "Case: CAS-01234-ABCDEF - Contoso Ltd - Dynamics 365",
+    // so the customer sits after the record rather than in the usual pipe layout.
+    customer: (title) => {
+      const text = String(title || '');
+      const dashed = text.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
+      if (dashed.length >= 3) return dashed[dashed.length - 2];
+      return customerFromTitle(title);
+    },
+  },
+  {
     id: 'zendesk',
     label: 'Zendesk',
     match: (url) => /\.zendesk\.com/.test(url),
@@ -77,7 +106,9 @@ export const DETECTORS = [
 export function detect(url, title = '') {
   for (const detector of DETECTORS) {
     if (!detector.match(url)) continue;
-    const caseId = detector.caseId(url);
+    // Dynamics keeps the human-readable ticket number in the title, not the URL,
+    // so detectors get both.
+    const caseId = detector.caseId(url, title);
     if (!caseId) return null;
     return {
       system: detector.label,

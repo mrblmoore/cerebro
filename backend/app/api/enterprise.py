@@ -134,6 +134,9 @@ def draft_reply(message_id: int, request: DraftRequest = None,
         )
 
     request = request or DraftRequest()
+    from app.services.style_service import StyleService
+
+    style = StyleService(db).drafting_directive()
     channel = "email" if message.source == "outlook" else "Teams message"
     thread = EnterpriseService(db).thread(message.thread_id) if message.thread_id else []
     history = "\n\n".join(
@@ -155,8 +158,13 @@ Tone: {request.tone or 'professional, warm, direct'}
 
 Write only the reply body — no subject line, no signature, no preamble.
 Keep it short. If a concrete answer is not possible, say what you are doing
-about it and when you will follow up."""
+about it and when you will follow up.
 
+{style}"""
+
+    prompt = llm.with_memory(
+        prompt, query=f"{message.subject or ''} {message.body or ''}",
+        db=db, case_id=message.case_id, customer=message.customer)
     draft = llm._call_llm(prompt)
     logger.info("enterprise", "Drafted reply", {"message_id": message_id})
     return {

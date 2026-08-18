@@ -117,6 +117,25 @@ Relevant documentation:
 Answer in 1-2 sentences."""
         return self._call_llm(prompt)
 
+    def with_memory(self, prompt: str, query: str, db=None, **recall_kwargs) -> str:
+        """
+        Prepend relevant memories to a prompt.
+
+        This is how the second brain reaches generation: the caller passes the
+        text that describes the task (``query``), and whatever Cerebro remembers
+        that bears on it is folded in above the instruction. With memory off, or
+        nothing relevant, the prompt is returned unchanged.
+        """
+        if db is None:
+            return prompt
+        try:
+            from app.services.memory_service import MemoryService
+
+            block = MemoryService(db).recall_text(query, **recall_kwargs)
+        except Exception:
+            block = ""
+        return f"{block}\n\n{prompt}" if block else prompt
+
     # -------------------------------------------------------------- core
     def _call_llm(self, prompt: str) -> str:
         """Generation entry point. Degrades to a message, never raises."""

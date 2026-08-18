@@ -58,7 +58,7 @@ instant knowledge search. Drag it anywhere, snap it to an edge, collapse it to a
 single strip while you work, or set it to start with Windows.
 
 **Browser extension**
-Detects Salesforce, ServiceNow and Zendesk cases, and the SharePoint documents
+Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases, and the SharePoint documents
 you open, keeping Cerebro in sync with the tab you are on. Load it from
 `browser-extension/src` — see [docs/INSTALL.md](docs/INSTALL.md).
 
@@ -73,6 +73,13 @@ Reads the Word, Excel, PowerPoint and PDF files you have open — including
 SharePoint files, via the locally synced copy — so you can ask about them. It
 can edit Word and Excel too, with a dry run first and a backup every time.
 See [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
+
+**Second brain & secretary**
+Remembers how you solved things and recalls it when drafting; learns your
+writing voice; takes plain-language tasks ("keep this doc updated daily under my
+name") and runs them on a schedule; and nudges you about unanswered mail and
+cases resolved but never written up. See
+[docs/SECOND_BRAIN.md](docs/SECOND_BRAIN.md).
 
 **API** — `http://localhost:8000/docs`
 Everything the UI does is a documented REST endpoint.
@@ -131,6 +138,7 @@ from that one state.
 | [docs/WIDGET.md](docs/WIDGET.md) | The desktop widget in detail |
 | [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md) | Outlook and Teams integration, flow by flow |
 | [docs/DOCUMENTS.md](docs/DOCUMENTS.md) | Reading and editing Word, Excel and PDF |
+| [docs/SECOND_BRAIN.md](docs/SECOND_BRAIN.md) | Memory, writing voice, tasks, nudges, activity capture |
 | [docs/PACKAGING.md](docs/PACKAGING.md) | Building the Windows installer |
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Database schema |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration patterns |

@@ -7,7 +7,7 @@ export const DEFAULTS = {
   reportDocuments: true,    // SharePoint/OneDrive files you open
   reportTabs: false,        // every page you visit — off, it is noisy
   capturePageText: false,   // send readable page text with CRM/document pages
-  enabledDetectors: ['salesforce', 'servicenow', 'zendesk'],
+  enabledDetectors: ['salesforce', 'dynamics', 'servicenow', 'zendesk'],
   excludedDomains: [],      // never reported, whatever the settings above say
 };
 

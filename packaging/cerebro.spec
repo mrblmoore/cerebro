@@ -41,6 +41,10 @@ hiddenimports = [
     "sqlalchemy.dialects.sqlite",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
+    "app.services.memory_service", "app.services.task_service",
+    "app.services.task_executors", "app.services.nudge_service",
+    "app.services.style_service", "app.services.activity_service",
+    "app.services.redaction",
 ]
 
 excludes = ["tkinter"]   # the server build has no interface

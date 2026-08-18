@@ -18,6 +18,11 @@ from app.core import check_database, logger, settings, settings_store
 from app.core.paths import ENV_FILE, PROJECT_ROOT
 from app.core.database import get_db
 from app.services import document_service, enterprise_service
+from app.services.memory_service import MemoryService
+from app.services.nudge_service import NudgeService
+from app.services.style_service import StyleService
+from app.services.task_service import TaskService
+from app.services.activity_service import ActivityService
 from app.services.llm_service import LLMService
 from app.services.rag_service import RAGService
 from app.services.screenpipe_client import ScreenpipeClient
@@ -32,6 +37,8 @@ OPTIONAL_PACKAGES = {
     "docx": ("Word documents", "backend/requirements-documents.txt"),
     "openpyxl": ("Excel workbooks", "backend/requirements-documents.txt"),
     "pypdf": ("PDF documents", "backend/requirements-documents.txt"),
+    "mss": ("Activity screenshots", "desktop/requirements-capture.txt"),
+    "pynput": ("Typed-text capture", "desktop/requirements-capture.txt"),
 }
 
 
@@ -142,6 +149,18 @@ def diagnostics(db: Session = Depends(get_db)) -> Dict[str, Any]:
             **document_service.status(),
         },
         {
+            "id": "memory", "label": "Memory", "required": False,
+            **MemoryService(db).status(),
+        },
+        {
+            "id": "tasks", "label": "Tasks", "required": False,
+            **TaskService(db).status(),
+        },
+        {
+            "id": "activity", "label": "Activity capture", "required": False,
+            **ActivityService(db).status(),
+        },
+        {
             "id": "screenpipe",
             "label": "Screenpipe capture",
             "required": False,
@@ -209,6 +228,10 @@ def test_connection(target: str, db: Session = Depends(get_db)) -> Dict[str, Any
         return enterprise_service.status()
     if target == "documents":
         return document_service.status()
+    if target == "memory":
+        return MemoryService(db).status()
+    if target == "activity":
+        return ActivityService(db).status()
     raise HTTPException(status_code=404, detail=f"Unknown test target: {target}")
 
 

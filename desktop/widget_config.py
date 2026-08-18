@@ -27,7 +27,7 @@ DEFAULTS = {
     "y": None,
     "width": 372,
     "height": 460,
-    "active_tab": "context",
+    "active_tab": "ask",
 }
 
 

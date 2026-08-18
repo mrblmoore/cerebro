@@ -19,7 +19,13 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 
 _thread: Optional[threading.Thread] = None
+_scheduler_thread: Optional[threading.Thread] = None
 _stop = threading.Event()
+
+#: How often the scheduler checks for due tasks (seconds). Nudge scans and
+#: retention run less often, counted in ticks.
+_last_nudge_scan = 0.0
+_last_retention = 0.0
 
 
 def _sweep_once() -> None:
@@ -57,23 +63,65 @@ def _loop() -> None:
     logger.info("watcher", "Enterprise inbox watcher stopped")
 
 
+def _scheduler_loop() -> None:
+    """Drive tasks, nudges and retention on a timer."""
+    import time
+
+    from app.services import nudge_service, task_service
+    from app.services.activity_service import apply_retention
+
+    logger.info("scheduler", "Task scheduler started")
+    global _last_nudge_scan, _last_retention
+
+    while not _stop.is_set():
+        now = time.time()
+        db = SessionLocal()
+        try:
+            if settings.TASKS_ENABLED:
+                result = task_service.run_due_tasks(db)
+                if result.get("ran"):
+                    logger.info("scheduler", "Ran due tasks", {"count": result["ran"]})
+
+            # Scan for nudges every ~2 minutes.
+            if settings.NUDGES_ENABLED and now - _last_nudge_scan > 120:
+                nudge_service.scan_for_nudges(db)
+                _last_nudge_scan = now
+
+            # Retention sweep every ~6 hours.
+            if now - _last_retention > 6 * 3600:
+                apply_retention(db)
+                _last_retention = now
+        except Exception as exc:  # a scheduler must never crash the server
+            logger.error("scheduler", "Scheduler tick failed", {"error": str(exc)})
+        finally:
+            db.close()
+
+        _stop.wait(max(10, int(settings.TASK_TICK_SECONDS)))
+
+    logger.info("scheduler", "Task scheduler stopped")
+
+
 def start() -> None:
     """
-    Start the watcher thread.
+    Start the background threads.
 
-    Started unconditionally, even with the bridge switched off: the loop checks
-    the setting on every pass, so turning the bridge on in Settings takes effect
-    within one interval. Gating the thread on the boot-time value instead meant
-    enabling the bridge appeared to work and then silently never swept.
+    Started unconditionally, even with features switched off: each loop checks
+    its setting on every pass, so enabling a feature in Settings takes effect
+    within one interval rather than needing a restart.
     """
-    global _thread
-
-    if _thread is not None and _thread.is_alive():
-        return
+    global _thread, _scheduler_thread
 
     _stop.clear()
-    _thread = threading.Thread(target=_loop, name="cerebro-inbox-watcher", daemon=True)
-    _thread.start()
+
+    if _thread is None or not _thread.is_alive():
+        _thread = threading.Thread(target=_loop, name="cerebro-inbox-watcher",
+                                   daemon=True)
+        _thread.start()
+
+    if _scheduler_thread is None or not _scheduler_thread.is_alive():
+        _scheduler_thread = threading.Thread(target=_scheduler_loop,
+                                             name="cerebro-scheduler", daemon=True)
+        _scheduler_thread.start()
 
 
 def stop() -> None:

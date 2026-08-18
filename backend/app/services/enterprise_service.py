@@ -432,6 +432,15 @@ class EnterpriseService:
         self.db.commit()
         self.db.refresh(record)
 
+        # An approved outbound reply is a sample of how the user writes.
+        try:
+            from app.services.style_service import capture_user_writing
+
+            capture_user_writing(self.db, body,
+                                 channel="teams" if (source or "").startswith("teams") else "email")
+        except Exception:
+            pass
+
         if send:
             self.dispatch_action(record)
         return record

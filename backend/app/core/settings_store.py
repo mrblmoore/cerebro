@@ -103,6 +103,25 @@ GROUPS = [
         "description": "Which documents Cerebro may read, and how it handles edits.",
     },
     {
+        "id": "brain",
+        "title": "Second Brain",
+        "icon": "🧠",
+        "description": "Memory, writing voice, and how Cerebro speaks to you.",
+    },
+    {
+        "id": "secretary",
+        "title": "Secretary",
+        "icon": "🗒️",
+        "description": "Tasks Cerebro runs for you, and the nudges it raises.",
+    },
+    {
+        "id": "capture",
+        "title": "Activity Capture",
+        "icon": "👁️",
+        "description": "Optional. Screenshots and typed text, so Cerebro learns "
+                       "from what it watches. Off by default; talk to IT before enabling.",
+    },
+    {
         "id": "desktop",
         "title": "Desktop Capture",
         "icon": "🖥️",
@@ -238,6 +257,50 @@ FIELDS: List[Field] = [
     Field("BROWSER_EXCLUDED_DOMAINS", "Never report these domains", "documents",
           "One per line. Applies whatever the tracking setting is.",
           placeholder="mybank.com\npayroll.company.com"),
+
+    # Second brain
+    Field("PERSONA", "How Cerebro speaks to you", "brain", type="select", options=[
+        {"value": "assistant", "label": "As my assistant (you / I)"},
+        {"value": "partner", "label": "As my second brain (we / us)"},
+    ]),
+    Field("MEMORY_ENABLED", "Remember what it learns", "brain",
+          "Distil durable facts from cases and activity, and recall them when drafting.",
+          type="bool"),
+    Field("STYLE_LEARNING_ENABLED", "Learn my writing voice", "brain",
+          "Study your sent replies and transcripts so drafts sound like you.",
+          type="bool"),
+
+    # Secretary
+    Field("TASKS_ENABLED", "Run tasks for me", "secretary",
+          "Let Cerebro carry out scheduled tasks like maintaining a document.",
+          type="bool"),
+    Field("NUDGES_ENABLED", "Raise nudges", "secretary",
+          "Point out unanswered mail, cases resolved but not written up, and due reminders.",
+          type="bool"),
+    Field("TASK_TICK_SECONDS", "Scheduler interval (s)", "secretary",
+          type="number", advanced=True),
+
+    # Activity capture
+    Field("ACTIVITY_CAPTURE_ENABLED", "Enable activity capture", "capture",
+          "The master switch. Nothing is captured unless this is on.", type="bool"),
+    Field("ACTIVITY_SCREENSHOTS", "Capture screenshots", "capture",
+          "Periodic downscaled screenshots of the active window.",
+          type="bool", show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
+    Field("ACTIVITY_SCREENSHOT_SECONDS", "Screenshot interval (s)", "capture",
+          type="number", show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
+    Field("ACTIVITY_KEYSTROKES", "Capture typed text", "capture",
+          "Words you type, assembled and redacted. Never raw keystrokes for passwords.",
+          type="bool", show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
+    Field("ACTIVITY_REDACT_PII", "Redact names, emails, phone numbers", "capture",
+          "Secrets are always redacted; this also removes personal identifiers.",
+          type="bool", show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
+    Field("ACTIVITY_RETENTION_DAYS", "Delete capture after (days)", "capture",
+          "0 keeps it indefinitely.", type="number",
+          show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
+    Field("ACTIVITY_EXCLUDED_APPS", "Never capture these apps", "capture",
+          "One window title or app name per line. Login and banking windows are "
+          "always skipped automatically.",
+          show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
 
     # Desktop
     Field("SCREENPIPE_ENABLED", "Enable Screenpipe", "desktop", type="bool"),

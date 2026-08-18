@@ -6,6 +6,7 @@ Cerebro — one command for everything.
     python cerebro.py start      Start the API + open the dashboard
     python cerebro.py widget     Launch the desktop widget
     python cerebro.py watch      Watch for documents you open
+    python cerebro.py capture    Record activity for the second-brain memory
     python cerebro.py inbox      Import Outlook/Teams messages from the bridge folder
     python cerebro.py doctor     Diagnose a broken install
     python cerebro.py status     Check whether Cerebro is running
@@ -340,6 +341,15 @@ def cmd_watch(args) -> int:
     return run(command)
 
 
+def cmd_capture(args) -> int:
+    """Run the activity recorder (screenshots + typed text for the memory)."""
+    if not is_running():
+        warn(f"Cerebro's API is not responding at {api_base()}.")
+    command = [str(python_for()), str(DESKTOP / "activity_recorder.py"),
+               "--api", args.api or api_base()]
+    return run(command)
+
+
 def cmd_inbox(args) -> int:
     """Import Outlook/Teams JSON files written by Power Automate."""
     command = [str(python_for()), str(BACKEND / "enterprise_ingest.py")]
@@ -512,6 +522,11 @@ def main() -> int:
     watch.add_argument("--folder", action="append", dest="folders",
                        help="folder to watch (repeatable)")
     watch.set_defaults(func=cmd_watch)
+
+    capture = subparsers.add_parser(
+        "capture", help="record activity (screenshots + typed text) for the memory")
+    capture.add_argument("--api", help="API base URL (default: from .env)")
+    capture.set_defaults(func=cmd_capture)
 
     inbox = subparsers.add_parser(
         "inbox", help="import Outlook/Teams messages from the bridge folder")

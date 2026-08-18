@@ -30,6 +30,8 @@
       "matches": [
         "https://*.salesforce.com/*",
         "https://*.force.com/*",
+        "https://*.crm.dynamics.com/*",
+        "https://*.dynamics.com/*",
         "https://*.service-now.com/*",
         "https://*.zendesk.com/*",
         "https://*.sharepoint.com/*",

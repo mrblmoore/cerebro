@@ -202,6 +202,14 @@ class ContextEngine:
 
         self._store_transcript(context, event_data, event, transcript_text)
 
+        # Speech is a window into the user's voice too.
+        try:
+            from app.services.style_service import capture_user_writing
+
+            capture_user_writing(self.db, transcript_text, channel="voice")
+        except Exception:
+            pass
+
         if not transcript_text.strip() or not self.llm.enabled:
             return
 

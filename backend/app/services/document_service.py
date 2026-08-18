@@ -169,6 +169,8 @@ Content:
 Give 3-5 bullet points: what it is, what it says, and anything that needs action.
 No preamble."""
 
+        prompt = llm.with_memory(prompt, query=question or record.name,
+                                 db=self.db, case_id=record.case_id)
         answer = llm._call_llm(prompt)
         if not question:
             record.summary = answer
