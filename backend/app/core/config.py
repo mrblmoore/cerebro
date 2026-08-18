@@ -6,7 +6,8 @@ has a working default, so ``uvicorn app.main:app`` succeeds on a fresh clone and
 the user can fill in the details later from the Setup UI at ``/setup``.
 """
 
-from typing import Optional
+import re
+from typing import List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,6 +19,12 @@ from app.core.paths import (
 )
 
 ensure_data_dirs()
+
+
+def _split_paths(value: str) -> List[str]:
+    """Split a multi-path setting. Newlines and semicolons only — Windows paths
+    contain colons, and folder names legitimately contain commas."""
+    return [part.strip() for part in re.split(r"[;\n]", value or "") if part.strip()]
 
 
 class Settings(BaseSettings):
@@ -80,6 +87,37 @@ class Settings(BaseSettings):
     QWEN_API_KEY: Optional[str] = None
     QWEN_MODEL: str = "qwen-plus"
 
+    # -------------------------------------------------- enterprise bridge
+    #: Outlook and Teams reach Cerebro through folders that Power Automate
+    #: writes to and reads from — no Microsoft credentials live here.
+    ENTERPRISE_ENABLED: bool = False
+    ENTERPRISE_INBOX_DIR: str = ""
+    ENTERPRISE_OUTBOX_DIR: str = ""
+    ENTERPRISE_ARCHIVE_DIR: str = ""
+    #: Seconds between inbox sweeps when the backend watches the folder itself.
+    ENTERPRISE_POLL_SECONDS: int = 5
+    #: Replies are written as drafts for approval unless this is turned on.
+    ENTERPRISE_AUTO_SEND: bool = False
+
+    # ------------------------------------------------------------ documents
+    DOCUMENTS_ENABLED: bool = True
+    #: Folders the document watcher may read. Empty means "anywhere the user
+    #: points Cerebro at explicitly, but nothing scanned automatically".
+    DOCUMENT_WATCH_DIRS: str = ""
+    #: Local roots where OneDrive/SharePoint libraries are synced, used to turn
+    #: a SharePoint URL into a file Cerebro can actually open.
+    SHAREPOINT_SYNC_ROOTS: str = ""
+    #: Largest document Cerebro will read into memory, in megabytes.
+    DOCUMENT_MAX_MB: float = 25.0
+    #: Keep a timestamped copy beside any document before editing it.
+    DOCUMENT_BACKUP_ON_EDIT: bool = True
+
+    # ------------------------------------------------------------- browser
+    #: Report every page visited, not just recognised CRM cases.
+    BROWSER_TRACK_ALL_TABS: bool = False
+    #: Domains the extension must never report, one per line or comma-separated.
+    BROWSER_EXCLUDED_DOMAINS: str = ""
+
     # ------------------------------------------------------------- desktop
     SCREENPIPE_URL: str = "http://localhost:3030"
     SCREENPIPE_ENABLED: bool = False
@@ -117,6 +155,19 @@ class Settings(BaseSettings):
     @property
     def using_sqlite(self) -> bool:
         return self.DATABASE_URL.startswith("sqlite")
+
+    @property
+    def document_watch_list(self) -> list:
+        return _split_paths(self.DOCUMENT_WATCH_DIRS)
+
+    @property
+    def sharepoint_root_list(self) -> list:
+        return _split_paths(self.SHAREPOINT_SYNC_ROOTS)
+
+    @property
+    def excluded_domain_list(self) -> list:
+        return [d.strip().lower() for d in re.split(r"[,\n]", self.BROWSER_EXCLUDED_DOMAINS)
+                if d.strip()]
 
     @property
     def cors_origin_list(self) -> list:

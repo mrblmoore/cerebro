@@ -39,7 +39,8 @@ let description = null;
 let active = 'general';
 const pending = {};
 
-const TEST_TARGETS = { database: 'database', ai: 'ai', knowledge: 'knowledge', desktop: 'screenpipe' };
+const TEST_TARGETS = { database: 'database', ai: 'ai', knowledge: 'knowledge',
+                       enterprise: 'enterprise', documents: 'documents', desktop: 'screenpipe' };
 
 function isDirty() { return Object.keys(pending).length > 0; }
 

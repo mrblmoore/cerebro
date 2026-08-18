@@ -90,6 +90,19 @@ GROUPS = [
         "description": "Vector store used for semantic search over your documents.",
     },
     {
+        "id": "enterprise",
+        "title": "Outlook & Teams",
+        "icon": "📨",
+        "description": "Power Automate drops Outlook and Teams messages into a folder; "
+                       "Cerebro reads it. No Microsoft credentials are stored here.",
+    },
+    {
+        "id": "documents",
+        "title": "Documents",
+        "icon": "📄",
+        "description": "Which documents Cerebro may read, and how it handles edits.",
+    },
+    {
         "id": "desktop",
         "title": "Desktop Capture",
         "icon": "🖥️",
@@ -178,6 +191,54 @@ FIELDS: List[Field] = [
           placeholder="text-embedding-3-small", advanced=True,
           show_if=("EMBEDDING_PROVIDER", ["openai"])),
 
+    # Enterprise bridge
+    Field("ENTERPRISE_ENABLED", "Enable the Outlook/Teams bridge", "enterprise",
+          "Cerebro watches the inbox folder and ingests each message Power Automate writes.",
+          type="bool"),
+    Field("ENTERPRISE_INBOX_DIR", "Inbox folder", "enterprise",
+          "Where your Power Automate flow writes message JSON files. Usually inside OneDrive.",
+          placeholder=r"C:\Users\you\OneDrive\Cerebro\enterprise-inbox",
+          show_if=("ENTERPRISE_ENABLED", [True])),
+    Field("ENTERPRISE_OUTBOX_DIR", "Outbox folder", "enterprise",
+          "Where Cerebro writes replies for a second flow to send. Leave blank to "
+          "disable outbound entirely.",
+          placeholder=r"C:\Users\you\OneDrive\Cerebro\enterprise-outbox",
+          show_if=("ENTERPRISE_ENABLED", [True])),
+    Field("ENTERPRISE_ARCHIVE_DIR", "Processed folder", "enterprise",
+          "Where ingested files are moved. Defaults to a 'processed' folder inside the inbox.",
+          advanced=True, show_if=("ENTERPRISE_ENABLED", [True])),
+    Field("ENTERPRISE_POLL_SECONDS", "Check every (seconds)", "enterprise",
+          type="number", advanced=True, show_if=("ENTERPRISE_ENABLED", [True])),
+    Field("ENTERPRISE_AUTO_SEND", "Send replies without approval", "enterprise",
+          "Off by default. Writing to the outbox is the moment a message actually "
+          "goes out, so replies wait for you to approve them.",
+          type="bool", show_if=("ENTERPRISE_ENABLED", [True])),
+
+    # Documents
+    Field("DOCUMENTS_ENABLED", "Read documents you open", "documents",
+          "Lets Cerebro extract text from Word, Excel, PowerPoint and PDF files "
+          "so it can answer questions about them.", type="bool"),
+    Field("DOCUMENT_WATCH_DIRS", "Watched folders", "documents",
+          "Folders the document watcher may scan, one per line. Leave blank and "
+          "Cerebro only reads documents you point it at.",
+          show_if=("DOCUMENTS_ENABLED", [True])),
+    Field("SHAREPOINT_SYNC_ROOTS", "SharePoint / OneDrive sync roots", "documents",
+          "Local folders where your SharePoint libraries are synced, one per line. "
+          "Cerebro uses these to open a SharePoint link as a real file.",
+          placeholder=r"C:\Users\you\Contoso Ltd",
+          show_if=("DOCUMENTS_ENABLED", [True])),
+    Field("DOCUMENT_BACKUP_ON_EDIT", "Back up before editing", "documents",
+          "Keeps a timestamped copy beside any file Cerebro changes.",
+          type="bool", show_if=("DOCUMENTS_ENABLED", [True])),
+    Field("DOCUMENT_MAX_MB", "Largest document (MB)", "documents",
+          type="number", advanced=True, show_if=("DOCUMENTS_ENABLED", [True])),
+    Field("BROWSER_TRACK_ALL_TABS", "Track all browser tabs", "documents",
+          "Off by default: only recognised CRM and document pages are reported. "
+          "Turn on to have the extension report every page you visit.", type="bool"),
+    Field("BROWSER_EXCLUDED_DOMAINS", "Never report these domains", "documents",
+          "One per line. Applies whatever the tracking setting is.",
+          placeholder="mybank.com\npayroll.company.com"),
+
     # Desktop
     Field("SCREENPIPE_ENABLED", "Enable Screenpipe", "desktop", type="bool"),
     Field("SCREENPIPE_URL", "Screenpipe URL", "desktop", type="url",
@@ -260,6 +321,49 @@ def _format(value: Any) -> str:
     return str(value)
 
 
+#: Characters that stop a value from being written bare in a .env file.
+_NEEDS_QUOTING = ("\n", "\r", "#", '"', "'")
+
+
+def _encode(value: Any) -> str:
+    """
+    Render a value for a ``.env`` file, quoting and escaping only when needed.
+
+    Two dotenv behaviours make this fiddly, and both bite Windows users:
+
+    * an unquoted value stops at the first newline, so a multi-line setting
+      (watched folders, excluded domains) would silently lose everything after
+      its first line — and the orphaned lines parse as junk keys;
+    * inside double quotes, backslash sequences are interpreted, so a quoted
+      ``C:\notes\team`` comes back as ``C:`` + newline + ``otes`` + tab.
+
+    So: write bare when the value is simple, and when quoting is unavoidable,
+    escape the backslashes first.
+    """
+    text = _format(value)
+    needs_quotes = (
+        any(char in text for char in _NEEDS_QUOTING)
+        or text != text.strip()
+    )
+    if not needs_quotes:
+        return text
+
+    escaped = (text.replace("\\", "\\\\")
+                   .replace('"', '\\"')
+                   .replace("\n", "\\n")
+                   .replace("\r", ""))
+    return f'"{escaped}"'
+
+
+def decode_env_value(text: str) -> str:
+    """Inverse of :func:`_encode`, used when re-reading a hand-edited file."""
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        body = text[1:-1]
+        return (body.replace("\\n", "\n").replace('\\"', '"')
+                    .replace("\\\\", "\\"))
+    return text
+
+
 def _is_default(key: str, value: Any) -> bool:
     """True when ``value`` matches the built-in default for ``key``."""
     field_info = Settings.model_fields.get(key)
@@ -293,7 +397,7 @@ def _render_env(values: Dict[str, Any]) -> str:
     for f in FIELDS:
         if f.key not in values:
             continue
-        entry = f"{f.key}={_format(values[f.key])}"
+        entry = f"{f.key}={_encode(values[f.key])}"
         if _is_default(f.key, values[f.key]):
             entry = f"# {entry}"
         by_group[f.group].append(entry)
@@ -308,7 +412,7 @@ def _render_env(values: Dict[str, Any]) -> str:
 
     for key in sorted(INTERNAL_KEYS):
         if key in values:
-            lines.append(f"{key}={_format(values[key])}")
+            lines.append(f"{key}={_encode(values[key])}")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -383,7 +487,8 @@ def update(changes: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:  # pragma: no cover - service layer is optional here
             pass
 
-    restart_keys = {"DATABASE_URL", "HOST", "PORT", "DEBUG", "CORS_ORIGINS", "SQLALCHEMY_ECHO"}
+    restart_keys = {"DATABASE_URL", "HOST", "PORT", "DEBUG", "CORS_ORIGINS",
+                    "SQLALCHEMY_ECHO"}
     restart_required = bool(restart_keys.intersection(applied))
 
     logger.info("settings", "Configuration updated", {"keys": applied, "restart": restart_required})

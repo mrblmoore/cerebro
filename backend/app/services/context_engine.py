@@ -30,6 +30,9 @@ KNOWN_EVENTS = {
     "REMOTE_SESSION_DISCONNECTED": "A remote support session disconnected",
     "APPLICATION_CHANGED": "The active window or URL changed",
     "TRANSCRIPT": "A call transcript was captured",
+    "DOCUMENT_OPENED": "A document was opened from the browser or desktop",
+    "PAGE_CAPTURED": "The readable text of a page was captured",
+    "ENTERPRISE_MESSAGE": "An Outlook or Teams message arrived",
 }
 
 
@@ -123,6 +126,8 @@ class ContextEngine:
             "REMOTE_SESSION_DISCONNECTED": self._on_remote_disconnected,
             "APPLICATION_CHANGED": self._on_application_changed,
             "TRANSCRIPT": self._on_transcript,
+            "DOCUMENT_OPENED": self._on_document_opened,
+            "PAGE_CAPTURED": self._on_page_captured,
         }
 
     # ---------------------------------------------------------- handlers
@@ -162,6 +167,34 @@ class ContextEngine:
         context.active_application = data.get("application")
         context.active_url = data.get("url")
         context.window_title = data.get("title")
+
+    @staticmethod
+    def _on_document_opened(context, event_data, event):
+        """A document came into view — it becomes the active application."""
+        data = event_data.data or {}
+        filename = data.get("filename") or data.get("name")
+        if filename:
+            context.active_application = "Document"
+            context.window_title = filename
+            if data.get("url"):
+                context.active_url = data["url"]
+
+    def _on_page_captured(self, context, event_data, event) -> None:
+        """
+        Page text from the browser.
+
+        Stored on the event rather than the context: it is evidence about one
+        moment, not state, and the context row should stay small enough to poll
+        every few seconds.
+        """
+        data = event_data.data or {}
+        text = data.get("text") or ""
+        if text:
+            event.ocr_text = text[:20_000]
+        if data.get("url"):
+            context.active_url = data["url"]
+        if data.get("title"):
+            context.window_title = data["title"]
 
     def _on_transcript(self, context, event_data, event) -> None:
         data = event_data.data or {}
@@ -301,6 +334,13 @@ class ContextEngine:
             add("capture_evidence",
                 f"Remote session to {context.remote_host or 'host'} is live — "
                 "capture before/after evidence for the case.", "medium")
+
+        if event.event_type == "DOCUMENT_OPENED":
+            filename = (event.data or {}).get("filename")
+            if filename:
+                add("read_document",
+                    f"Reading {filename} — ask me anything about it.", "medium",
+                    action=filename)
 
         if event.event_type == "TRANSCRIPT" and not self.llm.enabled:
             add("configure_ai",

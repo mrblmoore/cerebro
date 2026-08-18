@@ -1,5 +1,6 @@
 import { getConfig, setConfig } from './config.js';
-import { detect } from './detectors.js';
+import { detect, detectDocument } from './detectors.js';
+import { isExcluded } from './config.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -62,10 +63,52 @@ async function renderPage(config) {
     return;
   }
 
+  if (isExcluded(tab.url, config.excludedDomains)) {
+    host.innerHTML = '<p class="hint">This site is on your excluded list — '
+      + 'nothing here is read or reported.</p>';
+    return;
+  }
+
+  const document_ = detectDocument(tab.url, tab.title || '');
   const match = detect(tab.url, tab.title || '');
+
+  if (!match && document_) {
+    host.innerHTML =
+      row('Document', document_.filename) +
+      row('Source', document_.source) +
+      `<div class="actions" style="margin-top:8px">
+         <button id="open-doc">Open in Cerebro</button></div>
+       <p class="hint" style="margin-top:8px">Cerebro finds the synced copy on this
+         machine, so it can read and edit the file.</p>`;
+
+    $('open-doc').onclick = async () => {
+      const button = $('open-doc');
+      button.disabled = true;
+      button.textContent = 'Opening…';
+      try {
+        const response = await fetch(`${config.apiUrl}/api/documents/observe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ web_url: document_.web_url, discovered_by: 'browser' }),
+        });
+        const data = await response.json();
+        button.textContent = response.ok
+          ? `Reading ${data.kind || 'document'} ✓`
+          : 'Not synced to this machine';
+        if (!response.ok) {
+          host.insertAdjacentHTML('beforeend',
+            `<p class="hint">${esc(data.detail || '')}</p>`);
+        }
+      } catch {
+        button.textContent = 'Failed — is Cerebro running?';
+      }
+    };
+    return;
+  }
+
   if (!match) {
-    host.innerHTML = '<p class="hint">Not a recognised CRM case page. '
-      + 'Open a Salesforce, ServiceNow or Zendesk case and Cerebro picks it up.</p>';
+    host.innerHTML = '<p class="hint">Nothing recognised here. Open a Salesforce, '
+      + 'ServiceNow or Zendesk case, or a SharePoint document, and Cerebro picks it up.</p>';
     return;
   }
 

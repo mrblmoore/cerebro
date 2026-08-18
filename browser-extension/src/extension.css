@@ -63,6 +63,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .actions { display: flex; gap: 7px; }
 .actions > * { flex: 1; }
 
+textarea {
+  width: 100%; padding: 8px 10px; font: inherit; font-size: 12.5px;
+  font-family: var(--mono, ui-monospace, Menlo, Consolas, monospace);
+  color: var(--text); background: var(--bg); resize: vertical;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+
 input[type="text"], input[type="url"] {
   width: 100%; padding: 8px 10px; font: inherit; font-size: 13px;
   color: var(--text); background: var(--bg);

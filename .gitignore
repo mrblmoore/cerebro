@@ -12,6 +12,12 @@ backend_data.db
 *.sqlite
 cache/
 
+# Build output (PyInstaller / Inno Setup)
+dist/
+build/
+.venv-build/
+*.spec.bak
+
 # Python
 .venv/
 venv/

@@ -1,9 +1,28 @@
 /**
- * CRM page detectors.
+ * Page detectors — what Cerebro recognises in a browser tab.
  *
- * Each detector turns a URL + page title into a Cerebro event. Adding support
- * for another CRM means adding one entry here — nothing else changes.
+ * Two families:
+ *  - CRM detectors turn a case page into a CRM_CASE_OPENED event;
+ *  - document detectors turn a SharePoint/OneDrive/Office-online link into a
+ *    document Cerebro can open from the locally synced copy.
+ *
+ * Adding another system means adding one entry — nothing else changes.
  */
+
+/**
+ * decodeURIComponent throws on a stray `%`, and real URLs contain those — a
+ * literal percent in a filename, a truncated escape. An exception here would
+ * abort tab handling entirely, so a page that cannot be decoded is simply
+ * treated as its raw text.
+ */
+function safeDecode(value) {
+  const text = String(value ?? '');
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
 
 /** Pull the customer out of a pipe-separated CRM page title. */
 function customerFromTitle(title) {
@@ -70,4 +89,66 @@ export function detect(url, title = '') {
     };
   }
   return null;
+}
+
+// ------------------------------------------------------------------ documents
+const DOCUMENT_EXTENSIONS =
+  /\.(docx?|xlsx?|pptx?|pdf|csv|txt|md)(?:$|[?#])/i;
+
+const SHAREPOINT_HOST = /(^|\.)sharepoint\.com$|(^|\.)onedrive\.live\.com$/i;
+const OFFICE_ONLINE_HOST = /(^|\.)officeapps\.live\.com$|(^|\.)office\.com$/i;
+
+/**
+ * Recognise a document open in a browser tab.
+ *
+ * SharePoint serves documents through several shapes: a direct path, a viewer
+ * with `?file=`, and Doc.aspx with `sourcedoc={guid}`. The filename is what
+ * matters — Cerebro finds the real file in the OneDrive-synced folder, so it can
+ * read and edit it without any Microsoft API access.
+ */
+export function detectDocument(url, title = '') {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+
+  const host = parsed.hostname || '';
+  const isSharePoint = SHAREPOINT_HOST.test(host);
+  const isOfficeOnline = OFFICE_ONLINE_HOST.test(host);
+
+  const candidates = [
+    parsed.searchParams.get('file'),
+    parsed.searchParams.get('filename'),
+    parsed.searchParams.get('id'),
+    safeDecode(parsed.pathname || ''),
+  ].filter(Boolean);
+
+  let filename = null;
+  for (const candidate of candidates) {
+    // searchParams values are already decoded; decoding again is harmless for
+    // ordinary names and safeDecode absorbs the malformed ones.
+    const last = safeDecode(candidate).split('/').pop().trim();
+    if (DOCUMENT_EXTENSIONS.test(last)) { filename = last; break; }
+  }
+
+  // Doc.aspx?sourcedoc={guid} carries no filename — the tab title is the only
+  // place the document name appears, so fall back to it.
+  if (!filename && (isSharePoint || isOfficeOnline)) {
+    const fromTitle = String(title || '').split(/[|\u2013\u2014-]/)[0].trim();
+    if (fromTitle && DOCUMENT_EXTENSIONS.test(fromTitle)) filename = fromTitle;
+  }
+
+  if (!filename) return null;
+  if (!isSharePoint && !isOfficeOnline && !DOCUMENT_EXTENSIONS.test(parsed.pathname)) {
+    return null;
+  }
+
+  return {
+    filename,
+    web_url: url,
+    source: isSharePoint ? 'sharepoint' : (isOfficeOnline ? 'office' : 'web'),
+    title,
+  };
 }

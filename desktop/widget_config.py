@@ -25,7 +25,7 @@ DEFAULTS = {
     "notify_on_change": True,   # flash the widget when context changes
     "x": None,
     "y": None,
-    "width": 340,
+    "width": 372,
     "height": 460,
     "active_tab": "context",
 }

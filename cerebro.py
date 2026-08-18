@@ -5,6 +5,8 @@ Cerebro — one command for everything.
     python cerebro.py setup      Install dependencies and prepare the workspace
     python cerebro.py start      Start the API + open the dashboard
     python cerebro.py widget     Launch the desktop widget
+    python cerebro.py watch      Watch for documents you open
+    python cerebro.py inbox      Import Outlook/Teams messages from the bridge folder
     python cerebro.py doctor     Diagnose a broken install
     python cerebro.py status     Check whether Cerebro is running
     python cerebro.py stop       Stop a running Cerebro
@@ -39,6 +41,10 @@ EXTRAS = {
     "postgres": ("requirements-postgres.txt", "PostgreSQL driver"),
     "audio": (None, "Call recording and transcription"),
 }
+
+#: Installed by default — reading Word, Excel and PDF is core to what Cerebro
+#: does, not an optional extra the user has to discover.
+DEFAULT_REQUIREMENTS = ("requirements.txt", "requirements-documents.txt")
 
 
 # --------------------------------------------------------------------- output
@@ -190,6 +196,13 @@ def cmd_setup(args) -> int:
         return 1
     ok("Backend dependencies installed")
 
+    step("Installing document support (Word, Excel, PDF)…")
+    if run([python, "-m", "pip", "install", "--quiet",
+            "-r", BACKEND / "requirements-documents.txt"]) == 0:
+        ok("Document support installed")
+    else:
+        warn("Document support failed to install — Cerebro still runs without it")
+
     step("Installing the desktop widget…")
     run([python, "-m", "pip", "install", "--quiet", "-r", DESKTOP / "requirements.txt"],
         stdout=subprocess.DEVNULL)
@@ -313,6 +326,32 @@ def cmd_widget(args) -> int:
     return run(command)
 
 
+# ------------------------------------------------------- watch / inbox
+def cmd_watch(args) -> int:
+    """Run the document watcher, which notices the files you open."""
+    if not is_running():
+        warn(f"Cerebro's API is not responding at {api_base()}.")
+        print("  The watcher will keep retrying.\n")
+
+    command = [str(python_for()), str(DESKTOP / "document_watcher.py"),
+               "--api", args.api or api_base()]
+    for folder in args.folders or []:
+        command += ["--folder", folder]
+    return run(command)
+
+
+def cmd_inbox(args) -> int:
+    """Import Outlook/Teams JSON files written by Power Automate."""
+    command = [str(python_for()), str(BACKEND / "enterprise_ingest.py")]
+    if args.folder:
+        command.append(args.folder)
+    if args.watch:
+        command.append("--watch")
+    if args.api:
+        command += ["--api", args.api]
+    return run(command, cwd=ROOT)
+
+
 # ------------------------------------------------------------------- doctor
 def cmd_doctor(args) -> int:
     print(BANNER)
@@ -347,7 +386,8 @@ def cmd_doctor(args) -> int:
             [str(venv_python()), "-c",
              "import importlib.util as u, json;"
              "print(json.dumps({n: u.find_spec(n) is not None for n in "
-             "['fastapi','uvicorn','pydantic_settings','sqlalchemy','requests','openai','qdrant_client']}))"],
+             "['fastapi','uvicorn','pydantic_settings','sqlalchemy','requests','openai',"
+             "'qdrant_client','docx','openpyxl','pypdf']}))"],
             capture_output=True, text=True,
         )
         try:
@@ -361,6 +401,13 @@ def cmd_doctor(args) -> int:
             else:
                 fail(f"{name} is missing")
                 problems.append("Reinstall dependencies: python cerebro.py setup --recreate")
+        for name in ("docx", "openpyxl", "pypdf"):
+            if found.get(name):
+                ok(f"{name} (document reading)")
+            else:
+                warn(f"{name} is missing — Cerebro cannot read some document types")
+                problems.append("Install document support: pip install -r "
+                                "backend/requirements-documents.txt")
         for name, extra in (("openai", "ai"), ("qdrant_client", "search")):
             print(f"  {Style.dim('○') if not found.get(name) else Style.green('✓')} "
                   f"{name} {Style.dim('(optional)' if not found.get(name) else '')}")
@@ -406,6 +453,14 @@ def cmd_status(args) -> int:
     print(f"  ai generation  : {'enabled' if info.get('ai_enabled') else 'disabled'}")
     print(f"  current case   : {context.get('crm_case') or '—'}")
     print(f"  customer       : {context.get('customer') or '—'}")
+
+    bridge = api_get("/api/enterprise/status") or {}
+    if bridge.get("enabled"):
+        print(f"  outlook/teams  : {bridge.get('messages', 0)} message(s), "
+              f"{bridge.get('pending', 0)} waiting")
+    documents = api_get("/api/documents?limit=1") or {}
+    if documents.get("documents"):
+        print(f"  last document  : {documents['documents'][0]['name']}")
     return 0
 
 
@@ -451,6 +506,20 @@ def main() -> int:
     widget = subparsers.add_parser("widget", help="launch the desktop widget")
     widget.add_argument("--api", help="API base URL (default: from .env)")
     widget.set_defaults(func=cmd_widget)
+
+    watch = subparsers.add_parser("watch", help="watch for documents you open")
+    watch.add_argument("--api", help="API base URL (default: from .env)")
+    watch.add_argument("--folder", action="append", dest="folders",
+                       help="folder to watch (repeatable)")
+    watch.set_defaults(func=cmd_watch)
+
+    inbox = subparsers.add_parser(
+        "inbox", help="import Outlook/Teams messages from the bridge folder")
+    inbox.add_argument("folder", nargs="?", help="folder to read (default: from settings)")
+    inbox.add_argument("--watch", action="store_true", help="keep watching for new files")
+    inbox.add_argument("--api", help="send to a Cerebro at this URL instead of "
+                                     "the local database")
+    inbox.set_defaults(func=cmd_inbox)
 
     subparsers.add_parser("doctor", help="diagnose problems").set_defaults(func=cmd_doctor)
     subparsers.add_parser("status", help="show whether Cerebro is running").set_defaults(func=cmd_status)

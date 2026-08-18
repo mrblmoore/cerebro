@@ -17,17 +17,21 @@ from sqlalchemy.orm import Session
 from app.core import check_database, logger, settings, settings_store
 from app.core.paths import ENV_FILE, PROJECT_ROOT
 from app.core.database import get_db
+from app.services import document_service, enterprise_service
 from app.services.llm_service import LLMService
 from app.services.rag_service import RAGService
 from app.services.screenpipe_client import ScreenpipeClient
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 OPTIONAL_PACKAGES = {
     "openai": ("AI generation via OpenAI", "backend/requirements-ai.txt"),
     "qdrant_client": ("Qdrant vector database", "backend/requirements-search.txt"),
+    "docx": ("Word documents", "backend/requirements-documents.txt"),
+    "openpyxl": ("Excel workbooks", "backend/requirements-documents.txt"),
+    "pypdf": ("PDF documents", "backend/requirements-documents.txt"),
 }
 
 
@@ -126,6 +130,18 @@ def diagnostics(db: Session = Depends(get_db)) -> Dict[str, Any]:
             **llm.status(),
         },
         {
+            "id": "enterprise",
+            "label": "Outlook & Teams bridge",
+            "required": False,
+            **enterprise_service.status(),
+        },
+        {
+            "id": "documents",
+            "label": "Document reading",
+            "required": False,
+            **document_service.status(),
+        },
+        {
             "id": "screenpipe",
             "label": "Screenpipe capture",
             "required": False,
@@ -189,6 +205,10 @@ def test_connection(target: str, db: Session = Depends(get_db)) -> Dict[str, Any
         return RAGService(db).status()
     if target == "screenpipe":
         return ScreenpipeClient().status()
+    if target == "enterprise":
+        return enterprise_service.status()
+    if target == "documents":
+        return document_service.status()
     raise HTTPException(status_code=404, detail=f"Unknown test target: {target}")
 
 

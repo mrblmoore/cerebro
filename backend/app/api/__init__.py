@@ -3,6 +3,8 @@
 from app.api.audio import router as audio_router
 from app.api.cases import router as cases_router
 from app.api.context import router as context_router
+from app.api.documents import router as documents_router
+from app.api.enterprise import router as enterprise_router
 from app.api.events import router as events_router
 from app.api.knowledge import router as knowledge_router
 from app.api.system import router as system_router
@@ -13,6 +15,8 @@ ROUTERS = [
     context_router,
     cases_router,
     knowledge_router,
+    enterprise_router,
+    documents_router,
     audio_router,
 ]
 
@@ -22,6 +26,8 @@ __all__ = [
     "context_router",
     "cases_router",
     "knowledge_router",
+    "enterprise_router",
+    "documents_router",
     "audio_router",
     "system_router",
 ]

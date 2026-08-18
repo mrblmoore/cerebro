@@ -50,7 +50,8 @@ THEMES = {
     },
 }
 
-TABS = [("context", "Context"), ("assist", "Assist"), ("search", "Search")]
+TABS = [("context", "Context"), ("assist", "Assist"), ("inbox", "Inbox"),
+        ("docs", "Docs"), ("search", "Search")]
 
 PRIORITY_ICON = {"high": "●", "medium": "●", "low": "○"}
 
@@ -87,6 +88,9 @@ class ApiClient:
             ("recommendations", "/api/context/recommendations"),
             ("events", "/api/events/?limit=8"),
             ("info", "/api/system/info"),
+            ("inbox", "/api/enterprise/messages?limit=8"),
+            ("bridge", "/api/enterprise/status"),
+            ("documents", "/api/documents?limit=8"),
         ):
             try:
                 snapshot[key] = self.request(path, timeout=4)
@@ -282,13 +286,16 @@ class CerebroWidget:
     def _build_tabs(self):
         theme = self.theme
         holder = tk.Frame(self.body, bg=theme["bg"])
-        holder.pack(fill="x", padx=8, pady=(8, 0))
+        holder.pack(fill="x", padx=6, pady=(8, 0))
         self.tab_buttons = {}
 
-        for key, label in TABS:
+        # Tabs share the row evenly rather than sitting at their natural widths,
+        # so the last one is never clipped when the widget is narrow.
+        for column, (key, label) in enumerate(TABS):
             button = tk.Label(holder, text=label, bg=theme["bg"], fg=theme["dim"],
-                              font=self.font(9, "bold"), padx=11, pady=5, cursor="hand2")
-            button.pack(side="left", padx=(0, 3))
+                              font=self.font(9, "bold"), pady=5, cursor="hand2")
+            button.grid(row=0, column=column, sticky="ew", padx=1)
+            holder.grid_columnconfigure(column, weight=1)
             button.bind("<Button-1>", lambda _event, k=key: self.show_tab(k))
             self.tab_buttons[key] = button
 
@@ -376,6 +383,8 @@ class CerebroWidget:
         renderer = {
             "context": self._render_context,
             "assist": self._render_assist,
+            "inbox": self._render_inbox,
+            "docs": self._render_docs,
             "search": self._render_search,
         }[self.active_tab]
         renderer(ScrollArea(self.content, self))
@@ -464,6 +473,117 @@ class CerebroWidget:
                 self._link(card, "Open settings",
                            lambda: self.open_url("/settings")).pack(
                     anchor="w", padx=10, pady=(0, 9))
+
+    def _render_inbox(self, area):
+        """Outlook and Teams messages, most urgent first."""
+        if not self.online:
+            self._render_offline(area)
+            return
+
+        theme = self.theme
+        bridge = self.snapshot.get("bridge") or {}
+        if not bridge.get("enabled"):
+            self._empty(area.inner, "📨",
+                        "The Outlook and Teams bridge\nis switched off.")
+            self._link(area.inner, "Open settings",
+                       lambda: self.open_url("/settings")).pack(pady=(6, 0))
+            return
+
+        messages = (self.snapshot.get("inbox") or {}).get("messages") or []
+        if not messages:
+            self._empty(area.inner, "📭", "Nothing waiting.\nInbox is clear.")
+            return
+
+        rank = {"high": 0, "medium": 1, "normal": 2}
+        for message in sorted(messages, key=lambda m: rank.get(m.get("urgency"), 3)):
+            urgency = message.get("urgency", "normal")
+            colour = {"high": theme["err"], "medium": theme["warn"]}.get(urgency, theme["faint"])
+
+            card = tk.Frame(area.inner, bg=theme["surface"])
+            card.pack(fill="x", padx=10, pady=(0, 6))
+
+            header = tk.Frame(card, bg=theme["surface"])
+            header.pack(fill="x", padx=10, pady=(8, 0))
+            tk.Label(header, text="✉" if message.get("source") == "outlook" else "💬",
+                     bg=theme["surface"], fg=theme["dim"], font=self.font(8)).pack(side="left")
+            tk.Label(header, text=_shorten(message.get("sender_name")
+                                           or message.get("sender") or "unknown", 24),
+                     bg=theme["surface"], fg=theme["dim"],
+                     font=self.font(8)).pack(side="left", padx=(5, 0))
+            if urgency != "normal":
+                tk.Label(header, text=urgency.upper(), bg=theme["surface"], fg=colour,
+                         font=self.font(7, "bold")).pack(side="right")
+
+            tk.Label(card, text=message.get("subject") or message.get("preview") or "",
+                     bg=theme["surface"], fg=theme["text"], font=self.font(9),
+                     justify="left", anchor="w",
+                     wraplength=self.root.winfo_width() - 60).pack(
+                fill="x", padx=10, pady=(2, 0))
+
+            footer = []
+            if message.get("case_id"):
+                footer.append(f"case {message['case_id']}")
+            if message.get("chat_or_channel"):
+                footer.append(message["chat_or_channel"])
+            if message.get("urgency_reason"):
+                footer.append(message["urgency_reason"])
+            if footer:
+                tk.Label(card, text=_shorten(" · ".join(footer), 46), bg=theme["surface"],
+                         fg=theme["faint"], font=self.font(7),
+                         anchor="w").pack(fill="x", padx=10)
+
+            tk.Frame(card, bg=theme["surface"], height=8).pack()
+
+    def _render_docs(self, area):
+        """Documents Cerebro is currently reading."""
+        if not self.online:
+            self._render_offline(area)
+            return
+
+        theme = self.theme
+        documents = (self.snapshot.get("documents") or {}).get("documents") or []
+        if not documents:
+            self._empty(area.inner, "📄",
+                        "No documents in play.\nOpen a Word or Excel file\nand it appears here.")
+            return
+
+        icons = {"docx": "📝", "xlsx": "📊", "pptx": "📽", "pdf": "📕",
+                 "csv": "📈", "text": "📃"}
+
+        for document in documents:
+            card = tk.Frame(area.inner, bg=theme["surface"])
+            card.pack(fill="x", padx=10, pady=(0, 6))
+
+            header = tk.Frame(card, bg=theme["surface"])
+            header.pack(fill="x", padx=10, pady=(8, 0))
+            tk.Label(header, text=icons.get(document.get("kind"), "📄"),
+                     bg=theme["surface"], fg=theme["dim"],
+                     font=self.font(9)).pack(side="left", padx=(0, 6))
+            tk.Label(header, text=_shorten(document.get("name", ""), 30),
+                     bg=theme["surface"], fg=theme["text"],
+                     font=self.font(9, "bold"), anchor="w").pack(side="left", fill="x", expand=True)
+
+            meta = [document.get("discovered_by") or ""]
+            if document.get("case_id"):
+                meta.append(f"case {document['case_id']}")
+            if document.get("indexed"):
+                meta.append("indexed")
+            tk.Label(card, text=_shorten(" · ".join(m for m in meta if m), 44),
+                     bg=theme["surface"], fg=theme["faint"], font=self.font(7),
+                     anchor="w").pack(fill="x", padx=10)
+
+            if document.get("read_error"):
+                tk.Label(card, text=_shorten(document["read_error"], 60),
+                         bg=theme["surface"], fg=theme["warn"], font=self.font(7),
+                         justify="left", anchor="w",
+                         wraplength=self.root.winfo_width() - 60).pack(fill="x", padx=10)
+            elif document.get("summary"):
+                tk.Label(card, text=_shorten(document["summary"], 140),
+                         bg=theme["surface"], fg=theme["dim"], font=self.font(8),
+                         justify="left", anchor="w",
+                         wraplength=self.root.winfo_width() - 60).pack(fill="x", padx=10, pady=(3, 0))
+
+            tk.Frame(card, bg=theme["surface"], height=8).pack()
 
     def _render_search(self, area):
         theme = self.theme
@@ -625,6 +745,12 @@ class CerebroWidget:
             parts.append("☎")
         if context.get("remote_session_active"):
             parts.append("🔗")
+
+        urgent = sum(1 for m in ((self.snapshot.get("inbox") or {}).get("messages") or [])
+                     if m.get("urgency") == "high" and not m.get("handled"))
+        if urgent:
+            parts.append(f"✉{urgent}")
+
         return _shorten(" · ".join(parts), 30) if parts else "Cerebro"
 
     def open_menu(self, event=None):
@@ -856,7 +982,7 @@ class CerebroWidget:
 
         if self.config.get("compact"):
             self.title_label.configure(text=self._compact_title())
-        elif self.active_tab in ("context", "assist"):
+        elif self.active_tab in ("context", "assist", "inbox", "docs"):
             self.render()
 
     @staticmethod

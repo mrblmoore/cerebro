@@ -34,7 +34,10 @@ function renderDetectors(enabled) {
   $('apiUrl').value = config.apiUrl;
   $('enabled').checked = config.enabled;
   $('reportCases').checked = config.reportCases;
-  $('reportNavigation').checked = config.reportNavigation;
+  $('reportDocuments').checked = config.reportDocuments;
+  $('reportTabs').checked = config.reportTabs;
+  $('capturePageText').checked = config.capturePageText;
+  $('excludedDomains').value = (config.excludedDomains || []).join('\n');
   renderDetectors(config.enabledDetectors);
   renderStatus();
   renderQueue();
@@ -91,7 +94,12 @@ function renderDetectors(enabled) {
       apiUrl,
       enabled: $('enabled').checked,
       reportCases: $('reportCases').checked,
-      reportNavigation: $('reportNavigation').checked,
+      reportDocuments: $('reportDocuments').checked,
+      reportTabs: $('reportTabs').checked,
+      capturePageText: $('capturePageText').checked,
+      excludedDomains: $('excludedDomains').value
+        .split(/[\n,]/).map((d) => d.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
+        .filter(Boolean),
       enabledDetectors: [...document.querySelectorAll('[data-detector]')]
         .filter((input) => input.checked)
         .map((input) => input.dataset.detector),

@@ -40,6 +40,24 @@
       </div>
     </div>
 
+    <div class="section-title">Outlook &amp; Teams</div>
+    <div class="grid cols-2">
+      <div class="card">
+        <header><h2>Inbox</h2>
+          <span class="pill" id="inbox-count">—</span>
+          <button class="btn-sm ghost" id="sync-inbox">Sync now</button>
+        </header>
+        <div id="inbox"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card">
+        <header><h2>Documents in play</h2>
+          <span class="pill" id="doc-count">—</span>
+        </header>
+        <div id="documents"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+
     <div class="section-title">System</div>
     <div class="grid cols-2">
       <div class="card">
@@ -148,6 +166,93 @@ async function loadEvents() {
   }).join('')}</ul>`;
 }
 
+const URGENCY_PILL = { high: 'err', medium: 'warn', normal: '' };
+
+async function loadInbox() {
+  const host = document.getElementById('inbox');
+  const count = document.getElementById('inbox-count');
+  try {
+    const status = await API.get('/api/enterprise/status');
+    if (!status.enabled) {
+      count.textContent = 'off';
+      host.innerHTML = `<div class="empty"><span class="big">📨</span>
+        The Outlook and Teams bridge is off.<br>
+        <a href="/settings">Turn it on</a> and point it at the folder your
+        Power Automate flow writes to.</div>`;
+      return;
+    }
+
+    const data = await API.get('/api/enterprise/messages?limit=8');
+    count.textContent = `${status.messages} total`;
+    if (!data.count) {
+      host.innerHTML = `<div class="empty"><span class="big">📭</span>
+        Nothing yet. ${esc(status.detail || '')}</div>`;
+      return;
+    }
+
+    host.innerHTML = `<ul class="list">${data.messages.map((message) => `
+      <li>
+        <span class="icon">${message.source === 'outlook' ? '✉️' : '💬'}</span>
+        <span class="main">
+          <div class="title">${esc(message.subject || message.preview || '(no subject)').slice(0, 80)}</div>
+          <div class="meta">
+            ${esc(message.sender_name || message.sender || 'unknown')}
+            ${message.chat_or_channel ? ` · ${esc(message.chat_or_channel)}` : ''}
+            ${message.case_id ? ` · <code>${esc(message.case_id)}</code>` : ''}
+            · ${esc(relativeTime(message.timestamp || message.ingested_at))}
+          </div>
+        </span>
+        ${message.urgency !== 'normal'
+          ? `<span class="pill ${URGENCY_PILL[message.urgency]}" title="${esc(message.urgency_reason || '')}">${esc(message.urgency)}</span>`
+          : ''}
+      </li>`).join('')}</ul>`;
+  } catch (error) {
+    host.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+}
+
+async function loadDocuments() {
+  const host = document.getElementById('documents');
+  const count = document.getElementById('doc-count');
+  try {
+    const status = await API.get('/api/documents/status');
+    if (!status.enabled) {
+      count.textContent = 'off';
+      host.innerHTML = `<div class="empty"><span class="big">📄</span>
+        Document reading is off. <a href="/settings">Turn it on</a> to let Cerebro
+        read the Word and Excel files you open.</div>`;
+      return;
+    }
+
+    const data = await API.get('/api/documents?limit=8');
+    count.textContent = `${data.count}`;
+    if (!data.count) {
+      host.innerHTML = `<div class="empty"><span class="big">📄</span>
+        No documents seen yet. Run <code class="inline">python cerebro.py watch</code>,
+        or open a SharePoint file with the extension installed.</div>`;
+      return;
+    }
+
+    const icons = { docx: '📝', xlsx: '📊', pptx: '📽️', pdf: '📕', csv: '📈', text: '📃' };
+    host.innerHTML = `<ul class="list">${data.documents.map((doc) => `
+      <li>
+        <span class="icon">${icons[doc.kind] || '📄'}</span>
+        <span class="main">
+          <div class="title">${esc(doc.name)}</div>
+          <div class="meta">
+            ${esc(doc.discovered_by || '')}
+            ${doc.case_id ? ` · <code>${esc(doc.case_id)}</code>` : ''}
+            ${doc.read_error ? ` · <span style="color:var(--err)">${esc(doc.read_error.slice(0, 60))}</span>` : ''}
+            · ${esc(relativeTime(doc.last_seen))}
+          </div>
+        </span>
+        ${doc.indexed ? '<span class="pill ok">indexed</span>' : ''}
+      </li>`).join('')}</ul>`;
+  } catch (error) {
+    host.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+}
+
 async function loadChecks() {
   const host = document.getElementById('checks');
   try {
@@ -206,7 +311,7 @@ async function searchKnowledge() {
   }
 }
 
-async function loadDocuments() {
+async function loadKnowledgeDocuments() {
   const host = document.getElementById('kb-results');
   try {
     const data = await API.get('/api/knowledge/documents?limit=6');
@@ -244,7 +349,7 @@ dialog.addEventListener('close', async () => {
     ['doc-title', 'doc-source', 'doc-url', 'doc-content'].forEach((id) => {
       document.getElementById(id).value = '';
     });
-    loadDocuments();
+    loadKnowledgeDocuments();
   } catch (error) { toast(error.message, 'err', 7000); }
 });
 
@@ -253,6 +358,21 @@ document.getElementById('kb-query').onkeydown = (event) => {
   if (event.key === 'Enter') searchKnowledge();
 };
 document.getElementById('recheck').onclick = loadChecks;
+document.getElementById('sync-inbox').onclick = async (event) => {
+  const button = event.target;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = 'Syncing…';
+  try {
+    const result = await API.post('/api/enterprise/sync');
+    toast(result.ok
+      ? `Ingested ${result.ingested}, skipped ${result.duplicates} duplicate(s).`
+      : result.detail, result.ok ? 'ok' : 'err', 6000);
+    loadInbox();
+  } catch (error) {
+    toast(error.message, 'err');
+  } finally { button.disabled = false; button.textContent = original; }
+};
 document.getElementById('refresh-logs').onclick = loadLogs;
 
 (async function init() {
@@ -264,10 +384,15 @@ document.getElementById('refresh-logs').onclick = loadLogs;
         <a href="/settings">Connect a provider</a> — a local Ollama model works without any API key.</span>
     </div>`;
   }
-  loadDocuments();
+  loadKnowledgeDocuments();
   loadChecks();
   loadLogs();
-  poll(async () => { await loadContext(); await loadEvents(); }, 5000);
+  poll(async () => {
+    await loadContext();
+    await loadEvents();
+    await loadInbox();
+    await loadDocuments();
+  }, 5000);
 })();
 </script>
 </body>

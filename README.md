@@ -10,19 +10,27 @@ Everything runs on your machine: your database, your documents, your audio.
 
 ## Install
 
-**Windows** — download or clone the repository, then double-click **`setup.bat`**.
+**Windows — download `CerebroSetup.exe`** from the
+[releases page](https://github.com/mrblmoore/cerebro/releases) and run it.
 
-**macOS / Linux**
+No Python, no prerequisites, no admin rights: it installs to your own profile
+and puts Cerebro in the Start Menu. That is the whole install.
+
+<details>
+<summary>Installing from source instead</summary>
 
 ```bash
 git clone https://github.com/mrblmoore/cerebro.git
 cd cerebro
-./setup.sh
+./setup.sh          # or double-click setup.bat on Windows
 ```
 
-That is the whole install. It checks your Python, builds a virtual environment,
-installs dependencies and prepares the database — nothing else to configure,
-no database server to stand up, no API key required.
+Checks your Python, builds a virtual environment, installs dependencies and
+prepares the database. Nothing else to configure, no database server to stand
+up, no API key required.
+
+To build the installer yourself, see [docs/PACKAGING.md](docs/PACKAGING.md).
+</details>
 
 ## Run
 
@@ -50,8 +58,21 @@ instant knowledge search. Drag it anywhere, snap it to an edge, collapse it to a
 single strip while you work, or set it to start with Windows.
 
 **Browser extension**
-Detects Salesforce, ServiceNow and Zendesk cases and keeps Cerebro in sync.
-Load it from `browser-extension/src` — see [docs/INSTALL.md](docs/INSTALL.md).
+Detects Salesforce, ServiceNow and Zendesk cases, and the SharePoint documents
+you open, keeping Cerebro in sync with the tab you are on. Load it from
+`browser-extension/src` — see [docs/INSTALL.md](docs/INSTALL.md).
+
+**Outlook & Teams**
+Power Automate drops each message into a folder as JSON; Cerebro ingests it,
+triages what is urgent, links it to the right case, and drafts replies that go
+back out through a second flow. No Microsoft credentials live in Cerebro.
+See [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md).
+
+**Documents**
+Reads the Word, Excel, PowerPoint and PDF files you have open — including
+SharePoint files, via the locally synced copy — so you can ask about them. It
+can edit Word and Excel too, with a dry run first and a backup every time.
+See [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
 
 **API** — `http://localhost:8000/docs`
 Everything the UI does is a documented REST endpoint.
@@ -64,8 +85,9 @@ Cerebro works fully without any of these. Add them when you want them:
 
 | Extra | What it adds | How |
 |---|---|---|
-| AI provider | Case summaries, troubleshooting steps | Settings → AI Provider. A local [Ollama](https://ollama.com) model needs no API key. |
+| AI provider | Case summaries, troubleshooting steps, reply drafts, document Q&A | Settings → AI Provider. A local [Ollama](https://ollama.com) model needs no API key. |
 | OpenAI SDK | Required for the OpenAI provider | `pip install -r backend/requirements-ai.txt` |
+| Outlook & Teams | Mail and chat as live context | Two Power Automate flows and a folder — [guide](docs/POWER_AUTOMATE.md) |
 | PostgreSQL | Shared database for a team | `docker compose up -d postgres`, then Settings → Database |
 | Qdrant | Vector search at scale | `docker compose up -d qdrant`, then Settings → Knowledge Search |
 | Call transcription | Records and transcribes calls locally | `pip install -r desktop/requirements-audio.txt` |
@@ -76,14 +98,21 @@ Cerebro works fully without any of these. Add them when you want them:
 ## How it works
 
 ```
-Browser extension ─┐
-Desktop agent    ──┼──▶  Events  ──▶  Context Engine  ──▶  Context state
-Audio recorder   ─┘                        │
+Browser extension ─┐                                    Outlook / Teams
+Desktop agent    ──┤                                          │
+Document watcher ──┼──▶  Events  ──▶  Context Engine    Power Automate
+Audio recorder   ──┘                       │                  │
+                                           │            inbound folder
+                    Documents  ────────────┤                  │
+                    (Word, Excel, PDF)     ├◀─────────────────┘
+                                           │
                                            ├──▶  Knowledge search (RAG)
-                                           ├──▶  AI summaries (optional)
+                                           ├──▶  AI summaries & drafts (optional)
                                            └──▶  Suggestions
                                                     │
                                      Dashboard  ◀───┴───▶  Desktop widget
+                                                    │
+                                            outbound folder ──▶ Power Automate
 ```
 
 Events describe what happened (`CRM_CASE_OPENED`, `CALL_STARTED`,
@@ -100,6 +129,9 @@ from that one state.
 | [docs/INSTALL.md](docs/INSTALL.md) | Full install guide, per platform, plus troubleshooting |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting and what it does |
 | [docs/WIDGET.md](docs/WIDGET.md) | The desktop widget in detail |
+| [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md) | Outlook and Teams integration, flow by flow |
+| [docs/DOCUMENTS.md](docs/DOCUMENTS.md) | Reading and editing Word, Excel and PDF |
+| [docs/PACKAGING.md](docs/PACKAGING.md) | Building the Windows installer |
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Database schema |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration patterns |
 | [docs/LOGGING.md](docs/LOGGING.md) | Log format and locations |
@@ -121,6 +153,17 @@ running service, then tells you exactly what to do about anything it finds.
 ## Privacy
 
 Cerebro is local-first by design. The database, indexed documents, logs and any
-recordings stay in `data/` inside the project folder. Nothing is sent anywhere
-unless you configure a cloud AI provider — and choosing Ollama keeps even that
-on your machine.
+recordings stay on your machine — in `data/` for a source install, or
+`%LOCALAPPDATA%\Cerebro` for the packaged one. Nothing is sent anywhere unless
+you configure a cloud AI provider, and choosing Ollama keeps even that local.
+
+The pieces that touch other systems stay deliberately narrow:
+
+- **Outlook and Teams** reach Cerebro only through a folder of JSON files that
+  Power Automate writes. Cerebro holds no Microsoft credentials and makes no
+  calls to Microsoft 365. Replies wait for your approval before they leave.
+- **The browser extension** reports recognised case and document pages. Tracking
+  every tab is off by default, capturing page text is off by default, and any
+  domain on your exclusion list is never read at all.
+- **Documents** are read from disk when you open them. Edits are explicit,
+  backed up, and refused while the file is open in Office.

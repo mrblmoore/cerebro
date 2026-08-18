@@ -1,0 +1,83 @@
+name: Build Windows installer
+
+# Builds the packaged Cerebro executable and installer. PyInstaller can only
+# build for the platform it runs on, so this must run on Windows.
+#
+# Every push to main gets a downloadable artifact; pushing a v* tag also
+# attaches the installer to a GitHub release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "backend/requirements*.txt"
+      - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-documents.txt
+          pip install -r desktop/requirements.txt
+          pip install pyinstaller
+
+      - name: Run the test suite
+        run: python test_mvp.py
+
+      - name: Build the executables
+        run: pyinstaller packaging/cerebro.spec --noconfirm --distpath dist --workpath build
+
+      - name: Check the build starts
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist\Cerebro\Cerebro.exe" `
+            -ArgumentList "--no-browser","--port","8123" -PassThru
+          $ok = $false
+          foreach ($attempt in 1..30) {
+            Start-Sleep -Seconds 2
+            try {
+              $response = Invoke-WebRequest "http://127.0.0.1:8123/health" -UseBasicParsing -TimeoutSec 3
+              if ($response.StatusCode -eq 200) { $ok = $true; break }
+            } catch { }
+          }
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "The packaged build did not answer on /health" }
+          Write-Host "Packaged build started and answered /health."
+
+      - name: Build the installer
+        run: |
+          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
+        shell: pwsh
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CerebroSetup
+          path: dist/CerebroSetup.exe
+          if-no-files-found: error
+
+      - name: Attach the installer to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/CerebroSetup.exe
+          generate_release_notes: true

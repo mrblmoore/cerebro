@@ -1,0 +1,84 @@
+"""
+Background folder watching, run inside the backend process.
+
+The documented integration is a standalone importer (``enterprise_ingest.py``),
+which is still there and still the right tool for a remote Cerebro or a debug
+run. But asking someone to keep a second console window open forever is a poor
+default, so when the bridge is enabled the backend sweeps the folder itself.
+
+Polling rather than filesystem events on purpose: the inbox is usually a
+OneDrive-synced folder, where sync writes do not always raise the events an
+inotify/ReadDirectoryChanges watcher expects.
+"""
+
+import threading
+from typing import Optional
+
+from app.core import logger
+from app.core.config import settings
+from app.core.database import SessionLocal
+
+_thread: Optional[threading.Thread] = None
+_stop = threading.Event()
+
+
+def _sweep_once() -> None:
+    from app.services import enterprise_service
+
+    db = SessionLocal()
+    try:
+        result = enterprise_service.drain_inbox(db)
+        if result.get("ingested"):
+            logger.info("watcher", "Ingested enterprise messages", {
+                "ingested": result["ingested"],
+                "duplicates": result.get("duplicates", 0),
+            })
+        elif not result.get("ok"):
+            # Log once per sweep at debug level: a missing folder is a common
+            # transient state while OneDrive is still setting itself up.
+            logger.debug("watcher", "Inbox unavailable", {"detail": result.get("detail")})
+    except Exception as exc:  # a watcher must never take the server down
+        logger.error("watcher", "Inbox sweep failed", {"error": str(exc)})
+    finally:
+        db.close()
+
+
+def _loop() -> None:
+    interval = max(2, int(settings.ENTERPRISE_POLL_SECONDS))
+    logger.info("watcher", "Enterprise inbox watcher started", {"interval_s": interval})
+
+    while not _stop.is_set():
+        if settings.ENTERPRISE_ENABLED:
+            _sweep_once()
+        # Re-read the interval each pass so a settings change takes effect
+        # without a restart.
+        _stop.wait(max(2, int(settings.ENTERPRISE_POLL_SECONDS)))
+
+    logger.info("watcher", "Enterprise inbox watcher stopped")
+
+
+def start() -> None:
+    """
+    Start the watcher thread.
+
+    Started unconditionally, even with the bridge switched off: the loop checks
+    the setting on every pass, so turning the bridge on in Settings takes effect
+    within one interval. Gating the thread on the boot-time value instead meant
+    enabling the bridge appeared to work and then silently never swept.
+    """
+    global _thread
+
+    if _thread is not None and _thread.is_alive():
+        return
+
+    _stop.clear()
+    _thread = threading.Thread(target=_loop, name="cerebro-inbox-watcher", daemon=True)
+    _thread.start()
+
+
+def stop() -> None:
+    _stop.set()
+
+
+def running() -> bool:
+    return _thread is not None and _thread.is_alive()

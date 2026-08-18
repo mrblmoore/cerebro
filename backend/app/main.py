@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import ROUTERS
 from app.api.system import VERSION
 from app.core import init_db, logger, settings
+from app.services import watchers
 from app.core.paths import WEB_DIR
 
 STARTUP_BANNER = r"""
@@ -31,6 +32,9 @@ STARTUP_BANNER = r"""
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Sweeps the Power Automate inbox folder in the background when the bridge
+    # is enabled, so nobody has to keep an importer console open.
+    watchers.start()
 
     url = f"http://{'localhost' if settings.HOST in ('0.0.0.0', '127.0.0.1') else settings.HOST}:{settings.PORT}"
     print(STARTUP_BANNER)
@@ -53,6 +57,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    watchers.stop()
     logger.info("shutdown", "Cerebro stopped")
 
 

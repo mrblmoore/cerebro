@@ -1,29 +1,35 @@
 /**
  * Cerebro background service worker.
  *
- * Watches tab navigation for CRM case pages and reports them to the local
- * Cerebro API. Three things make it well-behaved:
+ * Watches browser activity and reports three things to the local Cerebro API:
+ * CRM cases, documents opened from SharePoint/OneDrive, and — only if asked —
+ * ordinary tab visits.
  *
- *  - it de-duplicates, so re-visiting the same case does not spam events;
- *  - failed posts are queued and retried instead of being dropped;
- *  - the toolbar badge always reflects whether Cerebro is reachable.
+ * Behaviour that keeps it well-mannered:
+ *  - excluded domains are dropped before anything is sent or even read;
+ *  - repeats are de-duplicated, so revisiting a page does not spam events;
+ *  - failed posts are queued and retried instead of dropped;
+ *  - the toolbar badge always shows whether Cerebro is reachable.
  */
 
-import { getConfig } from './config.js';
-import { detect } from './detectors.js';
+import { DEFAULTS, getConfig, isExcluded, isInternalUrl } from './config.js';
+import { detect, detectDocument } from './detectors.js';
 
 const QUEUE_KEY = 'pendingEvents';
 const MAX_QUEUE = 50;
+//: How long before the same page is worth reporting again.
+const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 
 let lastCaseKey = null;
 let online = false;
+const recentlySent = new Map();   // key -> timestamp
 
 // ------------------------------------------------------------------ badge
 const BADGES = {
   online: { text: '', colour: '#0f9d58', title: 'Cerebro — connected' },
   offline: { text: '!', colour: '#d93025', title: 'Cerebro — API not reachable' },
   disabled: { text: '‖', colour: '#8b93a1', title: 'Cerebro — paused' },
-  sent: { text: '✓', colour: '#4f46e5', title: 'Cerebro — case reported' },
+  sent: { text: '✓', colour: '#4f46e5', title: 'Cerebro — reported' },
 };
 
 function setBadge(state) {
@@ -33,16 +39,30 @@ function setBadge(state) {
   chrome.action.setTitle({ title: badge.title });
 }
 
+/** True the first time a key is seen, or once the repeat window has passed. */
+function shouldSend(key) {
+  const now = Date.now();
+  const previous = recentlySent.get(key);
+  if (previous && now - previous < REPEAT_WINDOW_MS) return false;
+  recentlySent.set(key, now);
+  if (recentlySent.size > 200) {
+    for (const [k, t] of recentlySent) {
+      if (now - t > REPEAT_WINDOW_MS) recentlySent.delete(k);
+    }
+  }
+  return true;
+}
+
 // -------------------------------------------------------------- transport
-async function postEvent(event) {
+async function post(path, body) {
   const { apiUrl } = await getConfig();
-  const response = await fetch(`${apiUrl}/api/events/`, {
+  const response = await fetch(`${apiUrl}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(event),
+    body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`API returned ${response.status}`);
-  return response.json();
+  return response.json().catch(() => ({}));
 }
 
 async function queueEvent(event) {
@@ -59,7 +79,7 @@ async function flushQueue() {
   for (const event of queue) {
     try {
       const { queuedAt, ...payload } = event;
-      await postEvent(payload);
+      await post('/api/events/', payload);
     } catch {
       remaining.push(event);
     }
@@ -67,9 +87,9 @@ async function flushQueue() {
   await chrome.storage.local.set({ [QUEUE_KEY]: remaining });
 }
 
-async function send(event) {
+async function sendEvent(event) {
   try {
-    await postEvent(event);
+    await post('/api/events/', event);
     online = true;
     setBadge('sent');
     setTimeout(() => setBadge(online ? 'online' : 'offline'), 1600);
@@ -84,42 +104,84 @@ async function send(event) {
   }
 }
 
+/**
+ * Tell Cerebro about a document open in a tab.
+ *
+ * Cerebro resolves the SharePoint URL to the locally synced file. A 404 here is
+ * normal and not worth queueing: it means the library is not synced to this
+ * machine, and retrying will not change that.
+ */
+async function sendDocument(document) {
+  try {
+    const result = await post('/api/documents/observe', {
+      web_url: document.web_url,
+      discovered_by: 'browser',
+    });
+    online = true;
+    setBadge('sent');
+    setTimeout(() => setBadge('online'), 1600);
+    return result;
+  } catch (error) {
+    console.info('Cerebro: document not resolved locally —', error.message);
+    return null;
+  }
+}
+
 // ------------------------------------------------------------- detection
 async function handleTab(tab) {
-  if (!tab || !tab.url || !/^https?:/.test(tab.url)) return;
+  if (!tab || !tab.url || isInternalUrl(tab.url)) return;
 
   const config = await getConfig();
   if (!config.enabled) {
     setBadge('disabled');
     return;
   }
+  if (isExcluded(tab.url, config.excludedDomains)) return;
 
-  const match = detect(tab.url, tab.title || '');
+  const title = tab.title || '';
+
+  // 1. A CRM case is the most specific thing a page can be.
+  const match = detect(tab.url, title);
   if (match && config.reportCases && config.enabledDetectors.includes(match.detector)) {
     const key = `${match.detector}:${match.case_id}`;
-    if (key === lastCaseKey) return;   // already reported this case
+    if (key === lastCaseKey) return;
     lastCaseKey = key;
 
-    await send({
+    await sendEvent({
       event_type: 'CRM_CASE_OPENED',
       source: 'browser_extension',
       case_id: match.case_id,
       data: {
-        system: match.system,
-        case_id: match.case_id,
-        customer: match.customer,
-        url: match.url,
-        title: match.title,
+        system: match.system, case_id: match.case_id, customer: match.customer,
+        url: match.url, title: match.title,
       },
     });
     return;
   }
 
-  if (!match && config.reportNavigation) {
-    await send({
+  // 2. A document open in a tab — SharePoint, OneDrive, Office online.
+  if (config.reportDocuments) {
+    const document = detectDocument(tab.url, title);
+    if (document && shouldSend(`doc:${document.web_url}`)) {
+      await sendDocument(document);
+      await sendEvent({
+        event_type: 'DOCUMENT_OPENED',
+        source: 'browser_extension',
+        data: {
+          filename: document.filename, url: document.web_url,
+          origin: document.source, title,
+        },
+      });
+      return;
+    }
+  }
+
+  // 3. Ordinary browsing, only when the user has asked for it.
+  if (config.reportTabs && shouldSend(`tab:${tab.url.split('#')[0]}`)) {
+    await sendEvent({
       event_type: 'APPLICATION_CHANGED',
       source: 'browser_extension',
-      data: { application: 'Browser', url: tab.url, title: tab.title || '' },
+      data: { application: 'Browser', url: tab.url, title },
     });
   }
 }
@@ -133,17 +195,41 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try { handleTab(await chrome.tabs.get(tabId)); } catch { /* tab closed */ }
 });
 
-// The content script reports single-page-app navigations that fire no tab update.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // The content script reports SPA navigations that fire no tab update.
   if (message.type === 'URL_CHANGED' && sender.tab) {
     handleTab({ ...sender.tab, url: message.url, title: message.title });
   }
+
+  // Readable page text, captured only where the user turned it on.
+  if (message.type === 'PAGE_TEXT' && sender.tab) {
+    handlePageText(message, sender.tab);
+  }
+
   if (message.type === 'PING') {
     checkConnection().then(sendResponse);
     return true;   // keep the channel open for the async reply
   }
   return false;
 });
+
+async function handlePageText(message, tab) {
+  const config = await getConfig();
+  if (!config.enabled || !config.capturePageText) return;
+  if (isExcluded(tab.url, config.excludedDomains)) return;
+  if (!message.text || message.text.length < 200) return;
+  if (!shouldSend(`text:${tab.url.split('#')[0]}`)) return;
+
+  await sendEvent({
+    event_type: 'PAGE_CAPTURED',
+    source: 'browser_extension',
+    data: {
+      url: tab.url, title: tab.title || '',
+      text: message.text.slice(0, 20000),
+      characters: message.text.length,
+    },
+  });
+}
 
 async function checkConnection() {
   const { apiUrl, enabled } = await getConfig();
