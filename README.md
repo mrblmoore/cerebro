@@ -10,14 +10,7 @@ Everything runs on your machine: your database, your documents, your audio.
 
 ## Install
 
-**Windows — download `CerebroSetup.exe`** from the
-[releases page](https://github.com/mrblmoore/cerebro/releases) and run it.
-
-No Python, no prerequisites, no admin rights: it installs to your own profile
-and puts Cerebro in the Start Menu. That is the whole install.
-
-<details>
-<summary>Installing from source instead</summary>
+Clone and run the setup script — it needs Python 3.9+ and nothing else:
 
 ```bash
 git clone https://github.com/mrblmoore/cerebro.git
@@ -25,11 +18,25 @@ cd cerebro
 ./setup.sh          # or double-click setup.bat on Windows
 ```
 
-Checks your Python, builds a virtual environment, installs dependencies and
-prepares the database. Nothing else to configure, no database server to stand
-up, no API key required.
+It checks your Python, builds a virtual environment, installs dependencies and
+prepares the database. No database server to stand up, no API key required.
 
-To build the installer yourself, see [docs/PACKAGING.md](docs/PACKAGING.md).
+<details>
+<summary>Prefer a one-click installer (CerebroSetup.exe)?</summary>
+
+The repository builds a self-contained `CerebroSetup.exe` — no Python, no
+prerequisites, per-user install — but a build has to be **published** before it
+appears on the [releases page](https://github.com/mrblmoore/cerebro/releases),
+which requires a Windows build run (PyInstaller can only build on the platform it
+targets). Two ways to get one:
+
+- **Publish a release.** Push a `v*` tag (e.g. `v0.3.0`); the
+  `build-windows.yml` GitHub Action builds it on a Windows runner, smoke-tests
+  it, and attaches `CerebroSetup.exe` to the release.
+- **Build it locally on a Windows machine.** Run
+  `packaging\build_windows.bat` — details in [docs/PACKAGING.md](docs/PACKAGING.md).
+
+Until then, use the source install above — it has every feature.
 </details>
 
 ## Run

@@ -41,10 +41,19 @@ hiddenimports = [
     "sqlalchemy.dialects.sqlite",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
-    "app.services.memory_service", "app.services.task_service",
-    "app.services.task_executors", "app.services.nudge_service",
-    "app.services.style_service", "app.services.activity_service",
-    "app.services.redaction",
+    # Every service is pinned here rather than left to static discovery: many are
+    # imported lazily inside functions (to keep optional deps optional), which is
+    # exactly the pattern PyInstaller's analysis can miss in a frozen build.
+    "app.services.activity_service", "app.services.context_engine",
+    "app.services.copilot_bridge", "app.services.copilot_guide",
+    "app.services.document_editors", "app.services.document_readers",
+    "app.services.document_service", "app.services.embeddings",
+    "app.services.enterprise_service", "app.services.event_detector",
+    "app.services.llm_service", "app.services.memory_service",
+    "app.services.nudge_service", "app.services.rag_service",
+    "app.services.redaction", "app.services.screenpipe_client",
+    "app.services.style_service", "app.services.task_executors",
+    "app.services.task_service", "app.services.watchers",
 ]
 
 excludes = ["tkinter"]   # the server build has no interface
