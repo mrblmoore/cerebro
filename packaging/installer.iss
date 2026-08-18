@@ -26,7 +26,7 @@ AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
 VersionInfoVersion={#VersionInfoVersion}
 VersionInfoProductName={#AppName}
-VersionInfoProductVersion={#AppVersion}
+VersionInfoProductVersion={#VersionInfoVersion}
 
 ; Per-user install: no UAC prompt, no admin rights, works on a locked-down
 ; machine where users cannot write to Program Files.
