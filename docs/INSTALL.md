@@ -1,7 +1,23 @@
 # Installing Cerebro
 
-Cerebro installs with one command and runs with no configuration. This page
-covers the details, the optional pieces and what to do when something fails.
+Cerebro's Windows installer includes Python, the cloud AI libraries, document
+readers, the desktop widget, and the optional activity-capture dependencies.
+Source installs use the commands below.
+
+### Windows release installer
+
+Download `CerebroSetup.exe` from the matching GitHub release and run it. The
+installer creates shortcuts for Cerebro, the widget, and the bundled browser
+extension folder. The widget starts Cerebro and its desktop helpers, and starts
+at sign-in by default. No separate Python installation is needed.
+
+Chrome and Edge intentionally require one user confirmation for unpacked
+extensions: open the **Install Browser Extension** Start-menu shortcut, then use
+that folder with **Load unpacked** on the browser's extensions page.
+
+Screenpipe is separately licensed software and is not redistributed by Cerebro.
+Its integration is enabled by default; if an official Screenpipe installation
+is present, the Cerebro widget detects and launches it automatically.
 
 ---
 
@@ -45,7 +61,7 @@ To install an optional extra at the same time:
 python cerebro.py setup --with ai --with search
 ```
 
-Valid extras: `ai` (OpenAI SDK), `search` (Qdrant), `postgres` (PostgreSQL
+Valid extras: `ai` (OpenAI-compatible and Amazon Bedrock SDKs), `search` (Qdrant), `postgres` (PostgreSQL
 driver), `audio` (call recording and transcription).
 
 If an install goes wrong, `python cerebro.py setup --recreate` rebuilds the
@@ -92,7 +108,8 @@ See [WIDGET.md](WIDGET.md) for everything it can do.
 
 1. Open `chrome://extensions` (or `edge://extensions`).
 2. Turn on **Developer mode**.
-3. Click **Load unpacked** and select the `browser-extension/src` folder.
+3. Click **Load unpacked** and select `browser-extension/src` for a source
+   checkout, or the folder opened by the installed **Install Browser Extension** shortcut.
 4. The options page opens. Confirm the API URL matches your Cerebro
    (`http://127.0.0.1:8000` by default) and click **Test connection**.
 

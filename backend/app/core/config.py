@@ -188,7 +188,9 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------- desktop
     SCREENPIPE_URL: str = "http://localhost:3030"
-    SCREENPIPE_ENABLED: bool = False
+    #: Connect whenever an independently installed Screenpipe service is available.
+    #: The client degrades cleanly while it is not running.
+    SCREENPIPE_ENABLED: bool = True
 
     # ------------------------------------------------------------- logging
     CEREBRO_LOG_PATH: str = ""

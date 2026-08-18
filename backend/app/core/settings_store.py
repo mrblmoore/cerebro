@@ -246,11 +246,11 @@ FIELDS: List[Field] = [
           show_if=("VECTOR_BACKEND", ["auto", "qdrant"])),
     Field("QDRANT_API_KEY", "Qdrant API key", "knowledge", type="password",
           show_if=("VECTOR_BACKEND", ["auto", "qdrant"])),
-    Field("EMBEDDING_PROVIDER", "Embeddings", "knowledge",
-          "Built-in embeddings work offline; OpenAI embeddings match far more accurately.",
+    Field("EMBEDDING_PROVIDER", "Knowledge-search embedding engine", "knowledge",
+          "Separate from your chosen AI model. The built-in engine works offline; an OpenAI-compatible embedding API is optional.",
           type="select", options=[
               {"value": "local", "label": "Built-in — offline, no key needed"},
-              {"value": "openai", "label": "OpenAI embeddings"},
+              {"value": "openai", "label": "OpenAI-compatible embedding API"},
           ]),
     Field("OPENAI_EMBEDDING_MODEL", "Embedding model", "knowledge",
           placeholder="text-embedding-3-small", advanced=True,
@@ -381,7 +381,8 @@ FIELDS: List[Field] = [
           show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
 
     # Desktop
-    Field("SCREENPIPE_ENABLED", "Enable Screenpipe", "desktop", type="bool"),
+    Field("SCREENPIPE_ENABLED", "Connect to Screenpipe automatically", "desktop",
+          "Enabled by default and harmless when Screenpipe is not installed or running.", type="bool"),
     Field("SCREENPIPE_URL", "Screenpipe URL", "desktop", type="url",
           placeholder="http://localhost:3030", show_if=("SCREENPIPE_ENABLED", [True])),
 

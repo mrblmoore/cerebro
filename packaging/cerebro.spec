@@ -41,6 +41,7 @@ hiddenimports = [
     "uvicorn.lifespan", "uvicorn.lifespan.on",
     "sqlalchemy.dialects.sqlite",
     "openai", "boto3", "botocore", "botocore.config",
+    "mss", "pynput", "pynput.keyboard",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
     # Every service is pinned here rather than left to static discovery: many are
@@ -77,7 +78,11 @@ widget = Analysis(
     pathex=[str(DESKTOP), str(ROOT)],
     binaries=[],
     datas=[],
-    hiddenimports=["widget", "widget_config", "win_integration"],
+    hiddenimports=[
+        "widget", "widget_config", "win_integration", "agent",
+        "activity_recorder", "screenpipe_launcher", "mss", "PIL",
+        "PIL.Image", "pynput", "pynput.keyboard",
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=["fastapi", "uvicorn", "sqlalchemy"],

@@ -74,12 +74,12 @@ rather than a base model ID; AWS documents the available IDs in its
 | `VECTOR_BACKEND` | `auto` | `auto` uses Qdrant when reachable, otherwise the built-in store |
 | `QDRANT_URL` | — | e.g. `http://localhost:6333` |
 | `QDRANT_API_KEY` | — | |
-| `EMBEDDING_PROVIDER` | `local` | `local` works offline; `openai` matches far more accurately |
+| `EMBEDDING_PROVIDER` | `local` | Separate from the chosen LLM. `local` works offline; `openai` uses an optional OpenAI-compatible embedding API. |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | |
 
 The built-in embedder is a hashed bag-of-words projection: no model download and
 no network, and good enough to find “the article about this error code”. Switch
-to OpenAI embeddings for genuine semantic matching — then run
+to an OpenAI-compatible embedding API for genuine semantic matching — then run
 **Settings → Knowledge Search → Reindex all documents**, since existing vectors
 belong to the old embedding space.
 
@@ -87,8 +87,13 @@ belong to the old embedding space.
 
 | Setting | Default | Notes |
 |---|---|---|
-| `SCREENPIPE_ENABLED` | `false` | Optional [Screenpipe](https://github.com/mediar-ai/screenpipe) integration |
+| `SCREENPIPE_ENABLED` | `true` | Connect automatically when an official [Screenpipe](https://github.com/screenpipe/screenpipe) installation is running |
 | `SCREENPIPE_URL` | `http://localhost:3030` | |
+
+Screenpipe is separately licensed software. Cerebro does not redistribute its
+binary; the installed Cerebro widget detects and launches an official Screenpipe
+installation when available. Cerebro's own widget, desktop agent, and optional
+privacy-controlled activity capture are included in the Windows installer.
 
 ## Logging
 

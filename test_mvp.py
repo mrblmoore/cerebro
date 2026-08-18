@@ -9,6 +9,7 @@ key and no running server:
 """
 
 import os
+import json
 import shutil
 import sys
 import tempfile
@@ -1299,6 +1300,48 @@ def test_settings_store():
     check("Invalid values are rejected", result["ok"] is False)
 
 
+def test_setup_and_package_contract():
+    print("\nSetup and Windows package")
+    from app.core.config import Settings
+
+    setup = (ROOT / "backend" / "app" / "web" / "setup.html").read_text(encoding="utf-8")
+    manifest = json.loads((ROOT / "browser-extension" / "src" / "manifest.json").read_text(encoding="utf-8"))
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+
+    check("Continue collects visible values before saving",
+          "collectVisibleInputs();" in setup and "Save & continue" in setup)
+    check("Skip explicitly saves before advancing",
+          "document.getElementById('skip').onclick = async" in setup
+          and "const saved = await saveStaged();" in setup)
+    check("Packaged extension instructions use the runtime folder",
+          "runtime.extension_dir" in setup)
+    installer = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
+    check("Installer extension shortcut targets the bundled asset folder",
+          r'{app}\_internal\browser-extension' in installer)
+    check("Browser extension version matches the release version",
+          manifest["version"] == version)
+    check("Screenpipe integration defaults on", Settings().SCREENPIPE_ENABLED is True)
+
+
+def test_screenpipe_current_api():
+    print("\nScreenpipe API")
+    from unittest.mock import Mock, patch
+    from app.services.screenpipe_client import ScreenpipeClient
+
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "data": [{"type": "OCR", "content": {"app_name": "Notepad", "text": "case"}}]
+    }
+    with patch("app.services.screenpipe_client.requests.get", return_value=response) as request:
+        records = ScreenpipeClient().get_screenshots(limit=3)
+    check("Screenpipe content is read through /search",
+          request.call_args.args[0].endswith("/search"))
+    check("Screenpipe OCR records are returned", len(records) == 1)
+    check("Screenpipe search sends the current content type",
+          request.call_args.kwargs["params"]["content_type"] == "ocr")
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -1320,7 +1363,8 @@ def main() -> int:
                   test_document_update_task, test_nudges,
                   test_copilot_bridge, test_copilot_guide,
                   test_copilot_approval_flow, test_copilot_memory_redaction,
-                  test_settings_store):
+                  test_settings_store, test_setup_and_package_contract,
+                  test_screenpipe_current_api):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
