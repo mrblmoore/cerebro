@@ -14,6 +14,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+# The suite prints ✓/✗ marks. A Windows console defaults to cp1252, which cannot
+# encode them, so the first print would crash with UnicodeEncodeError before any
+# assertion ran. Force UTF-8 so the tests behave identically on every platform.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "backend"))
 

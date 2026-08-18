@@ -19,6 +19,16 @@ import time
 import webbrowser
 from pathlib import Path
 
+# The startup banner and log lines contain box-drawing characters and may carry
+# non-ASCII data. A Windows console defaults to cp1252; force UTF-8 so the exe's
+# output renders cleanly instead of garbling or raising. Guarded because a
+# windowed build can have no console at all.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # In a source checkout the backend is a sibling directory; in the frozen build
 # it is bundled at the top level of the archive.
 _HERE = Path(__file__).resolve().parent
