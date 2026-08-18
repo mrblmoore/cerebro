@@ -1,8 +1,10 @@
 """
 Screenpipe client — optional desktop activity monitoring.
 
-Screenpipe is off by default. Every method degrades to an empty result when it
-is disabled or unreachable, so callers never need a try/except of their own.
+Screenpipe integration is ready by default. Every method degrades to an empty
+result when it is disabled or unreachable, so callers never need a try/except
+of their own. The current Screenpipe REST API exposes captured content through
+``/search`` and service state through ``/health``.
 Uses ``requests`` rather than ``aiohttp`` to keep the dependency list short.
 """
 
@@ -46,15 +48,32 @@ class ScreenpipeClient:
             logger.warn("screenpipe_client", "Request failed", {"path": path, "error": str(exc)})
             return default
 
-    def get_screenshots(self, limit: int = 10) -> List[Dict[str, Any]]:
-        return self._get("/screenshots", {"limit": limit}, default=[]) or []
+    def search(self, limit: int = 10, content_type: str = "all", query: str = "") -> List[Dict[str, Any]]:
+        data = self._get("/search", {
+            "limit": limit,
+            "content_type": content_type,
+            "q": query or None,
+        }, default={}) or {}
+        if isinstance(data, list):
+            return data
+        return data.get("data") or data.get("items") or []
 
-    def get_ocr(self, screenshot_id: str) -> str:
-        data = self._get(f"/screenshots/{screenshot_id}/ocr", default={}) or {}
-        return data.get("text", "")
+    def get_screenshots(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return recent OCR/screen records using Screenpipe's current API."""
+        return self.search(limit=limit, content_type="ocr")
 
     def get_active_window(self) -> Dict[str, Any]:
-        return self._get("/windows/active", default={}) or {}
+        records = self.search(limit=1, content_type="ocr")
+        return records[0] if records else {}
 
     def detect_applications(self) -> List[Dict[str, Any]]:
-        return self._get("/applications", default=[]) or []
+        records = self.search(limit=100, content_type="ocr")
+        seen = set()
+        applications = []
+        for record in records:
+            content = record.get("content", record) if isinstance(record, dict) else {}
+            name = content.get("app_name") or content.get("application_name")
+            if name and name not in seen:
+                seen.add(name)
+                applications.append({"name": name})
+        return applications

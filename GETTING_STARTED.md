@@ -63,7 +63,9 @@ If you want it every day, open **☰ → Start with Windows**.
 
 1. Open `chrome://extensions` (or `edge://extensions`).
 2. Turn on **Developer mode**.
-3. **Load unpacked** → select `browser-extension/src`.
+3. **Load unpacked** → select the `browser-extension` folder shown by the
+   installed **Install Browser Extension** Start-menu shortcut. From a source
+   checkout, select `browser-extension/src` instead.
 4. On the options page that opens, click **Test connection**.
 
 Now open a real Salesforce, ServiceNow or Zendesk case. Within a second the
@@ -82,10 +84,14 @@ Cerebro can draft case summaries and troubleshooting steps. It needs a model:
 * **Private and free** — install [Ollama](https://ollama.com), run
   `ollama pull llama3.1`, then pick **Ollama** in Settings → AI Provider.
   Nothing leaves your machine.
-* **Best quality** — `pip install -r backend/requirements-ai.txt`, then paste an
-  OpenAI key in the same place.
+* **Cloud API** — choose OpenAI-compatible, Qwen, or Amazon Bedrock in the same
+  place and enter the credentials requested for that selected provider. The
+  Windows installer already includes the required cloud AI libraries.
+* **Your AWS account** — install the same AI requirements, choose **Amazon
+  Bedrock**, and enter your Region plus a model or inference profile ID. Cerebro
+  can use your normal AWS CLI/SSO profile, a named profile, or temporary keys.
 
-Press **Test connection** either way. Then create a case and watch the summary
+Press **Test connection** for whichever provider you choose. Then create a case and watch the summary
 appear:
 
 ```bash

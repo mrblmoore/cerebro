@@ -14,10 +14,11 @@
     <div class="steps" id="steps"></div>
     <div id="step"></div>
     <div class="wizard-nav">
-      <button id="back" class="ghost">← Back</button>
+      <button id="back" type="button" class="ghost">← Back</button>
       <div class="spacer"></div>
-      <button id="skip" class="ghost">Skip</button>
-      <button id="next" class="primary">Continue →</button>
+      <span id="save-status" class="muted" style="font-size:12px" aria-live="polite"></span>
+      <button id="skip" type="button" class="ghost">Skip for now</button>
+      <button id="next" type="button" class="primary">Save & continue →</button>
     </div>
   </div>
 
@@ -27,6 +28,7 @@ document.getElementById('topbar').innerHTML = topbar('/setup');
 
 let config = {};     // field key -> current value
 let fieldMeta = {};  // field key -> descriptor
+let runtime = {};    // packaged paths and runtime details
 const pending = {};  // changes staged by the wizard
 let index = 0;
 
@@ -72,6 +74,19 @@ function textField(key, extra = '') {
   </label>`;
 }
 
+function selectField(key) {
+  const meta = fieldMeta[key] || {};
+  const value = pending[key] !== undefined ? pending[key] : (config[key] ?? '');
+  return `<label class="field">
+    <span class="name">${esc(meta.label || key)}</span>
+    ${meta.help ? `<span class="help">${esc(meta.help)}</span>` : ''}
+    <select data-key="${esc(key)}">
+      ${(meta.options || []).map((option) => `
+        <option value="${esc(option.value)}"${String(option.value) === String(value) ? ' selected' : ''}>${esc(option.label)}</option>`).join('')}
+    </select>
+  </label>`;
+}
+
 // ------------------------------------------------------------------- steps
 async function renderWelcome() {
   const el = document.getElementById('step');
@@ -90,6 +105,7 @@ async function loadChecks() {
   const host = document.getElementById('checks');
   try {
     const data = await API.get('/api/system/diagnostics');
+    runtime = { ...runtime, ...data };
     host.innerHTML = data.checks.map((check) => {
       const optional = check.optional_package;
       const icon = optional ? (check.installed ? '✅' : '○') : (check.ok ? '✅' : (check.required ? '❌' : '⚠️'));
@@ -136,7 +152,7 @@ function renderDatabase() {
   document.getElementById('db-choices').onchange = (event) => {
     const external = event.target.value === 'external';
     document.getElementById('db-url').classList.toggle('hidden', !external);
-    if (!external) pending.DATABASE_URL = '';  // empty resets to the SQLite default
+    if (!external) pending.DATABASE_URL = runtime.default_database_url || config.DATABASE_URL;
     else if (!pending.DATABASE_URL) pending.DATABASE_URL = 'postgresql+psycopg://user:password@localhost:5432/cerebro';
     syncChoices();
     const input = document.querySelector('[data-key="DATABASE_URL"]');
@@ -160,6 +176,8 @@ function renderAI() {
         'Most private')}
       ${choice('LLM_PROVIDER', 'openai', 'OpenAI or compatible API',
         'Best quality. Requires an API key; prompts are sent to the provider.')}
+      ${choice('LLM_PROVIDER', 'bedrock', 'Amazon Bedrock',
+        'Use a Bedrock foundation model or inference profile through your AWS account.')}
       ${choice('LLM_PROVIDER', 'qwen', 'Qwen', 'Any Qwen-compatible chat completions endpoint.')}
     </div>
     <div id="ai-fields" style="margin-top:18px"></div>`;
@@ -182,6 +200,7 @@ function renderAIFields(fallback) {
     openai: textField('OPENAI_API_KEY') + textField('OPENAI_MODEL'),
     ollama: textField('OLLAMA_URL') + textField('OLLAMA_MODEL'),
     qwen: textField('QWEN_API_URL') + textField('QWEN_API_KEY') + textField('QWEN_MODEL'),
+    bedrock: renderBedrockFields(),
   };
 
   host.innerHTML = groups[provider] || '';
@@ -193,6 +212,31 @@ function renderAIFields(fallback) {
     };
   }
   bindInputs();
+  const auth = document.querySelector('[data-key="BEDROCK_AUTH_MODE"]');
+  if (auth) auth.onchange = () => {
+    pending.BEDROCK_AUTH_MODE = auth.value;
+    renderAIFields();
+  };
+}
+
+function renderBedrockFields() {
+  const auth = pending.BEDROCK_AUTH_MODE !== undefined
+    ? pending.BEDROCK_AUTH_MODE : (config.BEDROCK_AUTH_MODE || 'default');
+  let credentials = '';
+  if (auth === 'profile') credentials = textField('BEDROCK_AWS_PROFILE');
+  if (auth === 'keys') {
+    credentials = textField('BEDROCK_AWS_ACCESS_KEY_ID') +
+      textField('BEDROCK_AWS_SECRET_ACCESS_KEY') + textField('BEDROCK_AWS_SESSION_TOKEN') +
+      `<div class="callout warn"><span class="icon">⚠️</span><span>
+        Prefer temporary credentials. Cerebro stores these values only in its local configuration file.
+      </span></div>`;
+  }
+  return textField('BEDROCK_REGION') + textField('BEDROCK_MODEL_ID') +
+    selectField('BEDROCK_AUTH_MODE') + credentials +
+    `<div class="callout"><span class="icon">ℹ️</span><span>
+      The selected AWS identity needs <code class="inline">bedrock:InvokeModel</code> permission.
+      Use the model or inference profile ID shown in the Amazon Bedrock console.
+    </span></div>`;
 }
 
 function renderKnowledge() {
@@ -218,31 +262,28 @@ function renderKnowledgeFields() {
   const backend = pending.VECTOR_BACKEND !== undefined ? pending.VECTOR_BACKEND : config.VECTOR_BACKEND;
   const host = document.getElementById('kb-fields');
   if (!host) return;
-  const meta = fieldMeta.EMBEDDING_PROVIDER || {};
-  const value = pending.EMBEDDING_PROVIDER !== undefined ? pending.EMBEDDING_PROVIDER : config.EMBEDDING_PROVIDER;
   host.innerHTML = (backend === 'qdrant' ? textField('QDRANT_URL') + textField('QDRANT_API_KEY') : '') +
-    `<label class="field">
-      <span class="name">${esc(meta.label || 'Embeddings')}</span>
-      <span class="help">${esc(meta.help || '')}</span>
-      <select data-key="EMBEDDING_PROVIDER">
-        ${(meta.options || []).map((option) => `
-          <option value="${esc(option.value)}"${option.value === value ? ' selected' : ''}>${esc(option.label)}</option>`).join('')}
-      </select>
-    </label>`;
+    `<div class="callout"><span class="icon">ℹ️</span><span>
+      Knowledge search uses Cerebro's included offline index by default. It does not require
+      OpenAI and does not change the AI model you selected. Advanced embedding options remain
+      available later in Settings → Knowledge Search.
+    </span></div>`;
   bindInputs();
 }
 
 function renderDesktop() {
   const origin = window.location.origin;
+  const packaged = Boolean(runtime.packaged);
+  const extensionPath = runtime.extension_dir || 'browser-extension/src';
   document.getElementById('step').innerHTML = head('Step 5 of 7', 'Desktop widget & browser extension',
-    'These two optional pieces are what make Cerebro feel ambient — a floating panel on your ' +
-    'desktop and automatic case detection in the browser.') +
+    'The Windows installer includes the widget, desktop monitoring components, and every file ' +
+    'needed by the browser extension.') +
     `<div class="card" style="margin-bottom:14px"><header><h2>🪟 Desktop widget</h2></header>
       <div class="body">
         <p>An always-on-top panel showing live context, suggestions and knowledge search.
-           It only needs Python — no extra install.</p>
-        <p><strong>Windows:</strong> double-click <code class="inline">widget.bat</code> in the project folder.<br>
-           <strong>macOS / Linux:</strong> run <code class="inline">python cerebro.py widget</code></p>
+           ${packaged
+             ? 'Launch <strong>Cerebro Widget</strong> from the Start menu or desktop. It starts Cerebro and its bundled desktop helpers automatically — Python is not required.'
+             : 'From this source checkout, run <code class="inline">python cerebro.py widget</code>.'}</p>
       </div></div>
 
     <div class="card" style="margin-bottom:14px"><header><h2>🌐 Browser extension</h2></header>
@@ -251,20 +292,23 @@ function renderDesktop() {
         <ol style="margin:0 0 12px 18px; padding:0; color:var(--text-dim); font-size:13px">
           <li>Open <code class="inline">chrome://extensions</code> (or <code class="inline">edge://extensions</code>)</li>
           <li>Turn on <strong>Developer mode</strong></li>
-          <li>Choose <strong>Load unpacked</strong> and select <code class="inline">browser-extension/src</code></li>
+          <li>Choose <strong>Load unpacked</strong> and select <code class="inline">${esc(extensionPath)}</code></li>
           <li>Open the extension and confirm the API URL is <code class="inline">${esc(origin)}</code></li>
         </ol>
       </div></div>
 
-    <div class="card"><header><h2>🖥️ Screenpipe (optional)</h2></header>
+    <div class="card"><header><h2>🖥️ Screenpipe integration</h2></header>
       <div class="body">
-        <p>Continuous screen and window capture for richer context. Leave this off unless you
-           have Screenpipe installed.</p>
+        <p>Cerebro will connect automatically whenever Screenpipe is running at
+           <code class="inline">${esc(config.SCREENPIPE_URL || 'http://localhost:3030')}</code>.
+           If an official Screenpipe installation is detected, the widget will start it too.
+           Screenpipe itself is separately licensed and cannot be redistributed inside Cerebro.</p>
         <label class="switch">
           <input type="checkbox" data-key="SCREENPIPE_ENABLED"
             ${String(pending.SCREENPIPE_ENABLED ?? config.SCREENPIPE_ENABLED) === 'true' ? 'checked' : ''}>
-          <span class="track"></span><span>Enable Screenpipe integration</span>
+          <span class="track"></span><span>Connect to Screenpipe automatically</span>
         </label>
+        <p style="margin-bottom:0"><a href="https://screenpi.pe" target="_blank" rel="noopener">Get Screenpipe from its publisher</a></p>
       </div></div>`;
   bindInputs();
 }
@@ -359,6 +403,17 @@ function bindInputs() {
   });
 }
 
+function collectVisibleInputs() {
+  document.querySelectorAll('[data-key]').forEach((input) => {
+    pending[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.value;
+  });
+}
+
+function setNavigationBusy(busy, label = '') {
+  for (const id of ['back', 'skip', 'next']) document.getElementById(id).disabled = busy;
+  document.getElementById('save-status').textContent = label;
+}
+
 async function runTest(target, button) {
   const original = button.textContent;
   button.disabled = true;
@@ -375,6 +430,7 @@ async function runTest(target, button) {
 }
 
 async function saveStaged() {
+  collectVisibleInputs();
   const changes = { ...pending };
   delete changes.__db;
   if (!Object.keys(changes).length) return true;
@@ -384,6 +440,8 @@ async function saveStaged() {
     for (const key of Object.keys(changes)) delete pending[key];
     if (result.restart_required) {
       toast('Saved. Restart Cerebro for the database change to take effect.', 'ok', 7000);
+    } else {
+      document.getElementById('save-status').textContent = 'Saved';
     }
     return true;
   } catch (error) {
@@ -403,7 +461,8 @@ async function show(newIndex) {
   document.getElementById('back').classList.toggle('hidden', index === 0);
   document.getElementById('skip').classList.toggle('hidden', !STEPS[index].skippable);
   document.getElementById('next').textContent =
-    index === STEPS.length - 1 ? 'Open dashboard →' : 'Continue →';
+    index === STEPS.length - 1 ? 'Open dashboard →' : 'Save & continue →';
+  document.getElementById('save-status').textContent = '';
   await STEPS[index].render();
   bindInputs();
   syncChoices();
@@ -411,20 +470,31 @@ async function show(newIndex) {
 }
 
 document.getElementById('back').onclick = () => show(index - 1);
-document.getElementById('skip').onclick = () => show(index + 1);
+document.getElementById('skip').onclick = async () => {
+  setNavigationBusy(true, 'Saving…');
+  const saved = await saveStaged();
+  setNavigationBusy(false, saved ? 'Saved' : 'Not saved');
+  if (saved) await show(index + 1);
+};
 document.getElementById('next').onclick = async () => {
-  if (!(await saveStaged())) return;
+  setNavigationBusy(true, 'Saving…');
+  if (!(await saveStaged())) {
+    setNavigationBusy(false, 'Not saved — check the message above');
+    return;
+  }
   if (index === STEPS.length - 1) {
     await API.post('/api/system/setup/complete').catch(() => {});
     window.location.href = '/';
     return;
   }
-  show(index + 1);
+  setNavigationBusy(false, 'Saved');
+  await show(index + 1);
 };
 
 (async function init() {
   refreshConnectionPill();
   try {
+    runtime = await API.get('/api/system/info');
     const described = await API.get('/api/system/settings');
     described.fields.forEach((field) => {
       fieldMeta[field.key] = field;
@@ -433,7 +503,7 @@ document.getElementById('next').onclick = async () => {
   } catch (error) {
     toast(`Could not load settings: ${error.message}`, 'err', 8000);
   }
-  show(0);
+  await show(0);
 })();
 </script>
 </body>

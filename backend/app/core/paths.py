@@ -47,7 +47,7 @@ else:
 
 BACKEND_DIR = PROJECT_ROOT / "backend"
 DESKTOP_DIR = PROJECT_ROOT / "desktop"
-EXTENSION_DIR = PROJECT_ROOT / "browser-extension"
+EXTENSION_DIR = (BUNDLE_ROOT if FROZEN else PROJECT_ROOT) / "browser-extension"
 
 LOG_DIR = DATA_DIR / "logs"
 AUDIO_DIR = DATA_DIR / "audio"

@@ -41,8 +41,10 @@ set "VERSION_INFO_VERSION=!VERSION_MAJOR!.!VERSION_MINOR!.!VERSION_PATCH!.0"
 
 %BUILDPY% -m pip install --quiet --upgrade pip
 %BUILDPY% -m pip install --quiet -r backend\requirements.txt || exit /b 1
+%BUILDPY% -m pip install --quiet -r backend\requirements-ai.txt || exit /b 1
 %BUILDPY% -m pip install --quiet -r backend\requirements-documents.txt || exit /b 1
 %BUILDPY% -m pip install --quiet -r desktop\requirements.txt || exit /b 1
+%BUILDPY% -m pip install --quiet -r desktop\requirements-capture.txt || exit /b 1
 %BUILDPY% -m pip install --quiet pyinstaller || exit /b 1
 
 echo   [2/4] Cleaning previous output...

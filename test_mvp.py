@@ -9,6 +9,7 @@ key and no running server:
 """
 
 import os
+import json
 import shutil
 import sys
 import tempfile
@@ -243,6 +244,78 @@ def test_llm_disabled():
 
     summary = llm.generate_case_summary({"customer": "Contoso", "title": "Outlook issue"})
     check("Generation returns guidance, not an exception", "Settings" in summary)
+
+
+def test_bedrock_provider():
+    """Bedrock uses Converse and never needs real AWS credentials in tests."""
+    print("\nAI provider (Amazon Bedrock)")
+    import types as _types
+
+    from app.core.config import settings
+
+    captured = {}
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeClient:
+        def converse(self, **kwargs):
+            captured["request"] = kwargs
+            return {"output": {"message": {"content": [
+                {"text": "ready"}, {"text": "to help"},
+            ]}}}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured["session"] = kwargs
+
+        def client(self, service_name, **kwargs):
+            captured["service"] = service_name
+            captured["client"] = kwargs
+            return FakeClient()
+
+    fake_boto3 = _types.ModuleType("boto3")
+    fake_boto3.Session = FakeSession
+    fake_botocore = _types.ModuleType("botocore")
+    fake_config = _types.ModuleType("botocore.config")
+    fake_config.Config = FakeConfig
+
+    module_names = ("boto3", "botocore", "botocore.config")
+    previous_modules = {name: sys.modules.get(name) for name in module_names}
+    keys = (
+        "LLM_PROVIDER", "BEDROCK_REGION", "BEDROCK_MODEL_ID",
+        "BEDROCK_AUTH_MODE", "BEDROCK_AWS_PROFILE",
+    )
+    previous_settings = {key: getattr(settings, key) for key in keys}
+    try:
+        sys.modules["boto3"] = fake_boto3
+        sys.modules["botocore"] = fake_botocore
+        sys.modules["botocore.config"] = fake_config
+        object.__setattr__(settings, "LLM_PROVIDER", "bedrock")
+        object.__setattr__(settings, "BEDROCK_REGION", "us-west-2")
+        object.__setattr__(settings, "BEDROCK_MODEL_ID", "us.example.chat-v1:0")
+        object.__setattr__(settings, "BEDROCK_AUTH_MODE", "profile")
+        object.__setattr__(settings, "BEDROCK_AWS_PROFILE", "support-sso")
+
+        llm = LLMService()
+        reply = llm._dispatch("Help with this case")
+        check("Bedrock is reported as configured", llm.enabled is True)
+        check("Named AWS profile is used",
+              captured["session"] == {"region_name": "us-west-2",
+                                      "profile_name": "support-sso"})
+        check("Bedrock Runtime client is selected", captured["service"] == "bedrock-runtime")
+        check("Configured model is sent to Converse",
+              captured["request"]["modelId"] == "us.example.chat-v1:0")
+        check("Converse text blocks are combined", reply == "ready\nto help")
+    finally:
+        for key, value in previous_settings.items():
+            object.__setattr__(settings, key, value)
+        for name, module in previous_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 # ------------------------------------------------- enterprise bridge
@@ -1227,6 +1300,48 @@ def test_settings_store():
     check("Invalid values are rejected", result["ok"] is False)
 
 
+def test_setup_and_package_contract():
+    print("\nSetup and Windows package")
+    from app.core.config import Settings
+
+    setup = (ROOT / "backend" / "app" / "web" / "setup.html").read_text(encoding="utf-8")
+    manifest = json.loads((ROOT / "browser-extension" / "src" / "manifest.json").read_text(encoding="utf-8"))
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+
+    check("Continue collects visible values before saving",
+          "collectVisibleInputs();" in setup and "Save & continue" in setup)
+    check("Skip explicitly saves before advancing",
+          "document.getElementById('skip').onclick = async" in setup
+          and "const saved = await saveStaged();" in setup)
+    check("Packaged extension instructions use the runtime folder",
+          "runtime.extension_dir" in setup)
+    installer = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
+    check("Installer extension shortcut targets the bundled asset folder",
+          r'{app}\_internal\browser-extension' in installer)
+    check("Browser extension version matches the release version",
+          manifest["version"] == version)
+    check("Screenpipe integration defaults on", Settings().SCREENPIPE_ENABLED is True)
+
+
+def test_screenpipe_current_api():
+    print("\nScreenpipe API")
+    from unittest.mock import Mock, patch
+    from app.services.screenpipe_client import ScreenpipeClient
+
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "data": [{"type": "OCR", "content": {"app_name": "Notepad", "text": "case"}}]
+    }
+    with patch("app.services.screenpipe_client.requests.get", return_value=response) as request:
+        records = ScreenpipeClient().get_screenshots(limit=3)
+    check("Screenpipe content is read through /search",
+          request.call_args.args[0].endswith("/search"))
+    check("Screenpipe OCR records are returned", len(records) == 1)
+    check("Screenpipe search sends the current content type",
+          request.call_args.kwargs["params"]["content_type"] == "ocr")
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -1234,6 +1349,7 @@ def main() -> int:
 
     for suite in (test_version_source, test_event_detector, test_context_engine, test_event_flow,
                   test_embeddings, test_knowledge_search, test_llm_disabled,
+                  test_bedrock_provider,
                   test_enterprise_normalisation, test_enterprise_ingest_and_reply,
                   test_document_reading, test_document_editing,
                   test_sharepoint_resolution, test_document_tracking,
@@ -1247,7 +1363,8 @@ def main() -> int:
                   test_document_update_task, test_nudges,
                   test_copilot_bridge, test_copilot_guide,
                   test_copilot_approval_flow, test_copilot_memory_redaction,
-                  test_settings_store):
+                  test_settings_store, test_setup_and_package_contract,
+                  test_screenpipe_current_api):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

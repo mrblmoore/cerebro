@@ -117,6 +117,7 @@ class ActivityRecorder:
         self._typed_lock = threading.Lock()
         self._stop = threading.Event()
         self._last_window = None
+        self._keyboard_started = False
 
     # ---------------------------------------------------------- transport
     def refresh_config(self) -> dict:
@@ -150,6 +151,8 @@ class ActivityRecorder:
 
     # ---------------------------------------------------------- keyboard
     def _on_key(self, key) -> None:
+        if not self.config.get("enabled") or not self.config.get("keystrokes"):
+            return
         try:
             character = key.char
         except AttributeError:
@@ -176,6 +179,7 @@ class ActivityRecorder:
         listener = keyboard.Listener(on_press=self._on_key)
         listener.daemon = True
         listener.start()
+        self._keyboard_started = True
 
     # -------------------------------------------------------- screenshots
     def _screenshot_b64(self, max_px: int) -> Optional[str]:
@@ -214,7 +218,6 @@ class ActivityRecorder:
             print("\n  Activity capture is switched OFF in Cerebro.")
             print("  Turn it on in Settings → Activity capture, then restart this.\n")
 
-        self._start_keyboard()
         print("Recording while capture is enabled. Press Ctrl+C to stop.\n")
 
         last_shot = 0.0
@@ -223,8 +226,12 @@ class ActivityRecorder:
             while not self._stop.is_set():
                 self.refresh_config()
                 if not self.config.get("enabled"):
+                    self._drain_typed()
                     time.sleep(5)
                     continue
+
+                if self.config.get("keystrokes") and not self._keyboard_started:
+                    self._start_keyboard()
 
                 window = active_window()
                 if window is None:

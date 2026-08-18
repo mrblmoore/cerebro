@@ -58,7 +58,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; \
   GroupDescription: "Shortcuts:"
 Name: "widgetstartup"; Description: "Start the Cerebro widget when I sign in"; \
-  GroupDescription: "Startup:"; Flags: unchecked
+  GroupDescription: "Startup:"
 
 [Files]
 ; Everything PyInstaller produced, including the bundled browser extension.
@@ -69,12 +69,14 @@ Source: "..\dist\Cerebro\*"; DestDir: "{app}"; \
 Name: "{group}\Cerebro";            Filename: "{app}\{#AppExeName}"
 Name: "{group}\Cerebro Widget";     Filename: "{app}\{#WidgetExeName}"
 Name: "{group}\Cerebro Dashboard";  Filename: "http://localhost:8000"
+Name: "{group}\Install Browser Extension"; Filename: "{app}\_internal\browser-extension"
 Name: "{group}\Uninstall Cerebro";  Filename: "{uninstallexe}"
 Name: "{autodesktop}\Cerebro";      Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks: desktopicon
 Name: "{userstartup}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks: widgetstartup
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Start Cerebro now"; \
+Filename: "{app}\{#WidgetExeName}"; Description: "Start Cerebro and its desktop widget now"; \
   Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]

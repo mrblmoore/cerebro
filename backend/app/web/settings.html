@@ -90,9 +90,14 @@ function valueOf(key) {
 
 /** A field with `show_if` only appears while its controlling field matches. */
 function isVisible(field) {
-  if (!field.show_if) return true;
-  const current = valueOf(field.show_if.key);
-  return field.show_if.values.map(String).includes(String(current));
+  if (field.show_if) {
+    const current = valueOf(field.show_if.key);
+    if (!field.show_if.values.map(String).includes(String(current))) return false;
+  }
+  return (field.show_if_all || []).every((condition) => {
+    const current = valueOf(condition.key);
+    return condition.values.map(String).includes(String(current));
+  });
 }
 
 function renderPanel() {
@@ -131,8 +136,10 @@ function renderPanel() {
         </div>
       </div>` : ''}`;
 
-  const controllers = new Set(description.fields
-    .filter((f) => f.show_if).map((f) => f.show_if.key));
+  const controllers = new Set(description.fields.flatMap((field) => [
+    ...(field.show_if ? [field.show_if.key] : []),
+    ...(field.show_if_all || []).map((condition) => condition.key),
+  ]));
 
   document.querySelectorAll('[data-key]').forEach((input) => {
     input.oninput = input.onchange = () => {
