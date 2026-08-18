@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cerebro extension settings</title>
+  <link rel="stylesheet" href="extension.css">
+  <style>
+    body { max-width: 620px; margin: 0 auto; }
+    .card { border: 1px solid var(--border); border-radius: var(--radius);
+            margin: 16px 14px; overflow: hidden; }
+    .card > .section { border-bottom: 1px solid var(--border); }
+    .card > .section:last-child { border-bottom: 0; }
+    .footer { display: flex; align-items: center; gap: 10px; padding: 0 14px 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="mark">C</span>
+    <h1>Cerebro extension settings</h1>
+    <span class="spacer"></span>
+    <span class="pill" id="status"><span class="dot"></span> checking</span>
+  </header>
+
+  <div class="card">
+    <div class="section">
+      <h2>Connection</h2>
+      <label class="field">
+        <span class="name">Cerebro API URL</span>
+        <span class="help">Where Cerebro is running. The default suits a normal
+          local install; change the port here if you started it on another one.</span>
+        <input type="url" id="apiUrl" placeholder="http://127.0.0.1:8000">
+      </label>
+      <div class="actions" style="max-width:260px">
+        <button id="test">Test connection</button>
+      </div>
+      <p class="status-line" id="test-result" style="margin-top:8px"></p>
+    </div>
+
+    <div class="section">
+      <h2>What to report</h2>
+      <label class="check">
+        <input type="checkbox" id="enabled">
+        <span><span class="name">Extension active</span>
+          <span class="help">Turn off to stop reporting anything without uninstalling.</span></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="reportCases">
+        <span><span class="name">CRM cases</span>
+          <span class="help">Report the case id and customer when you open a case page.</span></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="reportDocuments">
+        <span><span class="name">Documents you open</span>
+          <span class="help">SharePoint, OneDrive and Office-online files. Cerebro
+            opens the locally synced copy so it can read and edit it.</span></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="reportTabs">
+        <span><span class="name">Every page you visit</span>
+          <span class="help">Off by default — noisy, and rarely what you want.</span></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="capturePageText">
+        <span><span class="name">Page text on case and document pages</span>
+          <span class="help">Sends the readable text of pages Cerebro already
+            recognises, so it can answer questions about what is on screen.
+            Never sent for excluded domains.</span></span>
+      </label>
+    </div>
+
+    <div class="section">
+      <h2>Never report these sites</h2>
+      <p class="hint">One domain per line. Nothing from these is read, captured
+        or sent — whatever the settings above say. Subdomains are covered.</p>
+      <textarea id="excludedDomains" rows="4" spellcheck="false"
+                placeholder="mybank.com&#10;payroll.company.com"></textarea>
+    </div>
+
+    <div class="section">
+      <h2>Supported systems</h2>
+      <p class="hint">Untick anything you do not use.</p>
+      <div id="detectors"></div>
+    </div>
+
+    <div class="section">
+      <h2>Queued events</h2>
+      <p class="status-line" id="queue">—</p>
+      <div class="actions" style="max-width:260px">
+        <button id="retry">Retry now</button>
+        <button id="clear">Discard queue</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <button id="save" class="primary">Save settings</button>
+    <span class="status-line" id="saved"></span>
+  </div>
+
+  <script src="options.js" type="module"></script>
+</body>
+</html>

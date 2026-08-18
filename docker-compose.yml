@@ -1,0 +1,45 @@
+# Optional supporting services for Cerebro.
+#
+# You do NOT need Docker to run Cerebro — it ships with a built-in database and
+# vector store. Use this only when you want PostgreSQL or Qdrant instead.
+#
+#   docker compose up -d postgres      # PostgreSQL only
+#   docker compose up -d qdrant        # Qdrant only
+#   docker compose up -d               # both
+#
+# Then point Cerebro at them in Settings → Database / Knowledge Search, or:
+#   DATABASE_URL=postgresql+psycopg://cerebro:cerebro@localhost:5432/cerebro
+#   QDRANT_URL=http://localhost:6333
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cerebro-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cerebro
+      POSTGRES_PASSWORD: cerebro
+      POSTGRES_DB: cerebro
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cerebro"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: cerebro-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  postgres-data:
+  qdrant-data:

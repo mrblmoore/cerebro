@@ -1,0 +1,8 @@
+# Optional: reading and editing Word, Excel, PowerPoint and PDF documents.
+# Cerebro installs these by default because document awareness is a core
+# feature; remove them if you only want context and knowledge search.
+#   pip install -r backend/requirements-documents.txt
+python-docx>=1.1,<2.0
+openpyxl>=3.1,<4.0
+python-pptx>=0.6.23,<2.0
+pypdf>=4.2,<7.0

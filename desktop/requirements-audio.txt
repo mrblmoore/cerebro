@@ -1,0 +1,5 @@
+# Optional: local call recording and transcription for the audio recorder.
+#   pip install -r desktop/requirements-audio.txt
+sounddevice>=0.4,<1.0
+soundfile>=0.12,<1.0
+faster-whisper>=1.0,<2.0

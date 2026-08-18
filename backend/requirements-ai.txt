@@ -1,0 +1,4 @@
+# Optional: AI generation via OpenAI or any OpenAI-compatible endpoint.
+# Not needed for Ollama or Qwen, which are called over plain HTTP.
+#   pip install -r backend/requirements-ai.txt
+openai>=1.30,<2.0

@@ -35,10 +35,14 @@ class ContextState(Base):
             "crm_case": self.crm_case,
             "crm_system": self.crm_system,
             "customer": self.customer,
-            "call_active": self.call_active,
-            "remote_session_active": self.remote_session_active,
+            "call_active": bool(self.call_active),
+            "remote_session_active": bool(self.remote_session_active),
+            "remote_host": self.remote_host,
             "active_application": self.active_application,
             "active_url": self.active_url,
+            "window_title": self.window_title,
+            "last_suggestion": self.last_suggestion,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
     
     def __repr__(self):

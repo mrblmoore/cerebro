@@ -1,28 +1,37 @@
 """
-Desktop Audio Recorder
+Cerebro audio recorder — local call capture and transcription.
 
-- Polls the backend context endpoint for call_active
-- When a call starts, records local microphone audio to WAV
-- Uses faster-whisper (if available) or whisper CLI to transcribe locally
-- Posts a TRANSCRIPT event to /api/events/ with transcript and metadata
-- Stores local log files for auditing
+Watches Cerebro's context for ``call_active``; when a call starts it records the
+microphone locally, and when the call ends it transcribes on this machine and
+posts a TRANSCRIPT event. Audio never leaves the machine.
 
-Notes:
-- Requires: sounddevice, soundfile, faster-whisper (optional), requests
-- Install: pip install sounddevice soundfile requests faster-whisper
+Optional — install its dependencies only if you want call transcription:
+
+    pip install -r desktop/requirements-audio.txt
+    python desktop/audio_recorder.py
 """
+import argparse
 import os
+import sys
 import time
 import tempfile
 import threading
 import requests
 import json
 from datetime import datetime
+from pathlib import Path
 
-API_URL = os.environ.get('CEREBRUS_API_URL', 'http://localhost:8000')
+# CEREBRUS_API_URL is the pre-0.2 name, still honoured so existing setups work.
+API_URL = (os.environ.get('CEREBRO_API_URL')
+           or os.environ.get('CEREBRUS_API_URL')
+           or 'http://127.0.0.1:8000')
 POLL_INTERVAL = 1.0
 SAMPLE_RATE = 16000
 CHANNELS = 1
+
+#: Recordings live with the rest of Cerebro's data rather than in the system
+#: temp directory, so they survive a reboot and are easy to find or purge.
+AUDIO_DIR = Path(__file__).resolve().parent.parent / "data" / "audio"
 
 try:
     import sounddevice as sd
@@ -50,13 +59,20 @@ class AudioRecorder:
         self._start_time = None
         self._end_time = None
         self.model = None
-        if FW_AVAILABLE:
-            try:
-                # Use small model by default for local CPU
-                self.model = WhisperModel("small", device="cpu", compute_type="int8")
-            except Exception as e:
-                print("Warning: faster-whisper model load failed:", e)
-                self.model = None
+        self._model_loaded = False
+
+    def _get_model(self):
+        """Load the Whisper model on first use — it takes several seconds."""
+        if self._model_loaded or not FW_AVAILABLE:
+            return self.model
+        self._model_loaded = True
+        try:
+            print("Loading the local transcription model (first run downloads it)…")
+            self.model = WhisperModel("small", device="cpu", compute_type="int8")
+        except Exception as e:
+            print("Warning: faster-whisper model load failed:", e)
+            self.model = None
+        return self.model
 
     def _record_worker(self, filename: str):
         # Open soundfile for writing
@@ -107,9 +123,9 @@ class AudioRecorder:
                 print('No sustained speech detected within threshold; skipping recording.')
                 return None
 
-        tmpdir = tempfile.gettempdir()
+        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
-        filename = os.path.join(tmpdir, f"cerebrus_recording_{timestamp}.wav")
+        filename = str(AUDIO_DIR / f"call_{timestamp}.wav")
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._record_worker, args=(filename,), daemon=True)
         self._thread.start()
@@ -142,11 +158,15 @@ class AudioRecorder:
             'segments': [],
             'provider': None
         }
-        if FW_AVAILABLE and self.model is not None:
+        model = self._get_model()
+        if model is not None:
             try:
-                segments, info = self.model.transcribe(audio_file, beam_size=5)
-                text = "".join([s.text for s in segments])
-                result['transcript'] = text
+                segments, info = model.transcribe(audio_file, beam_size=5)
+                # faster-whisper yields a one-shot generator: materialise it
+                # before use, or the second pass sees an exhausted iterator and
+                # every segment timing is lost.
+                segments = list(segments)
+                result['transcript'] = "".join(s.text for s in segments)
                 result['segments'] = [{'start': s.start, 'end': s.end, 'text': s.text, 'confidence': getattr(s, 'avg_logprob', None)} for s in segments]
                 result['provider'] = 'faster-whisper'
                 return result
@@ -229,10 +249,30 @@ def poll_loop(api_url=API_URL):
         time.sleep(POLL_INTERVAL)
 
 
-if __name__ == '__main__':
-    print('Starting Cerebrus audio recorder (polling backend context)...')
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Cerebro audio recorder")
+    parser.add_argument("--api", default=API_URL, help="Cerebro API base URL")
+    arguments = parser.parse_args()
+
+    print(f"Cerebro audio recorder \u2192 {arguments.api}")
+
     if not SOUND_AVAILABLE:
-        print('Note: sounddevice/soundfile not available. Install to enable recording: pip install sounddevice soundfile')
+        print("\n  Audio capture is unavailable: sounddevice and soundfile are not installed.")
+        print("  Install them with:  pip install -r desktop/requirements-audio.txt\n")
+        return 1
     if not FW_AVAILABLE:
-        print('Note: faster-whisper not available. Install for faster local transcription: pip install faster-whisper')
-    poll_loop()
+        print("  faster-whisper is not installed — falling back to the whisper CLI "
+              "if it is on your PATH.")
+
+    print(f"  Recordings will be saved to {AUDIO_DIR}")
+    print("  Waiting for a call to start. Press Ctrl+C to stop.\n")
+
+    try:
+        poll_loop(arguments.api.rstrip("/"))
+    except KeyboardInterrupt:
+        print("\nRecorder stopped.")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

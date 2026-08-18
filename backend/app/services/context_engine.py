@@ -1,197 +1,367 @@
 """
-Context Engine - State machine for tracking case, call, and session state.
-Manages current context and transitions based on events.
+Context Engine — the state machine that tracks what the engineer is doing.
+
+Events arrive from the browser extension, the desktop agent and the audio
+recorder; each one updates a single ``ContextState`` row and may produce
+recommendations. Event handling is a dispatch table rather than an if/elif
+ladder, so adding an event type means adding one method.
 """
 
+import json
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from sqlalchemy.orm import Session
+
+from app.core import logger
 from app.models.context_state import ContextState
 from app.models.event import Event
 from app.schemas.event import EventCreate
-from typing import Dict, Any, Optional
-import json
-
-# Import LLMService lazily to avoid circular imports at module import time
 from app.services.llm_service import LLMService
+
+#: Event types the engine understands, with the copy shown in the setup docs
+#: and the dashboard's event legend.
+KNOWN_EVENTS = {
+    "CRM_CASE_OPENED": "A CRM case was opened",
+    "CRM_CASE_CLOSED": "A CRM case was closed",
+    "CALL_STARTED": "A call started",
+    "CALL_ENDED": "A call ended",
+    "REMOTE_SESSION_CONNECTED": "A remote support session connected",
+    "REMOTE_SESSION_DISCONNECTED": "A remote support session disconnected",
+    "APPLICATION_CHANGED": "The active window or URL changed",
+    "TRANSCRIPT": "A call transcript was captured",
+    "DOCUMENT_OPENED": "A document was opened from the browser or desktop",
+    "PAGE_CAPTURED": "The readable text of a page was captured",
+    "ENTERPRISE_MESSAGE": "An Outlook or Teams message arrived",
+}
 
 
 class ContextEngine:
     def __init__(self, db: Session):
         self.db = db
         self.llm = LLMService()
-    
+
+    # ------------------------------------------------------------- state
     def get_current_context(self) -> Optional[ContextState]:
-        """Get the current context state."""
         return self.db.query(ContextState).order_by(ContextState.updated_at.desc()).first()
-    
+
     def init_context(self) -> ContextState:
-        """Initialize a new context state."""
         existing = self.get_current_context()
         if existing:
             return existing
-        
+
         context = ContextState()
         self.db.add(context)
         self.db.commit()
         self.db.refresh(context)
         return context
-    
-    def process_event(self, event_data: EventCreate) -> Dict[str, Any]:
-        """
-        Process an event and update context state.
-        Returns recommendations if applicable.
-        """
-        from app.core import logger
+
+    def reset_context(self) -> ContextState:
+        """Clear the live context — exposed as a 'Reset' button in the widget."""
         context = self.get_current_context() or self.init_context()
-        
-        # Store the event
+        context.crm_case = None
+        context.crm_system = None
+        context.customer = None
+        context.call_active = False
+        context.remote_session_active = False
+        context.remote_host = None
+        context.active_application = None
+        context.active_url = None
+        context.window_title = None
+        context.last_suggestion = None
+        self.db.commit()
+        self.db.refresh(context)
+        logger.info("context_engine", "Context reset")
+        return context
+
+    # ------------------------------------------------------- event entry
+    def process_event(self, event_data: EventCreate) -> Dict[str, Any]:
+        context = self.get_current_context() or self.init_context()
+
         event = Event(
             event_type=event_data.event_type,
             case_id=event_data.case_id,
             source=event_data.source,
-            data=event_data.data,
+            data=event_data.data or {},
             screenshot_path=event_data.screenshot_path,
-            ocr_text=event_data.ocr_text
+            ocr_text=event_data.ocr_text,
         )
         self.db.add(event)
-        logger.info('context_engine', 'Received event', {'type': event_data.event_type, 'source': event_data.source, 'case_id': event_data.case_id})
-        
-        # Update context based on event type
-        if event_data.event_type == "CRM_CASE_OPENED":
-            context.crm_case = event_data.data.get("case_id")
-            context.crm_system = event_data.data.get("system", "Salesforce")
-            context.customer = event_data.data.get("customer")
-        
-        elif event_data.event_type == "CALL_STARTED":
-            context.call_active = True
-        
-        elif event_data.event_type == "CALL_ENDED":
-            context.call_active = False
-        
-        elif event_data.event_type == "REMOTE_SESSION_CONNECTED":
-            context.remote_session_active = True
-            context.remote_host = event_data.data.get("host")
-        
-        elif event_data.event_type == "REMOTE_SESSION_DISCONNECTED":
-            context.remote_session_active = False
-            context.remote_host = None
-        
-        elif event_data.event_type == "APPLICATION_CHANGED":
-            context.active_application = event_data.data.get("application")
-            context.active_url = event_data.data.get("url")
-            context.window_title = event_data.data.get("title")
-        
-        # New: handle incoming transcripts
-        elif event_data.event_type == "TRANSCRIPT":
-            # event.data expected to include: transcript (text), audio_path, case_id (optional), segments (optional), provider
-            transcript_text = event_data.data.get("transcript") or event_data.data.get("text")
-            audio_path = event_data.data.get("audio_path")
-            segments = event_data.data.get("segments")
-            provider = event_data.data.get("provider") or event_data.data.get("transcription_provider")
-            start_time_str = event_data.data.get("start_time")
-            end_time_str = event_data.data.get("end_time")
-            duration = event_data.data.get("duration")
+        self.db.flush()  # assign event.id before handlers reference it
 
-            # Persist AudioRecording and Transcription
-            try:
-                from app.models.audio import AudioRecording, Transcription
-                from datetime import datetime
+        logger.info("context_engine", "Received event", {
+            "type": event_data.event_type,
+            "source": event_data.source,
+            "case_id": event_data.case_id,
+        })
 
-                audio_record = None
-                if audio_path:
-                    # parse iso timestamps if present
-                    def _parse_iso(ts):
-                        if not ts:
-                            return None
-                        try:
-                            # Handle trailing Z
-                            if ts.endswith('Z'):
-                                ts = ts.replace('Z', '+00:00')
-                            return datetime.fromisoformat(ts)
-                        except Exception:
-                            return None
+        handler = self._handlers().get(event_data.event_type)
+        if handler:
+            handler(context, event_data, event)
+        else:
+            logger.warn("context_engine", "Unhandled event type",
+                        {"type": event_data.event_type})
 
-                    st = _parse_iso(start_time_str)
-                    et = _parse_iso(end_time_str)
+        recommendations = self._generate_recommendations(context, event_data)
+        if recommendations:
+            context.last_suggestion = recommendations[0]["message"]
+            context.last_suggestion_time = datetime.utcnow()
 
-                    audio_record = AudioRecording(
-                        audio_path=audio_path,
-                        trigger_event_id=event.id if hasattr(event, 'id') else None,
-                        source=event_data.source,
-                        start_time=st,
-                        end_time=et,
-                        duration=duration,
-                        status='transcribed',
-                        notes=None
-                    )
-                    self.db.add(audio_record)
-                    self.db.flush()
-
-                # Store transcription row
-                tr = Transcription(
-                    audio_id=audio_record.id if audio_record else None,
-                    transcript_text=transcript_text or "",
-                    provider=provider or 'local',
-                    confidence=str(event_data.data.get('confidence', '')),
-                    details=(json.dumps(segments) if segments else None)
-                )
-                self.db.add(tr)
-            except Exception as e:
-                print(f"Error saving audio/transcript to DB: {e}")
-
-            # Run LLM to summarize or extract entities
-            try:
-                # Build a case_data structure for summary generation
-                case_data = {
-                    "customer": context.customer,
-                    "title": (context.active_application or "Support Call")[:200],
-                    "error_code": None,
-                    "application": context.active_application
-                }
-                # Generate summary and troubleshooting steps
-                ai_summary = self.llm.generate_case_summary({**case_data, "transcript": transcript_text})
-                troubleshooting = self.llm.generate_troubleshooting_steps({**case_data, "transcript": transcript_text}, context.to_dict())
-
-                # If there's an active case, attach summary to it
-                if context.crm_case:
-                    from app.models.case import Case
-                    case_obj = self.db.query(Case).filter(Case.case_id == context.crm_case).first()
-                    if case_obj:
-                        case_obj.ai_summary = (case_obj.ai_summary or "") + "\n\n" + ai_summary
-                        case_obj.troubleshooting_steps = (case_obj.troubleshooting_steps or "") + "\n\n" + troubleshooting
-                        self.db.add(case_obj)
-
-                # Optionally store a Memory entry (not implemented fully)
-            except Exception as e:
-                # Log but don't fail
-                print(f"Error processing transcript LLM: {e}")
-        
         self.db.add(context)
         self.db.commit()
-        
+
         return {
             "event_id": event.id,
             "context": context.to_dict(),
-            "recommendations": self._generate_recommendations(context, event_data)
+            "recommendations": recommendations,
         }
-    
-    def _generate_recommendations(self, context: ContextState, event: EventCreate) -> list:
-        """Generate recommendations based on current context."""
-        recommendations = []
-        
-        # If case opened, suggest retrieving related documentation
-        if event.event_type == "CRM_CASE_OPENED":
+
+    def _handlers(self):
+        return {
+            "CRM_CASE_OPENED": self._on_case_opened,
+            "CRM_CASE_CLOSED": self._on_case_closed,
+            "CALL_STARTED": self._on_call_started,
+            "CALL_ENDED": self._on_call_ended,
+            "REMOTE_SESSION_CONNECTED": self._on_remote_connected,
+            "REMOTE_SESSION_DISCONNECTED": self._on_remote_disconnected,
+            "APPLICATION_CHANGED": self._on_application_changed,
+            "TRANSCRIPT": self._on_transcript,
+            "DOCUMENT_OPENED": self._on_document_opened,
+            "PAGE_CAPTURED": self._on_page_captured,
+        }
+
+    # ---------------------------------------------------------- handlers
+    @staticmethod
+    def _on_case_opened(context, event_data, event):
+        data = event_data.data or {}
+        context.crm_case = data.get("case_id") or event_data.case_id
+        context.crm_system = data.get("system", "Salesforce")
+        context.customer = data.get("customer") or context.customer
+
+    @staticmethod
+    def _on_case_closed(context, event_data, event):
+        context.crm_case = None
+        context.customer = None
+
+    @staticmethod
+    def _on_call_started(context, event_data, event):
+        context.call_active = True
+
+    @staticmethod
+    def _on_call_ended(context, event_data, event):
+        context.call_active = False
+
+    @staticmethod
+    def _on_remote_connected(context, event_data, event):
+        context.remote_session_active = True
+        context.remote_host = (event_data.data or {}).get("host")
+
+    @staticmethod
+    def _on_remote_disconnected(context, event_data, event):
+        context.remote_session_active = False
+        context.remote_host = None
+
+    @staticmethod
+    def _on_application_changed(context, event_data, event):
+        data = event_data.data or {}
+        context.active_application = data.get("application")
+        context.active_url = data.get("url")
+        context.window_title = data.get("title")
+
+    @staticmethod
+    def _on_document_opened(context, event_data, event):
+        """A document came into view — it becomes the active application."""
+        data = event_data.data or {}
+        filename = data.get("filename") or data.get("name")
+        if filename:
+            context.active_application = "Document"
+            context.window_title = filename
+            if data.get("url"):
+                context.active_url = data["url"]
+
+    def _on_page_captured(self, context, event_data, event) -> None:
+        """
+        Page text from the browser.
+
+        Stored on the event rather than the context: it is evidence about one
+        moment, not state, and the context row should stay small enough to poll
+        every few seconds.
+        """
+        data = event_data.data or {}
+        text = data.get("text") or ""
+        if text:
+            event.ocr_text = text[:20_000]
+        if data.get("url"):
+            context.active_url = data["url"]
+        if data.get("title"):
+            context.window_title = data["title"]
+
+    def _on_transcript(self, context, event_data, event) -> None:
+        data = event_data.data or {}
+        transcript_text = data.get("transcript") or data.get("text") or ""
+
+        self._store_transcript(context, event_data, event, transcript_text)
+
+        # Speech is a window into the user's voice too.
+        try:
+            from app.services.style_service import capture_user_writing
+
+            capture_user_writing(self.db, transcript_text, channel="voice")
+        except Exception:
+            pass
+
+        if not transcript_text.strip() or not self.llm.enabled:
+            return
+
+        try:
+            case_data = {
+                "customer": context.customer,
+                "title": (context.active_application or "Support call")[:200],
+                "error_code": None,
+                "application": context.active_application,
+                "transcript": transcript_text,
+            }
+            summary = self.llm.generate_case_summary(case_data)
+            steps = self.llm.generate_troubleshooting_steps(case_data, context.to_dict())
+
+            if context.crm_case:
+                from app.models.case import Case
+
+                case_obj = self.db.query(Case).filter(Case.case_id == context.crm_case).first()
+                if case_obj:
+                    case_obj.ai_summary = "\n\n".join(filter(None, [case_obj.ai_summary, summary]))
+                    case_obj.troubleshooting_steps = "\n\n".join(
+                        filter(None, [case_obj.troubleshooting_steps, steps])
+                    )
+                    self.db.add(case_obj)
+        except Exception as exc:
+            logger.error("context_engine", "Transcript post-processing failed", {"error": str(exc)})
+
+    def _store_transcript(self, context, event_data, event, transcript_text: str) -> None:
+        from app.models.audio import AudioRecording, Transcription
+
+        data = event_data.data or {}
+        try:
+            recording = None
+            if data.get("audio_path"):
+                recording = AudioRecording(
+                    audio_path=data["audio_path"],
+                    trigger_event_id=event.id,
+                    source=event_data.source,
+                    start_time=_parse_iso(data.get("start_time")),
+                    end_time=_parse_iso(data.get("end_time")),
+                    duration=data.get("duration"),
+                    status="transcribed",
+                )
+                self.db.add(recording)
+                self.db.flush()
+
+            segments = data.get("segments")
+            self.db.add(Transcription(
+                audio_id=recording.id if recording else None,
+                transcript_text=transcript_text,
+                provider=data.get("provider") or data.get("transcription_provider") or "local",
+                confidence=str(data.get("confidence", "")),
+                details=json.dumps(segments) if segments else None,
+            ))
+        except Exception as exc:
+            logger.error("context_engine", "Failed to persist transcript", {"error": str(exc)})
+
+    # --------------------------------------------------- recommendations
+    def current_recommendations(self) -> List[Dict[str, str]]:
+        """
+        Suggestions derived from the *current* state rather than a single event.
+
+        The widget polls this so it always has something useful on screen, even
+        if the engineer started it halfway through a call.
+        """
+        context = self.get_current_context()
+        recommendations: List[Dict[str, str]] = []
+
+        def add(kind: str, message: str, priority: str = "medium", action: str = None):
             recommendations.append({
-                "type": "retrieve_docs",
-                "message": f"Searching for relevant documentation for {context.customer}",
-                "priority": "high"
+                "type": kind, "message": message, "priority": priority, "action": action,
             })
-        
-        # If call started with active case, suggest generating notes after
-        if event.event_type == "CALL_STARTED" and context.crm_case:
-            recommendations.append({
-                "type": "prepare_notes",
-                "message": "I'll capture the call and prepare case notes when you're done",
-                "priority": "medium"
-            })
-        
+
+        if context is None or not context.crm_case:
+            add("open_case",
+                "No case is open. Open one in your CRM and Cerebro will follow along.",
+                "low")
+        else:
+            add("retrieve_docs",
+                f"Search the knowledge base for {context.customer or context.crm_case}.",
+                "high", action=context.customer or context.crm_case)
+
+        if context and context.call_active:
+            if context.crm_case:
+                add("prepare_notes", "Call in progress — notes will be drafted when it ends.", "medium")
+            else:
+                add("link_case", "Call in progress with no case open. Link one now.", "high")
+
+        if context and context.remote_session_active:
+            add("capture_evidence",
+                f"Remote session to {context.remote_host or 'host'} is live — "
+                "capture before/after evidence.", "medium")
+
+        if not self.llm.enabled:
+            add("configure_ai",
+                "AI generation is off. Connect a provider in Settings for automatic summaries.",
+                "low")
+
         return recommendations
+
+
+    def _generate_recommendations(self, context: ContextState,
+                                  event: EventCreate) -> List[Dict[str, str]]:
+        """Short, actionable nudges rendered in the widget's Suggestions tab."""
+        recommendations: List[Dict[str, str]] = []
+
+        def add(kind: str, message: str, priority: str = "medium", action: str = None):
+            recommendations.append({
+                "type": kind, "message": message, "priority": priority, "action": action,
+            })
+
+        if event.event_type == "CRM_CASE_OPENED":
+            who = context.customer or "this customer"
+            add("retrieve_docs", f"Pulling knowledge base matches for {who}.", "high",
+                action=context.customer or context.crm_case)
+
+        if event.event_type == "CALL_STARTED":
+            if context.crm_case:
+                add("prepare_notes",
+                    "Recording context — I'll draft case notes when the call ends.", "medium")
+            else:
+                add("link_case",
+                    "Call started with no case open. Open the case so notes get attached.", "high")
+
+        if event.event_type == "CALL_ENDED" and context.crm_case:
+            add("summarise", f"Call ended. Generate a summary for case {context.crm_case}?",
+                "high", action=context.crm_case)
+
+        if event.event_type == "REMOTE_SESSION_CONNECTED":
+            add("capture_evidence",
+                f"Remote session to {context.remote_host or 'host'} is live — "
+                "capture before/after evidence for the case.", "medium")
+
+        if event.event_type == "DOCUMENT_OPENED":
+            filename = (event.data or {}).get("filename")
+            if filename:
+                add("read_document",
+                    f"Reading {filename} — ask me anything about it.", "medium",
+                    action=filename)
+
+        if event.event_type == "TRANSCRIPT" and not self.llm.enabled:
+            add("configure_ai",
+                "Transcript saved. Connect an AI provider in Settings to auto-summarise calls.",
+                "low")
+
+        return recommendations
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None

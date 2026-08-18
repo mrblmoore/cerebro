@@ -1,0 +1,121 @@
+name: Build Windows installer
+
+# Builds the packaged Cerebro executable and installer. PyInstaller can only
+# build for the platform it runs on, so this must run on Windows.
+#
+# Every push to main gets a downloadable artifact; pushing a version tag also
+# attaches the installer to a GitHub release. Both "v0.3.0" and a bare "0.3.0"
+# are accepted, so it doesn't matter which style you reach for.
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"   # v0.3.0, v1.2.3-rc1
+      - "[0-9]+.[0-9]+.[0-9]+*"    # 0.3.0 (no leading v)
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "backend/requirements*.txt"
+      - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-documents.txt
+          pip install -r desktop/requirements.txt
+          pip install pyinstaller
+
+      - name: Run the test suite
+        run: python test_mvp.py
+
+      - name: Build the executables
+        run: pyinstaller packaging/cerebro.spec --noconfirm --distpath dist --workpath build
+
+      - name: Check the build starts
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist\Cerebro\Cerebro.exe" `
+            -ArgumentList "--no-browser","--port","8123" -PassThru
+          $ok = $false
+          foreach ($attempt in 1..30) {
+            Start-Sleep -Seconds 2
+            try {
+              $response = Invoke-WebRequest "http://127.0.0.1:8123/health" -UseBasicParsing -TimeoutSec 3
+              if ($response.StatusCode -eq 200) { $ok = $true; break }
+            } catch { }
+          }
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "The packaged build did not answer on /health" }
+          Write-Host "Packaged build started and answered /health."
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $declaredVersion = (Get-Content VERSION -Raw).Trim()
+          if ($declaredVersion -notmatch '^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$') {
+            throw "VERSION must use semantic versioning (for example 1.2.3 or 1.2.3-rc1); got '$declaredVersion'."
+          }
+
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($tagVersion -ne $declaredVersion) {
+              throw "Tag '$env:GITHUB_REF_NAME' does not match VERSION '$declaredVersion'."
+            }
+            $appVersion = $tagVersion
+          } else {
+            $appVersion = "$declaredVersion-dev.$env:GITHUB_RUN_NUMBER"
+          }
+
+          $versionInfoVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+          $compilerCandidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $compiler = $compilerCandidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $compiler) {
+            throw "Inno Setup 6 compiler not found. Checked: $($compilerCandidates -join ', ')"
+          }
+
+          & $compiler "/DAppVersion=$appVersion" "/DVersionInfoVersion=$versionInfoVersion" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE."
+          }
+          if (-not (Test-Path -LiteralPath 'dist\CerebroSetup.exe')) {
+            throw 'Inno Setup completed without producing dist\CerebroSetup.exe.'
+          }
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CerebroSetup
+          path: dist/CerebroSetup.exe
+          if-no-files-found: error
+
+      - name: Attach the installer to the release
+        # Any version tag, with or without a leading "v". Creating the release
+        # if one does not exist, or adding the exe to an existing one.
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/CerebroSetup.exe
+          generate_release_notes: true

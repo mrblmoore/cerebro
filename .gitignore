@@ -3,11 +3,20 @@ config.json
 .env
 credentials.json
 
+# Cerebro runtime data (database, logs, audio, vectors)
+data/
+
 # Database and cache
 *.db
 backend_data.db
 *.sqlite
 cache/
+
+# Build output (PyInstaller / Inno Setup)
+dist/
+build/
+.venv-build/
+*.spec.bak
 
 # Python
 .venv/
