@@ -46,9 +46,17 @@ jobs:
           pip install pyinstaller
 
       - name: Run the test suite
+        # PYTHONUTF8 makes Python read and write files as UTF-8 regardless of
+        # the runner's ANSI codepage. The source tree contains em-dashes and
+        # tick marks, and without this a file read that works on every dev
+        # machine fails only here, which is a slow way to find out.
+        env:
+          PYTHONUTF8: "1"
         run: python test_mvp.py
 
       - name: Build the executables
+        env:
+          PYTHONUTF8: "1"
         run: pyinstaller packaging/cerebro.spec --noconfirm --distpath dist --workpath build
 
       - name: Check the build starts
