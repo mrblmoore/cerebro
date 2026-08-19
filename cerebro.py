@@ -38,7 +38,7 @@ MIN_PYTHON = (3, 9)
 IS_WINDOWS = os.name == "nt"
 
 EXTRAS = {
-    "ai": ("requirements-ai.txt", "OpenAI support"),
+    "ai": ("requirements-ai.txt", "OpenAI and Amazon Bedrock support"),
     "search": ("requirements-search.txt", "Qdrant vector database"),
     "postgres": ("requirements-postgres.txt", "PostgreSQL driver"),
     "audio": (None, "Call recording and transcription"),

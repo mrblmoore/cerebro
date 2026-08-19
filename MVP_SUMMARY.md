@@ -29,7 +29,7 @@ cerebro/
 │   │   │   ├── context_engine.py    # Event → state machine + recommendations
 │   │   │   ├── rag_service.py       # Built-in or Qdrant vector search
 │   │   │   ├── embeddings.py        # Offline hashed-BoW or OpenAI embeddings
-│   │   │   ├── llm_service.py       # OpenAI / Ollama / Qwen, all optional
+│   │   │   ├── llm_service.py       # OpenAI / Ollama / Qwen / Bedrock
 │   │   │   ├── event_detector.py    # Window/URL → event rules
 │   │   │   └── screenpipe_client.py # Optional activity capture
 │   │   ├── api/
@@ -46,7 +46,7 @@ cerebro/
 │   │   │   └── static/              # Shared CSS + JS design system
 │   │   └── main.py                  # FastAPI app, pages, startup banner
 │   ├── requirements.txt             # Core dependencies (that is all you need)
-│   ├── requirements-ai.txt          # Optional: OpenAI SDK
+│   ├── requirements-ai.txt          # Optional: OpenAI and AWS SDKs
 │   ├── requirements-search.txt      # Optional: Qdrant client
 │   ├── requirements-postgres.txt    # Optional: PostgreSQL driver
 │   └── .env.example                 # Documented configuration template

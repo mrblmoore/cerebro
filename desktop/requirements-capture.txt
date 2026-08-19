@@ -1,6 +1,6 @@
 # Optional: activity capture (screenshots + typed text) for the second-brain
 # memory. Off unless you enable it in Settings → Activity capture.
 #   pip install -r desktop/requirements-capture.txt
-mss>=9.0,<10.0
-Pillow>=10.0,<12.0
+mss>=9.0,<11.0
+Pillow>=10.0,<13.0
 pynput>=1.7,<2.0

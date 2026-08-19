@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core import check_database, logger, settings, settings_store
-from app.core.paths import ENV_FILE, PROJECT_ROOT
+from app.core.paths import BUNDLE_ROOT, ENV_FILE, EXTENSION_DIR, FROZEN, PROJECT_ROOT, default_database_url
 from app.core.database import get_db
 from app.services import document_service, enterprise_service
 from app.services.memory_service import MemoryService
@@ -30,10 +30,21 @@ from app.services.screenpipe_client import ScreenpipeClient
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
-VERSION = "0.3.0"
+
+def _read_version() -> str:
+    """Read the same version file used by release packaging."""
+    try:
+        value = (BUNDLE_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0-dev"
+    return value or "0.0.0-dev"
+
+
+VERSION = _read_version()
 
 OPTIONAL_PACKAGES = {
     "openai": ("AI generation via OpenAI", "backend/requirements-ai.txt"),
+    "boto3": ("AI generation via Amazon Bedrock", "backend/requirements-ai.txt"),
     "qdrant_client": ("Qdrant vector database", "backend/requirements-search.txt"),
     "docx": ("Word documents", "backend/requirements-documents.txt"),
     "openpyxl": ("Excel workbooks", "backend/requirements-documents.txt"),
@@ -93,6 +104,10 @@ async def info() -> Dict[str, Any]:
         "setup_completed": settings.SETUP_COMPLETED,
         "ai_enabled": LLMService().enabled,
         "database": "sqlite" if settings.using_sqlite else "external",
+        "packaged": FROZEN,
+        "extension_dir": str(EXTENSION_DIR if FROZEN else EXTENSION_DIR / "src"),
+        "widget_executable": str(PROJECT_ROOT / "CerebroWidget.exe") if FROZEN else "",
+        "default_database_url": default_database_url(),
         "docs_url": "/docs",
     }
 
@@ -191,6 +206,9 @@ def diagnostics(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "ok": required_ok,
         "version": VERSION,
         "project_root": str(PROJECT_ROOT),
+        "packaged": FROZEN,
+        "extension_dir": str(EXTENSION_DIR if FROZEN else EXTENSION_DIR / "src"),
+        "default_database_url": default_database_url(),
         "setup_completed": settings.SETUP_COMPLETED,
         "checks": checks,
     }

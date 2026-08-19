@@ -8,7 +8,12 @@
 ; the runtime, and the install goes to the user's own profile.
 
 #define AppName        "Cerebro"
-#define AppVersion     "0.3.0"
+#ifndef AppVersion
+  #define AppVersion   "0.0.0-dev"
+#endif
+#ifndef VersionInfoVersion
+  #define VersionInfoVersion "0.0.0.0"
+#endif
 #define AppPublisher   "Cerebro"
 #define AppExeName     "Cerebro.exe"
 #define WidgetExeName  "CerebroWidget.exe"
@@ -17,8 +22,11 @@
 AppId={{8F2C4E1A-9D3B-4A57-B6E0-1C7A5D9E3B21}
 AppName={#AppName}
 AppVersion={#AppVersion}
+AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#VersionInfoVersion}
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#VersionInfoVersion}
 
 ; Per-user install: no UAC prompt, no admin rights, works on a locked-down
 ; machine where users cannot write to Program Files.
@@ -34,6 +42,7 @@ OutputBaseFilename=CerebroSetup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 UninstallDisplayName={#AppName}
@@ -49,7 +58,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; \
   GroupDescription: "Shortcuts:"
 Name: "widgetstartup"; Description: "Start the Cerebro widget when I sign in"; \
-  GroupDescription: "Startup:"; Flags: unchecked
+  GroupDescription: "Startup:"
 
 [Files]
 ; Everything PyInstaller produced, including the bundled browser extension.
@@ -60,12 +69,14 @@ Source: "..\dist\Cerebro\*"; DestDir: "{app}"; \
 Name: "{group}\Cerebro";            Filename: "{app}\{#AppExeName}"
 Name: "{group}\Cerebro Widget";     Filename: "{app}\{#WidgetExeName}"
 Name: "{group}\Cerebro Dashboard";  Filename: "http://localhost:8000"
+Name: "{group}\Install Browser Extension"; Filename: "{app}\_internal\browser-extension"
 Name: "{group}\Uninstall Cerebro";  Filename: "{uninstallexe}"
 Name: "{autodesktop}\Cerebro";      Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks: desktopicon
 Name: "{userstartup}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks: widgetstartup
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Start Cerebro now"; \
+Filename: "{app}\{#WidgetExeName}"; Description: "Start Cerebro and its desktop widget now"; \
   Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]

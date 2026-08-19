@@ -25,7 +25,7 @@ SYSTEM_PROMPT = (
 
 NOT_CONFIGURED = (
     "AI generation is turned off. Open Settings → AI Provider to connect "
-    "OpenAI, a local Ollama model, or Qwen."
+    "OpenAI, Amazon Bedrock, a local Ollama model, or Qwen."
 )
 
 
@@ -171,6 +171,8 @@ Answer in 1-2 sentences."""
             return self._call_ollama(prompt)
         if provider == "qwen":
             return self._call_qwen(prompt)
+        if provider == "bedrock":
+            return self._call_bedrock(prompt)
         raise LLMNotConfigured(f"Unknown LLM provider: {provider}")
 
     def _call_openai(self, prompt: str) -> str:
@@ -253,3 +255,70 @@ Answer in 1-2 sentences."""
             message = choice.get("message") or {}
             return (message.get("content") or choice.get("text") or "").strip()
         return (data.get("answer") or response.text).strip()
+
+    def _call_bedrock(self, prompt: str) -> str:
+        """Generate through Bedrock's provider-neutral Converse API."""
+        if not settings.BEDROCK_REGION or not settings.BEDROCK_MODEL_ID:
+            raise LLMNotConfigured("Amazon Bedrock Region and model ID are required.")
+
+        try:
+            import boto3
+            from botocore.config import Config
+        except ImportError as exc:
+            raise LLMNotConfigured(
+                "The AWS SDK is not installed. Run: pip install -r "
+                "backend/requirements-ai.txt"
+            ) from exc
+
+        auth_mode = (settings.BEDROCK_AUTH_MODE or "default").lower()
+        session_kwargs: Dict[str, Any] = {"region_name": settings.BEDROCK_REGION}
+        if auth_mode == "profile":
+            if not settings.BEDROCK_AWS_PROFILE:
+                raise LLMNotConfigured("Select an AWS profile for Amazon Bedrock.")
+            session_kwargs["profile_name"] = settings.BEDROCK_AWS_PROFILE
+        elif auth_mode == "keys":
+            if not (settings.BEDROCK_AWS_ACCESS_KEY_ID
+                    and settings.BEDROCK_AWS_SECRET_ACCESS_KEY):
+                raise LLMNotConfigured(
+                    "AWS access key ID and secret access key are both required."
+                )
+            session_kwargs.update({
+                "aws_access_key_id": settings.BEDROCK_AWS_ACCESS_KEY_ID,
+                "aws_secret_access_key": settings.BEDROCK_AWS_SECRET_ACCESS_KEY,
+                "aws_session_token": settings.BEDROCK_AWS_SESSION_TOKEN or None,
+            })
+        elif auth_mode != "default":
+            raise LLMNotConfigured(f"Unknown Amazon Bedrock credential mode: {auth_mode}")
+
+        session = boto3.Session(**session_kwargs)
+        client = session.client(
+            "bedrock-runtime",
+            endpoint_url=settings.BEDROCK_ENDPOINT_URL or None,
+            config=Config(
+                connect_timeout=settings.LLM_TIMEOUT,
+                read_timeout=settings.LLM_TIMEOUT,
+                retries={"mode": "standard", "max_attempts": 3},
+            ),
+        )
+        response = client.converse(
+            modelId=settings.BEDROCK_MODEL_ID,
+            system=[{"text": SYSTEM_PROMPT}],
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={
+                "temperature": settings.LLM_TEMPERATURE,
+                "maxTokens": settings.LLM_MAX_TOKENS,
+            },
+        )
+
+        blocks = (
+            response.get("output", {})
+            .get("message", {})
+            .get("content", [])
+        )
+        text = "\n".join(
+            block.get("text", "") for block in blocks
+            if isinstance(block, dict) and block.get("text")
+        ).strip()
+        if not text:
+            raise RuntimeError("Amazon Bedrock returned no text content.")
+        return text

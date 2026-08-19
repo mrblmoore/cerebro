@@ -66,8 +66,9 @@ single strip while you work, or set it to start with Windows.
 
 **Browser extension**
 Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases, and the SharePoint documents
-you open, keeping Cerebro in sync with the tab you are on. Load it from
-`browser-extension/src` — see [docs/INSTALL.md](docs/INSTALL.md).
+you open, keeping Cerebro in sync with the tab you are on. The Windows installer
+includes its complete folder and an **Install Browser Extension** Start-menu
+shortcut; source users load `browser-extension/src`. See [docs/INSTALL.md](docs/INSTALL.md).
 
 **Outlook & Teams**
 Power Automate drops each message into a folder as JSON; Cerebro ingests it,
@@ -106,12 +107,12 @@ Cerebro works fully without any of these. Add them when you want them:
 | Extra | What it adds | How |
 |---|---|---|
 | AI provider | Case summaries, troubleshooting steps, reply drafts, document Q&A | Settings → AI Provider. A local [Ollama](https://ollama.com) model needs no API key. |
-| OpenAI SDK | Required for the OpenAI provider | `pip install -r backend/requirements-ai.txt` |
+| Cloud AI SDKs | Required for OpenAI and Amazon Bedrock | `pip install -r backend/requirements-ai.txt` |
 | Outlook & Teams | Mail and chat as live context | Two Power Automate flows and a folder — [guide](docs/POWER_AUTOMATE.md) |
 | PostgreSQL | Shared database for a team | `docker compose up -d postgres`, then Settings → Database |
 | Qdrant | Vector search at scale | `docker compose up -d qdrant`, then Settings → Knowledge Search |
 | Call transcription | Records and transcribes calls locally | `pip install -r desktop/requirements-audio.txt` |
-| Screenpipe | Continuous desktop capture | Settings → Desktop Capture |
+| Screenpipe | Continuous desktop capture through a separately licensed official installation; Cerebro connects automatically | Settings → Desktop Capture |
 
 ---
 
