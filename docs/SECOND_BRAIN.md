@@ -133,7 +133,6 @@ What's built in to limit the exposure:
   captures nothing rather than capture something it couldn't screen.
 
 ```bash
-pip install -r desktop/requirements-capture.txt
 python cerebro.py capture
 
 # Forget everything captured

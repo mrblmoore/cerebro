@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cerebro · Setup</title>
   <link rel="stylesheet" href="/static/cerebro.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+  <link rel="icon" type="image/png" href="/static/cerebro-256.png">
 </head>
 <body>
   <div id="topbar"></div>
@@ -30,6 +30,8 @@ let config = {};     // field key -> current value
 let fieldMeta = {};  // field key -> descriptor
 let runtime = {};    // packaged paths and runtime details
 const pending = {};  // changes staged by the wizard
+const wizardModels = {};       // live model lists, once Refresh has been pressed
+const wizardCustomModel = {};  // model fields switched to free-text entry
 let index = 0;
 
 const STEPS = [
@@ -84,6 +86,42 @@ function selectField(key) {
       ${(meta.options || []).map((option) => `
         <option value="${esc(option.value)}"${String(option.value) === String(value) ? ' selected' : ''}>${esc(option.label)}</option>`).join('')}
     </select>
+  </label>`;
+}
+
+/**
+ * A model picker: the curated list, plus a Refresh that asks the provider what
+ * this account can really use, plus a custom box for anything not listed.
+ * Keeps the wizard from asking someone to type an exact model ID from memory.
+ */
+function modelField(key, provider) {
+  const meta = fieldMeta[key] || {};
+  const value = pending[key] !== undefined ? pending[key] : (config[key] ?? '');
+  const live = wizardModels[provider];
+  const options = live ? live.models : (meta.options || []);
+  const known = options.some((option) => option.id === value);
+  const custom = wizardCustomModel[key] || (value && !known);
+
+  return `<label class="field">
+    <span class="name">${esc(meta.label || key)}</span>
+    ${meta.help ? `<span class="help">${esc(meta.help)}</span>` : ''}
+    <div style="display:flex;gap:8px;align-items:center">
+      <select data-model-select="${esc(key)}" data-model-provider="${esc(provider)}" style="flex:1">
+        ${options.map((option) => `
+          <option value="${esc(option.id)}"${option.id === value && !custom ? ' selected' : ''}>
+            ${esc(option.label || option.id)}${option.note ? ` — ${esc(option.note)}` : ''}
+          </option>`).join('')}
+        <option value="__custom__"${custom ? ' selected' : ''}>Custom model ID…</option>
+      </select>
+      <button type="button" class="btn-sm" data-model-refresh="${esc(provider)}">Refresh</button>
+    </div>
+    ${custom
+      ? `<input type="text" data-key="${esc(key)}" value="${esc(value)}"
+                placeholder="${esc(meta.placeholder || '')}" autocomplete="off" style="margin-top:8px">`
+      : `<input type="hidden" data-key="${esc(key)}" value="${esc(value)}">`}
+    ${live && live.live
+      ? `<span class="help">✓ Listed from your account — every option here is valid.</span>`
+      : (live ? `<span class="help">${esc(live.error)}</span>` : '')}
   </label>`;
 }
 
@@ -197,9 +235,10 @@ function renderAIFields(fallback) {
 
   const groups = {
     none: '',
-    openai: textField('OPENAI_API_KEY') + textField('OPENAI_MODEL'),
-    ollama: textField('OLLAMA_URL') + textField('OLLAMA_MODEL'),
-    qwen: textField('QWEN_API_URL') + textField('QWEN_API_KEY') + textField('QWEN_MODEL'),
+    openai: textField('OPENAI_API_KEY') + modelField('OPENAI_MODEL', 'openai'),
+    ollama: textField('OLLAMA_URL') + modelField('OLLAMA_MODEL', 'ollama'),
+    qwen: textField('QWEN_API_URL') + textField('QWEN_API_KEY') +
+          modelField('QWEN_MODEL', 'qwen'),
     bedrock: renderBedrockFields(),
   };
 
@@ -223,6 +262,13 @@ function renderBedrockFields() {
   const auth = pending.BEDROCK_AUTH_MODE !== undefined
     ? pending.BEDROCK_AUTH_MODE : (config.BEDROCK_AUTH_MODE || 'default');
   let credentials = '';
+  if (auth === 'api_key') {
+    credentials = textField('BEDROCK_API_KEY') +
+      `<div class="callout"><span class="icon">🔑</span><span>
+        Create a key in the Amazon Bedrock console under <strong>API keys</strong>.
+        This is the simplest option — one key, nothing else to configure.
+      </span></div>`;
+  }
   if (auth === 'profile') credentials = textField('BEDROCK_AWS_PROFILE');
   if (auth === 'keys') {
     credentials = textField('BEDROCK_AWS_ACCESS_KEY_ID') +
@@ -231,11 +277,13 @@ function renderBedrockFields() {
         Prefer temporary credentials. Cerebro stores these values only in its local configuration file.
       </span></div>`;
   }
-  return textField('BEDROCK_REGION') + textField('BEDROCK_MODEL_ID') +
-    selectField('BEDROCK_AUTH_MODE') + credentials +
+  return textField('BEDROCK_REGION') + selectField('BEDROCK_AUTH_MODE') + credentials +
+    modelField('BEDROCK_MODEL_ID', 'bedrock') +
     `<div class="callout"><span class="icon">ℹ️</span><span>
-      The selected AWS identity needs <code class="inline">bedrock:InvokeModel</code> permission.
-      Use the model or inference profile ID shown in the Amazon Bedrock console.
+      Unlike OpenAI, AWS has no single API key by default — it signs each request with an
+      identity. Pick <strong>Bedrock API key</strong> above for a one-key setup, or leave the
+      default to reuse the AWS sign-in already on this computer. Either way the identity needs
+      <code class="inline">bedrock:InvokeModel</code>.
     </span></div>`;
 }
 
@@ -399,6 +447,38 @@ function bindInputs() {
   document.querySelectorAll('[data-key]').forEach((input) => {
     input.oninput = input.onchange = () => {
       pending[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.value;
+    };
+  });
+
+  document.querySelectorAll('[data-model-select]').forEach((select) => {
+    select.onchange = () => {
+      const key = select.dataset.modelSelect;
+      if (select.value === '__custom__') {
+        wizardCustomModel[key] = true;
+      } else {
+        delete wizardCustomModel[key];
+        pending[key] = select.value;
+      }
+      renderAIFields();
+    };
+  });
+
+  document.querySelectorAll('[data-model-refresh]').forEach((button) => {
+    button.onclick = async () => {
+      const provider = button.dataset.modelRefresh;
+      button.disabled = true;
+      button.textContent = 'Loading…';
+      try {
+        // Credentials typed on this step have to reach the server before it
+        // can authenticate with them.
+        collectVisibleInputs();
+        await API.put('/api/system/settings', pending);
+        wizardModels[provider] = await API.get(`/api/system/models/${provider}`);
+        if (!wizardModels[provider].live) toast(wizardModels[provider].error, 'err', 8000);
+        renderAIFields();
+      } catch (error) {
+        toast(error.message, 'err', 6000);
+      } finally { button.disabled = false; button.textContent = 'Refresh'; }
     };
   });
 }

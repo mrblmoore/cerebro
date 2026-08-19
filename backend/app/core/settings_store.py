@@ -47,9 +47,13 @@ class Field:
     label: str
     group: str
     help: str = ""
-    type: str = "text"  # text | password | number | bool | select | url
+    type: str = "text"  # text | password | number | bool | select | url | model
     options: List[Dict[str, str]] = field(default_factory=list)
     placeholder: str = ""
+    #: For ``type="model"``: which provider's catalogue to offer. The browser
+    #: renders a dropdown and asks /api/system/models to replace the built-in
+    #: list with the models this account can actually use.
+    model_provider: str = ""
     advanced: bool = False
     #: Connection URLs embed credentials; mask the password rather than serving
     #: it to the browser, and restore it when the UI sends the masked value back.
@@ -177,36 +181,58 @@ FIELDS: List[Field] = [
           ]),
     Field("OPENAI_API_KEY", "OpenAI API key", "ai", "Stored locally in backend/.env.",
           type="password", placeholder="sk-...", show_if=("LLM_PROVIDER", ["openai"])),
-    Field("OPENAI_MODEL", "OpenAI model", "ai", placeholder="gpt-4o-mini",
+    Field("OPENAI_MODEL", "OpenAI model", "ai",
+          "Pick from the list, or choose Custom to type an ID.",
+          type="model", model_provider="openai", placeholder="gpt-4o-mini",
           show_if=("LLM_PROVIDER", ["openai"])),
     Field("OPENAI_BASE_URL", "OpenAI base URL", "ai",
           "Override for Azure OpenAI or any OpenAI-compatible gateway.", type="url",
           advanced=True, show_if=("LLM_PROVIDER", ["openai"])),
-    Field("OPENAI_ORG_ID", "OpenAI organisation", "ai", type="text", advanced=True,
+    Field("OPENAI_ORG_ID", "OpenAI organisation", "ai",
+          "Only needed if your OpenAI account belongs to several organisations.", type="text", advanced=True,
           show_if=("LLM_PROVIDER", ["openai"])),
-    Field("OLLAMA_URL", "Ollama URL", "ai", type="url", placeholder="http://localhost:11434",
+    Field("OLLAMA_URL", "Ollama URL", "ai",
+          "Where Ollama is listening. Leave as-is unless you changed its port.", type="url", placeholder="http://localhost:11434",
           show_if=("LLM_PROVIDER", ["ollama"])),
-    Field("OLLAMA_MODEL", "Ollama model", "ai", placeholder="llama3.1",
+    Field("OLLAMA_MODEL", "Ollama model", "ai",
+          "Refresh to list the models you have pulled locally.",
+          type="model", model_provider="ollama", placeholder="llama3.1",
           show_if=("LLM_PROVIDER", ["ollama"])),
-    Field("QWEN_API_URL", "Qwen API URL", "ai", type="url", show_if=("LLM_PROVIDER", ["qwen"])),
-    Field("QWEN_API_KEY", "Qwen API key", "ai", type="password",
+    Field("QWEN_API_URL", "Qwen API URL", "ai",
+          "The chat completions endpoint your Qwen provider gave you.", type="url", show_if=("LLM_PROVIDER", ["qwen"])),
+    Field("QWEN_API_KEY", "Qwen API key", "ai",
+          "Stored locally in backend/.env and never sent anywhere else.", type="password",
           show_if=("LLM_PROVIDER", ["qwen"])),
-    Field("QWEN_MODEL", "Qwen model", "ai", placeholder="qwen-plus",
+    Field("QWEN_MODEL", "Qwen model", "ai",
+          "Pick from the list, or choose Custom to type an ID.",
+          type="model", model_provider="qwen", placeholder="qwen-plus",
           show_if=("LLM_PROVIDER", ["qwen"])),
     Field("BEDROCK_REGION", "AWS Region", "ai",
           "The Region where Cerebro sends Bedrock Runtime requests.",
           placeholder="us-east-1", show_if=("LLM_PROVIDER", ["bedrock"])),
-    Field("BEDROCK_MODEL_ID", "Model or inference profile ID", "ai",
-          "Paste a Bedrock model ID, inference profile ID, or provisioned model ARN.",
-          placeholder="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    Field("BEDROCK_MODEL_ID", "Model", "ai",
+          "Press Refresh to list the models your AWS account has enabled in this "
+          "Region — every entry in that list is guaranteed to work.",
+          type="model", model_provider="bedrock",
+          placeholder="us.anthropic.claude-sonnet-4-20250514-v1:0",
           show_if=("LLM_PROVIDER", ["bedrock"])),
-    Field("BEDROCK_AUTH_MODE", "AWS credentials", "ai",
-          "The default AWS SDK chain is recommended and supports AWS CLI, SSO, roles, and environment credentials.",
+    Field("BEDROCK_AUTH_MODE", "How to sign in to AWS", "ai",
+          "AWS has no single API key like OpenAI — it signs each request with an "
+          "identity. Pick 'Bedrock API key' for the simplest setup, or use an "
+          "identity this computer already has.",
           type="select", options=[
-              {"value": "default", "label": "Default AWS credential chain (recommended)"},
+              {"value": "default",
+               "label": "Use the AWS sign-in already on this computer (recommended)"},
+              {"value": "api_key", "label": "Bedrock API key — paste a single key"},
               {"value": "profile", "label": "Named AWS profile"},
-              {"value": "keys", "label": "Access keys stored by Cerebro"},
+              {"value": "keys", "label": "AWS access key ID and secret"},
           ], show_if=("LLM_PROVIDER", ["bedrock"])),
+    Field("BEDROCK_API_KEY", "Bedrock API key", "ai",
+          "Create one in the Amazon Bedrock console under API keys. Stored locally "
+          "in backend/.env and never returned by the settings API.",
+          type="password", placeholder="ABSK...",
+          show_if_all=[("LLM_PROVIDER", ["bedrock"]),
+                       ("BEDROCK_AUTH_MODE", ["api_key"])]),
     Field("BEDROCK_AWS_PROFILE", "AWS profile name", "ai",
           "Profile from your shared AWS config or credentials file.", placeholder="default",
           show_if_all=[("LLM_PROVIDER", ["bedrock"]),
@@ -229,7 +255,8 @@ FIELDS: List[Field] = [
           show_if=("LLM_PROVIDER", ["bedrock"])),
     Field("LLM_TEMPERATURE", "Temperature", "ai", type="number", advanced=True,
           show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
-    Field("LLM_MAX_TOKENS", "Max tokens", "ai", type="number", advanced=True,
+    Field("LLM_MAX_TOKENS", "Max tokens", "ai",
+          "The longest reply the model may write. Higher costs more and takes longer.", type="number", advanced=True,
           show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
     Field("LLM_TIMEOUT", "Request timeout (s)", "ai", type="number", advanced=True,
           show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
@@ -242,9 +269,11 @@ FIELDS: List[Field] = [
               {"value": "local", "label": "Built-in — no extra services"},
               {"value": "qdrant", "label": "Qdrant"},
           ]),
-    Field("QDRANT_URL", "Qdrant URL", "knowledge", type="url", placeholder="http://localhost:6333",
+    Field("QDRANT_URL", "Qdrant URL", "knowledge",
+          "Where Qdrant is running. Only used if you switched search to Qdrant.", type="url", placeholder="http://localhost:6333",
           show_if=("VECTOR_BACKEND", ["auto", "qdrant"])),
-    Field("QDRANT_API_KEY", "Qdrant API key", "knowledge", type="password",
+    Field("QDRANT_API_KEY", "Qdrant API key", "knowledge",
+          "Leave blank for a local Qdrant, which needs no key.", type="password",
           show_if=("VECTOR_BACKEND", ["auto", "qdrant"])),
     Field("EMBEDDING_PROVIDER", "Knowledge-search embedding engine", "knowledge",
           "Separate from your chosen AI model. The built-in engine works offline; an OpenAI-compatible embedding API is optional.",
@@ -253,6 +282,8 @@ FIELDS: List[Field] = [
               {"value": "openai", "label": "OpenAI-compatible embedding API"},
           ]),
     Field("OPENAI_EMBEDDING_MODEL", "Embedding model", "knowledge",
+          "Embedding models are a separate family — a chat model ID is rejected here.",
+          type="model", model_provider="openai_embedding",
           placeholder="text-embedding-3-small", advanced=True,
           show_if=("EMBEDDING_PROVIDER", ["openai"])),
 
@@ -273,6 +304,7 @@ FIELDS: List[Field] = [
           "Where ingested files are moved. Defaults to a 'processed' folder inside the inbox.",
           advanced=True, show_if=("ENTERPRISE_ENABLED", [True])),
     Field("ENTERPRISE_POLL_SECONDS", "Check every (seconds)", "enterprise",
+          "How often Cerebro checks the folder for new messages, in seconds.",
           type="number", advanced=True, show_if=("ENTERPRISE_ENABLED", [True])),
     Field("ENTERPRISE_AUTO_SEND", "Send replies without approval", "enterprise",
           "Off by default. Writing to the outbox is the moment a message actually "
@@ -296,6 +328,7 @@ FIELDS: List[Field] = [
           "Keeps a timestamped copy beside any file Cerebro changes.",
           type="bool", show_if=("DOCUMENTS_ENABLED", [True])),
     Field("DOCUMENT_MAX_MB", "Largest document (MB)", "documents",
+          "Documents larger than this are skipped, to keep Cerebro responsive.",
           type="number", advanced=True, show_if=("DOCUMENTS_ENABLED", [True])),
     Field("BROWSER_TRACK_ALL_TABS", "Track all browser tabs", "documents",
           "Off by default: only recognised CRM and document pages are reported. "
@@ -324,6 +357,7 @@ FIELDS: List[Field] = [
           "Point out unanswered mail, cases resolved but not written up, and due reminders.",
           type="bool"),
     Field("TASK_TICK_SECONDS", "Scheduler interval (s)", "secretary",
+          "How often scheduled tasks are checked, in seconds. 60 is plenty.",
           type="number", advanced=True),
 
     # Microsoft Copilot bridge
@@ -354,8 +388,10 @@ FIELDS: List[Field] = [
               {"value": "auto", "label": "Just do it"},
           ], show_if=("COPILOT_BRIDGE_ENABLED", [True])),
     Field("COPILOT_SYNC_SECONDS", "Update the folder every (seconds)", "copilot",
+          "How often Cerebro writes to, and reads from, the shared folder.",
           type="number", advanced=True, show_if=("COPILOT_BRIDGE_ENABLED", [True])),
     Field("COPILOT_MEMORY_LIMIT", "Memories to share", "copilot",
+          "How many memories to share with the agent. Fewer means a smaller file.",
           type="number", advanced=True, show_if=("COPILOT_BRIDGE_ENABLED", [True])),
 
     # Activity capture
@@ -365,6 +401,7 @@ FIELDS: List[Field] = [
           "Periodic downscaled screenshots of the active window.",
           type="bool", show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
     Field("ACTIVITY_SCREENSHOT_SECONDS", "Screenshot interval (s)", "capture",
+          "Seconds between screenshots. Longer means less to review and less disk used.",
           type="number", show_if=("ACTIVITY_CAPTURE_ENABLED", [True])),
     Field("ACTIVITY_KEYSTROKES", "Capture typed text", "capture",
           "Words you type, assembled and redacted. Never raw keystrokes for passwords.",
@@ -383,7 +420,8 @@ FIELDS: List[Field] = [
     # Desktop
     Field("SCREENPIPE_ENABLED", "Connect to Screenpipe automatically", "desktop",
           "Enabled by default and harmless when Screenpipe is not installed or running.", type="bool"),
-    Field("SCREENPIPE_URL", "Screenpipe URL", "desktop", type="url",
+    Field("SCREENPIPE_URL", "Screenpipe URL", "desktop",
+          "Where Screenpipe is listening, if you have it installed.", type="url",
           placeholder="http://localhost:3030", show_if=("SCREENPIPE_ENABLED", [True])),
 
     # Logging
@@ -437,6 +475,7 @@ def describe(include_values: bool = True) -> Dict[str, Any]:
             "placeholder": f.placeholder,
             "advanced": f.advanced,
             "secret": f.secret,
+            "model_provider": f.model_provider,
             "show_if": ({"key": f.show_if[0], "values": [str(v).lower() if isinstance(v, bool) else v
                                                           for v in f.show_if[1]]}
                         if f.show_if else None),
@@ -456,6 +495,15 @@ def describe(include_values: bool = True) -> Dict[str, Any]:
                 entry["value"] = mask_url_password(value or "")
             else:
                 entry["value"] = "" if value is None else value
+
+        # Seed a model dropdown with the curated list so the page is usable
+        # before any credentials exist. The browser replaces this with the
+        # account's real models the moment Refresh is pressed.
+        if f.type == "model":
+            from app.core import model_catalog
+            entry["options"] = model_catalog.options(
+                f.model_provider, str(entry.get("value") or "")
+            )
         payload["fields"].append(entry)
 
     return payload

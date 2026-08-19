@@ -92,7 +92,11 @@ class Settings(BaseSettings):
     #: workstations that do not already have an AWS identity configured.
     BEDROCK_REGION: str = "us-east-1"
     BEDROCK_MODEL_ID: str = ""
-    BEDROCK_AUTH_MODE: str = "default"  # default | profile | keys
+    BEDROCK_AUTH_MODE: str = "default"  # default | api_key | profile | keys
+    #: A Bedrock API key — the bearer token AWS added so Bedrock can be used
+    #: with a single pasted key like every other provider here, instead of an
+    #: access key pair. Passed to boto3 as AWS_BEARER_TOKEN_BEDROCK.
+    BEDROCK_API_KEY: Optional[str] = None
     BEDROCK_AWS_PROFILE: Optional[str] = None
     BEDROCK_AWS_ACCESS_KEY_ID: Optional[str] = None
     BEDROCK_AWS_SECRET_ACCESS_KEY: Optional[str] = None
@@ -225,6 +229,7 @@ class Settings(BaseSettings):
             auth_mode = self.BEDROCK_AUTH_MODE.lower()
             credentials_ready = (
                 auth_mode == "default"
+                or (auth_mode == "api_key" and bool(self.BEDROCK_API_KEY))
                 or (auth_mode == "profile" and bool(self.BEDROCK_AWS_PROFILE))
                 or (auth_mode == "keys" and bool(
                     self.BEDROCK_AWS_ACCESS_KEY_ID

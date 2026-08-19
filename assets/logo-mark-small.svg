@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"
+     role="img" aria-label="Cerebro">
+  <title>Cerebro</title>
+  <!--
+    A deliberately coarser cut of the mark, for 16-32px.
+    The full logo's thin traces and eleven nodes turn to mush below about 48px,
+    so this keeps the silhouette and the idea (a divided brain wired together)
+    with far fewer, much heavier strokes.
+  -->
+  <defs>
+    <linearGradient id="brainS" x1="24" y1="28" x2="232" y2="228" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8B7CF6"/>
+      <stop offset="0.55" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+
+  <g fill="url(#brainS)">
+    <path d="M128 30 C 106 30 88 41 80 59 C 60 58 44 71 42 90 C 27 98 20 116 26 133
+             C 17 149 22 170 38 179 C 41 199 58 212 78 209 C 90 221 110 227 128 222 Z"/>
+    <path d="M128 30 C 106 30 88 41 80 59 C 60 58 44 71 42 90 C 27 98 20 116 26 133
+             C 17 149 22 170 38 179 C 41 199 58 212 78 209 C 90 221 110 227 128 222 Z"
+          transform="translate(256,0) scale(-1,1)"/>
+  </g>
+
+  <g stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" fill="none">
+    <path d="M128 56 L128 200"/>
+    <path d="M128 104 L84 104"/>
+    <path d="M128 152 L172 152"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="84" cy="104" r="20"/>
+    <circle cx="172" cy="152" r="20"/>
+  </g>
+</svg>

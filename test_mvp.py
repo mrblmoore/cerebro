@@ -57,9 +57,11 @@ PASSED = []
 FAILED = []
 
 
-def check(label, condition):
+def check(label, condition, detail=""):
+    """``detail`` is shown only on failure — a hint about what went wrong."""
     (PASSED if condition else FAILED).append(label)
-    print(f"  {'✓' if condition else '✗'} {label}")
+    suffix = f"  ({detail})" if detail and not condition else ""
+    print(f"  {'✓' if condition else '✗'} {label}{suffix}")
 
 
 def session():
@@ -244,6 +246,518 @@ def test_llm_disabled():
 
     summary = llm.generate_case_summary({"customer": "Contoso", "title": "Outlook issue"})
     check("Generation returns guidance, not an exception", "Settings" in summary)
+
+
+def test_model_catalog_and_discovery():
+    """Model dropdowns always offer something, and never raise on a dead provider."""
+    print("\nModel catalogue and discovery")
+
+    from app.core import model_catalog, settings_store
+    from app.services import model_discovery
+
+    description = settings_store.describe()
+    model_fields = [f for f in description["fields"] if f["type"] == "model"]
+    check("Every provider's model field is a dropdown", len(model_fields) == 5)
+    check("Model fields name their provider",
+          all(f["model_provider"] for f in model_fields))
+    check("Model dropdowns are pre-populated",
+          all(len(f["options"]) >= 3 for f in model_fields))
+    check("Every dropdown offers a custom escape hatch",
+          all(any(o["id"] == model_catalog.CUSTOM for o in f["options"])
+              for f in model_fields))
+
+    # Chat and embedding catalogues must stay distinct: an embedding endpoint
+    # rejects a chat model ID, which is a confusing failure to debug.
+    chat = {m["id"] for m in model_catalog.fallback_models("openai")}
+    embedding = {m["id"] for m in model_catalog.fallback_models("openai_embedding")}
+    check("Chat and embedding catalogues do not overlap", not (chat & embedding))
+
+    # A configured value that is not in the curated list must survive.
+    options = model_catalog.options("openai", "my-private-deployment")
+    check("An existing custom model stays selectable",
+          options[0]["id"] == "my-private-deployment")
+
+    # Discovery must degrade, never raise — the settings page has to render.
+    for provider in ("openai", "ollama", "qwen", "unknown-provider"):
+        try:
+            models, error = model_discovery.discover(provider)
+            ok = True
+        except Exception:
+            ok, models, error = False, [], ""
+        check(f"Listing {provider} degrades instead of raising", ok)
+        if provider != "unknown-provider":
+            check(f"{provider} falls back to a usable list", len(models) > 0 and bool(error))
+
+
+def test_bedrock_credential_modes():
+    """Every AWS sign-in mode is honoured, and CRT trouble explains itself."""
+    print("\nBedrock credentials")
+
+    from app.core.config import settings
+    from app.services.llm_service import _bedrock_error, LLMNotConfigured
+
+    # The stock botocore message points at a pip that fixes the wrong Python.
+    # Ours has to name Cerebro's setup instead.
+    crt = _bedrock_error(Exception(
+        "MissingDependencyException: Using CRT_AUTH requires an additional "
+        "dependency. pip install botocore[crt]"))
+    check("A missing CRT dependency is explained", isinstance(crt, LLMNotConfigured))
+    check("CRT guidance points at Cerebro's own setup", "setup" in str(crt))
+    check("CRT guidance warns against a plain pip install", "pip install" in str(crt))
+
+    check("Access denied names the needed permission",
+          "bedrock:InvokeModel" in str(_bedrock_error(
+              Exception("AccessDeniedException: not authorized"))))
+    check("An expired token says so",
+          "expired" in str(_bedrock_error(Exception("ExpiredTokenException"))).lower())
+    check("An unrelated error passes through unchanged",
+          type(_bedrock_error(ValueError("something else"))) is ValueError)
+
+    previous = {key: getattr(settings, key) for key in
+                ("BEDROCK_AUTH_MODE", "BEDROCK_API_KEY", "BEDROCK_MODEL_ID",
+                 "BEDROCK_REGION", "LLM_PROVIDER")}
+    try:
+        for key, value in (("LLM_PROVIDER", "bedrock"), ("BEDROCK_REGION", "us-east-1"),
+                           ("BEDROCK_MODEL_ID", "us.example.chat-v1:0")):
+            object.__setattr__(settings, key, value)
+
+        object.__setattr__(settings, "BEDROCK_AUTH_MODE", "api_key")
+        object.__setattr__(settings, "BEDROCK_API_KEY", "")
+        check("An API key mode with no key is not 'configured'",
+              settings.llm_configured is False)
+
+        object.__setattr__(settings, "BEDROCK_API_KEY", "ABSKtest")
+        check("An API key alone is enough to be configured",
+              settings.llm_configured is True)
+    finally:
+        for key, value in previous.items():
+            object.__setattr__(settings, key, value)
+
+
+def test_bundled_dependencies():
+    """Everything a feature needs ships with the install, not after it."""
+    print("\nBundled dependencies")
+
+    ai_requirements = (ROOT / "backend" / "requirements-ai.txt").read_text()
+    # Bedrock cross-Region inference profiles sign with SigV4a, which botocore
+    # can only do with its "crt" extra. Without this pin the first Bedrock call
+    # dies asking the user to install it by hand.
+    check("botocore's CRT extra is pinned", "botocore[crt]" in ai_requirements)
+
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    check("The frozen build bundles awscrt", '"awscrt"' in spec)
+    check("The frozen build bundles botocore's CRT auth", "botocore.crt.auth" in spec)
+
+    launcher = (ROOT / "cerebro.py").read_text()
+    check("Setup installs every requirement group", "ALL_REQUIREMENTS" in launcher)
+    for group in ("requirements-ai.txt", "requirements-documents.txt",
+                  "requirements-capture.txt", "requirements-audio.txt"):
+        check(f"Setup installs {group}", group in launcher)
+
+
+def test_database_resilience():
+    """A bad database setting must never stop Cerebro from starting."""
+    print("\nDatabase resilience")
+
+    from app.core.database import _explain, check_database
+
+    result = check_database()
+    check("The working database reports ok", result["ok"] is True)
+    check("It names the dialect", "sqlite" in result["detail"].lower())
+
+    # create_engine imports the driver eagerly, so this class of failure lands
+    # at import time. If it were fatal, one wrong setting would leave no way
+    # back into the UI to correct it.
+    source = (ROOT / "backend" / "app" / "core" / "database.py").read_text()
+    check("Engine creation is guarded", "ENGINE_ERROR" in source)
+    check("A broken URL falls back to the built-in database",
+          "default_database_url()" in source)
+
+    check("A missing driver is explained, not dumped",
+          "not installed" in _explain("ModuleNotFoundError: No module named 'psycopg'"))
+    check("The explanation says data is safe meanwhile",
+          "built-in database" in _explain("No module named 'psycopg'"))
+    check("A refused connection is explained",
+          "listening" in _explain("connection refused"))
+    check("Bad credentials are explained",
+          "rejected" in _explain("password authentication failed for user"))
+    check("An unknown error passes through unchanged",
+          _explain("something unexpected") == "something unexpected")
+
+    from app.core import setup_checks
+    check("The PostgreSQL driver is a repairable component",
+          "postgres" in setup_checks.COMPONENTS)
+    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    check("The wizard offers to install the driver",
+          'component_status("postgres")' in wizard)
+
+
+def test_database_round_trip():
+    """Write through the models and read it back, on a real database file."""
+    print("\nDatabase round trip")
+
+    from app.core.database import SessionLocal, engine
+    from sqlalchemy import inspect
+
+    tables = set(inspect(engine).get_table_names())
+    for required in ("events", "context_state", "memories", "tasks",
+                     "tracked_documents", "enterprise_messages"):
+        check(f"Table {required} exists", required in tables)
+
+    from app.models.event import Event
+    db = SessionLocal()
+    try:
+        marker = f"ROUNDTRIP-{os.getpid()}"
+        db.add(Event(event_type="CRM_CASE_OPENED", source="test",
+                     case_id=marker, data={"customer": "Round Trip Ltd"}))
+        db.commit()
+
+        # A second session, so this reads from the database rather than the
+        # identity map of the session that wrote it.
+        other = SessionLocal()
+        try:
+            found = other.query(Event).filter(Event.case_id == marker).one_or_none()
+            check("A written event is readable from a new session", found is not None)
+            check("Its JSON payload survives the round trip",
+                  bool(found) and found.data.get("customer") == "Round Trip Ltd")
+        finally:
+            other.close()
+
+        db.query(Event).filter(Event.case_id == marker).delete()
+        db.commit()
+        check("It can be deleted again",
+              db.query(Event).filter(Event.case_id == marker).count() == 0)
+    finally:
+        db.close()
+
+
+def test_everything_is_explained():
+    """Any setting that is not self-evident has to say what it is for."""
+    print("\nSettings are explained")
+
+    from app.core import settings_store
+
+    described = settings_store.describe()
+    check("Every group explains itself",
+          all(group.get("description") for group in described["groups"]))
+
+    # A checkbox called "Debug mode" speaks for itself. A box wanting a path, a
+    # URL, a key or a bare number does not, and guessing is how people give up.
+    unexplained = []
+    for field in described["fields"]:
+        if field.get("help"):
+            continue
+        key = field["key"]
+        if field["type"] in ("url", "password") or any(
+                word in key for word in
+                ("DIR", "PATH", "URL", "KEY", "ID", "TOKEN", "MODEL", "LIMIT",
+                 "INTERVAL", "SECONDS", "DAYS", "MAX", "MIN")):
+            unexplained.append(key)
+    check("Every non-obvious setting has help text", not unexplained,
+          f"missing: {unexplained}")
+
+    # A "Test connection" button wired to a target the backend does not handle
+    # returns a 404 that reads as a broken integration.
+    import re
+    html = (ROOT / "backend" / "app" / "web" / "settings.html").read_text()
+    block = html.split("TEST_TARGETS = {")[1].split("}")[0]
+    ui_targets = dict(re.findall(r"(\w+):\s*'(\w+)'", block))
+    api = (ROOT / "backend" / "app" / "api" / "system.py").read_text()
+    backend_targets = set(re.findall(r'if target == "(\w+)"', api))
+    for tab, target in sorted(ui_targets.items()):
+        check(f"The {tab} tab's test target exists", target in backend_targets)
+
+
+def test_installer_integrity():
+    """Every file and executable the installer names actually exists."""
+    print("\nInstaller integrity")
+
+    import re
+
+    iss = (ROOT / "packaging" / "installer.iss").read_text()
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+
+    # A missing image is a compile error on the Windows runner, which is a slow
+    # and confusing way to find out.
+    for line in set(re.findall(
+            r'(?:SetupIconFile|WizardImageFile|WizardSmallImageFile)=([^\n]+)', iss)):
+        for item in line.split(","):
+            item = item.strip()
+            path = ROOT / "packaging" / item.replace("\\", "/")
+            check(f"Installer image {item} exists", path.is_file())
+
+    # An installer that launches an exe PyInstaller never built produces a
+    # "file not found" at the end of a successful install.
+    for name in sorted(set(re.findall(r'#\{?(\w*ExeName)\}?', iss))):
+        define = re.search(rf'#define {name}\s+"([^"]+)"', iss)
+        if not define:
+            continue
+        exe = define.group(1)
+        check(f"{exe} is built by the spec",
+              f'name="{exe.replace(".exe", "")}"' in spec)
+
+    check("The wizard is what the installer runs at the end",
+          "CerebroSetupWizard.exe" in iss and "postinstall" in iss)
+    check("The welcome text says what Cerebro is", "WelcomeLabel2=" in iss)
+    check("The finish text says what happens next", "FinishedLabel=" in iss)
+
+
+def test_branding_assets():
+    """The logo, the font and the icon all ship, and are wired everywhere."""
+    print("\nBranding assets")
+
+    # The font is bundled rather than fetched from a CDN: Cerebro is local-first
+    # and often runs with no outbound internet, where a webfont silently fails.
+    web_font = ROOT / "backend" / "app" / "web" / "static" / "fonts" / "InterVariable.woff2"
+    desktop_font = ROOT / "assets" / "fonts" / "InterVariable.ttf"
+    check("The web font is bundled", web_font.is_file())
+    check("The desktop font is bundled", desktop_font.is_file())
+    check("The font licence ships with it",
+          (ROOT / "assets" / "fonts" / "Inter-LICENSE.txt").is_file())
+
+    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text()
+    check("The CSS declares the bundled face", "@font-face" in css)
+    check("The CSS serves the font locally, not from a CDN",
+          "/static/fonts/InterVariable.woff2" in css
+          and "fonts.googleapis.com" not in css and "fonts.gstatic.com" not in css)
+    check("Inter leads the sans stack", '--sans: "Inter Variable"' in css)
+
+    icon = ROOT / "packaging" / "cerebro.ico"
+    check("The Windows icon exists", icon.is_file())
+    check("The icon is not a stub", icon.stat().st_size > 20_000)
+
+    for size in (32, 48, 64, 128, 256):
+        check(f"The {size}px logo ships",
+              (ROOT / "assets" / "icons" / f"cerebro-{size}.png").is_file())
+    check("The web favicon ships",
+          (ROOT / "backend" / "app" / "web" / "static" / "cerebro-256.png").is_file())
+
+    for name in ("logo-mark.svg", "logo-mark-small.svg"):
+        svg = (ROOT / "assets" / name).read_text()
+        check(f"{name} is valid XML", svg.strip().startswith("<svg") and "</svg>" in svg)
+        # The mark is mirrored rather than drawn twice, so the hemispheres
+        # cannot drift apart when the shape is edited.
+        check(f"{name} mirrors its halves", "scale(-1,1)" in svg)
+
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    check("The frozen build ships the assets", '"assets"' in spec)
+    check("The frozen build ships the branding module", '"branding"' in spec)
+
+    installer = (ROOT / "packaging" / "installer.iss").read_text()
+    check("The installer uses the icon", "SetupIconFile=cerebro.ico" in installer)
+    check("The installer is branded", "WizardImageFile=" in installer)
+    for image in ("wizard-image.bmp", "wizard-image@2x.bmp",
+                  "wizard-small.bmp", "wizard-small@2x.bmp"):
+        check(f"{image} exists", (ROOT / "packaging" / "images" / image).is_file())
+
+    # Inno reads a .iss without a BOM in the system ANSI codepage, so anything
+    # outside ASCII can reach a user's screen mangled.
+    check("The installer script is pure ASCII",
+          all(ord(character) < 128 for character in installer))
+
+
+def test_motion_and_icons():
+    """Animation is present, consistent, and can be turned off."""
+    print("\nMotion and icons")
+
+    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text()
+    check("Shared easing and duration tokens exist",
+          "--ease:" in css and "--fast:" in css and "--slow:" in css)
+    for animation in ("cb-rise", "cb-fade", "cb-spin", "cb-shimmer", "cb-pulse-ring", "cb-pop"):
+        check(f"The {animation} animation is defined", f"@keyframes {animation}" in css)
+    # Interface animation causes motion sickness for some people, and this app
+    # is designed to sit on screen all day.
+    check("Reduced motion is honoured", "prefers-reduced-motion: reduce" in css)
+    check("Reduced motion overrides every animation",
+          "animation-duration: .01ms !important" in css)
+
+    js = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.js").read_text()
+    check("The topbar carries the logo", '<svg class="mark"' in js)
+    check("The logo is inline, not a request", "logo-mark.svg" not in js)
+    check("Settings groups have drawn icons", "GROUP_ICONS" in js)
+    # Emoji render in a different style and colour on every OS.
+    for group in ("general", "database", "ai", "knowledge", "copilot", "logging"):
+        check(f"The {group} group has an icon", f"'{group}':" in js)
+    check("Icons follow the theme colour", "currentColor" in js)
+
+    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    check("The wizard uses the shared palette", "branding.DARK" in wizard)
+    check("The wizard registers the bundled font", "branding.load_fonts()" in wizard)
+    check("The wizard shows the logo", "branding.logo_image" in wizard)
+    check("The wizard has a spinner for slow work", "_start_spinner" in wizard)
+    check("The spinner is stopped when work finishes", "_stop_spinner" in wizard)
+    check("Steps animate in", "_animate_step_in" in wizard)
+
+    widget = (ROOT / "desktop" / "widget.py").read_text()
+    check("The widget uses the bundled font", "branding.load_fonts()" in widget)
+    check("The widget shows the logo in its title bar", "branding.logo_image" in widget)
+    check("The widget fades in on launch", "_fade_in" in widget)
+    check("The widget can pulse a status dot", "_pulse_dot" in widget)
+
+
+def test_branding_module():
+    """branding.py degrades safely when assets or a display are missing."""
+    print("\nBranding module")
+
+    sys.path.insert(0, str(ROOT / "desktop"))
+    try:
+        import branding
+    finally:
+        sys.path.pop(0)
+
+    check("Assets resolve to a real directory", branding.assets_dir().is_dir())
+    check("The font file is found",
+          (branding.assets_dir() / "fonts" / "InterVariable.ttf").is_file())
+    check("An icon path is found", bool(branding.icon_path()))
+
+    # Called with no Tk root, as the widget does before its window exists.
+    family = branding.load_fonts()
+    check("A font family is always returned", isinstance(family, str) and family)
+
+    # Without a display there is no PhotoImage, and that must not raise.
+    try:
+        branding.logo_image(32)
+        safe = True
+    except Exception:
+        safe = False
+    check("Loading the logo never raises", safe)
+
+    check("Light and dark palettes have the same keys",
+          set(branding.DARK) == set(branding.LIGHT))
+    check("The palette matches the web accent",
+          branding.DARK["accent"] == "#7c74f5")
+
+
+def test_setup_checks_and_repair():
+    """Preflight explains itself, and repair targets the right interpreter."""
+    print("\nSetup checks")
+
+    from app.core import setup_checks
+
+    report = setup_checks.preflight()
+    check("Preflight reports every component",
+          len(report["checks"]) == len(setup_checks.COMPONENTS))
+    check("Preflight names the running Python", bool(report["python"]))
+    check("Core is marked required",
+          next(c for c in report["checks"] if c["component"] == "core")["required"] is True)
+    check("Every component explains why it matters",
+          all(c["why"] for c in report["checks"]))
+
+    # Bedrock must list awscrt, not just boto3: boto3 alone imports fine and
+    # then fails at request-signing time, which is the bug this guards.
+    check("Bedrock's check includes awscrt",
+          "awscrt" in setup_checks.COMPONENTS["bedrock"]["modules"])
+    check("Providers map to their dependency group",
+          setup_checks.component_for_provider("bedrock") == "bedrock"
+          and setup_checks.component_for_provider("ollama") is None)
+
+    check("An unknown component is refused, not crashed",
+          setup_checks.repair("not-a-component")["ok"] is False)
+    check("Repairing something already present is a no-op",
+          setup_checks.repair("core")["ok"] is True)
+
+    # Every component must name a requirements file that actually exists,
+    # otherwise "install what's missing" is a button that cannot work.
+    for name, spec in setup_checks.COMPONENTS.items():
+        check(f"{name} points at a real requirements file",
+              (ROOT / spec["requirements"]).exists())
+
+
+def test_setup_wizard():
+    """The wizard the installer runs covers every step and is wired in."""
+    print("\nSetup wizard")
+
+    source = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    steps = ["welcome", "database", "ai", "microsoft", "done"]
+    for step in steps:
+        check(f"The wizard has a {step} step", f"_step_{step}" in source)
+    check("Every step is registered in order",
+          all(f'"{s}"' in source.split("STEPS = [")[1].split("]")[0] for s in steps))
+
+    # Each configurable step must actually verify itself — the whole promise is
+    # that finishing setup means it was tested, not assumed.
+    for tester in ("_test_database", "_test_ai", "_test_microsoft"):
+        check(f"{tester} exists", f"def {tester}" in source)
+    check("Slow checks run off the UI thread", "_run_async" in source)
+    check("Finishing marks setup complete", "mark_setup_complete" in source)
+    check("Missing dependencies can be repaired in place", "_repair" in source)
+
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    check("The wizard is built as its own executable", "CerebroSetupWizard" in spec)
+    check("The wizard bundles Tkinter", '"tkinter"' in spec)
+
+    installer = (ROOT / "packaging" / "installer.iss").read_text()
+    check("The installer runs the wizard", "CerebroSetupWizard.exe" in installer)
+    check("The installer runs it as a first run", "--first-run" in installer)
+
+    launcher = (ROOT / "cerebro.py").read_text()
+    check("A source install can open the wizard too", "def cmd_configure" in launcher)
+    check("Setup ends by configuring", "5. Configuring Cerebro" in launcher)
+
+
+def test_copilot_instructions():
+    """The pasted instructions must match what the bridge actually implements."""
+    print("\nCopilot Studio instructions")
+
+    import json as _json
+    import re as _re
+
+    from app.services.copilot_bridge import ALLOWED_COMMANDS
+    from app.services.copilot_guide import AGENT_INSTRUCTIONS, guide, instructions
+
+    text = instructions("D:/OneDrive/Cerebro/copilot")
+    check("The real folder replaces the placeholder",
+          "{FOLDER}" not in text and "D:/OneDrive/Cerebro/copilot" in text)
+    check("Escaped braces are unescaped for the reader",
+          "{{" not in text and "}}" not in text)
+    check("A blank folder still reads sensibly",
+          "OneDrive" in instructions(""))
+
+    # An agent told about an action that does not exist writes command files
+    # that are refused; one it is not told about is a capability lost. Both
+    # directions have to stay in sync with the whitelist.
+    documented = set(_re.findall(r'"action":\s*"([a-z_]+)"', text))
+    check("Every allowed command is documented",
+          documented >= set(ALLOWED_COMMANDS),
+          f"missing: {sorted(set(ALLOWED_COMMANDS) - documented)}")
+    check("No command is documented that does not exist",
+          documented <= set(ALLOWED_COMMANDS),
+          f"extra: {sorted(documented - set(ALLOWED_COMMANDS))}")
+
+    # Every JSON example must parse; a malformed one teaches the agent to
+    # write malformed command files.
+    examples = _re.findall(r'\{"action".*?\}(?=\n)', text, _re.S)
+    check("The instructions carry JSON examples", len(examples) >= len(ALLOWED_COMMANDS))
+    bad = []
+    for example in examples:
+        try:
+            _json.loads(" ".join(example.split()))
+        except ValueError:
+            bad.append(example[:40])
+    check("Every JSON example parses", not bad, f"bad: {bad}")
+
+    # The folder layout must describe the real one.
+    check("The command folder is named correctly", "commands/" in text)
+    check("The processed folder matches the bridge", "commands/processed" in text)
+    check("A stale archive/ folder is not invented", "\n    archive/" not in text)
+    for name in ("context.json", "memory.json", "style.json"):
+        check(f"{name} is described", name in text)
+
+    # Real field names, so the agent reads the files rather than guessing.
+    for field_name in ("generated_at", "current_case", "on_a_call", "persona",
+                       "style_card", "confidence", "command_file"):
+        check(f"The schema names {field_name}", field_name in text)
+
+    check("Result files are explained", "result-cmd-" in text)
+    check("The agent is told not to wait for results", "do NOT wait" in text.replace("do not wait", "do NOT wait"))
+    check("Staleness has explicit thresholds", "10 minutes" in text)
+
+    payload = guide()
+    check("The guide serves the filled-in instructions",
+          "{FOLDER}" not in payload["instructions"])
+    check("OneDrive is the required tool",
+          any(tool["required"] for tool in payload["tools"]
+              if "OneDrive" in tool["name"]))
 
 
 def test_bedrock_provider():
@@ -961,10 +1475,16 @@ def test_copilot_guide():
     instructions = payload["instructions"]
     check("Instructions mention context.json", "context.json" in instructions)
     check("Instructions mention style.json", "style.json" in instructions)
+    # Asserted on intent rather than an exact sentence: the wording is expected
+    # to be rewritten, the two guarantees are not.
+    lowered = instructions.lower()
     check("Instructions forbid sending without approval",
-          "without showing the user the draft" in instructions)
+          "showing the draft" in lowered or "showing the user the draft" in lowered)
+    check("Instructions require an explicit yes before sending",
+          "explicit yes" in lowered)
     check("Instructions tell it not to invent desktop state",
-          "Never invent desktop state" in instructions)
+          "never invent desktop state" in lowered
+          or "never claim to see their screen" in lowered)
 
     # Every command the instructions advertise must really be permitted, or the
     # agent will be told to do things Cerebro refuses.
@@ -1349,7 +1869,14 @@ def main() -> int:
 
     for suite in (test_version_source, test_event_detector, test_context_engine, test_event_flow,
                   test_embeddings, test_knowledge_search, test_llm_disabled,
-                  test_bedrock_provider,
+                  test_bedrock_provider, test_model_catalog_and_discovery,
+                  test_setup_checks_and_repair, test_setup_wizard,
+                  test_database_resilience, test_database_round_trip,
+                  test_everything_is_explained, test_installer_integrity,
+                  test_branding_assets, test_motion_and_icons,
+                  test_branding_module,
+                  test_copilot_instructions,
+                  test_bedrock_credential_modes, test_bundled_dependencies,
                   test_enterprise_normalisation, test_enterprise_ingest_and_reply,
                   test_document_reading, test_document_editing,
                   test_sharepoint_resolution, test_document_tracking,

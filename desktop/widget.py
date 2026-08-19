@@ -156,8 +156,18 @@ class CerebroWidget:
         return THEMES.get(self.config.get("theme", "dark"), THEMES["dark"])
 
     def font(self, size: int, weight: str = "normal") -> tuple:
-        family = "Segoe UI" if sys.platform == "win32" else (
-            "SF Pro Text" if sys.platform == "darwin" else "DejaVu Sans")
+        # Resolved once and cached: branding.load_fonts registers the bundled
+        # Inter with the OS, which is not something to redo on every label.
+        family = getattr(self, "_font_family", None)
+        if family is None:
+            try:
+                import branding
+
+                family = branding.load_fonts()
+            except Exception:  # noqa: BLE001 - a missing font is not fatal
+                family = "Segoe UI" if sys.platform == "win32" else (
+                    "SF Pro Text" if sys.platform == "darwin" else "DejaVu Sans")
+            self._font_family = family
         return (family, max(7, int(round(size * self.config.get("font_scale", 1.0)))), weight)
 
     # -------------------------------------------------------------- window
@@ -225,6 +235,8 @@ class CerebroWidget:
         else:
             self.render()
 
+        self._fade_in()
+
     def _build_titlebar(self):
         theme = self.theme
         bar = tk.Frame(self.shell, bg=theme["title_bg"], height=34)
@@ -232,9 +244,21 @@ class CerebroWidget:
         bar.pack_propagate(False)
         self.titlebar = bar
 
-        mark = tk.Label(bar, text="🧠", bg=theme["title_bg"], fg=theme["accent"],
-                        font=self.font(11))
-        mark.pack(side="left", padx=(9, 5))
+        # The logo image if it loaded, otherwise the old emoji so the bar is
+        # never empty. The reference is kept on self - Tk drops loose images.
+        try:
+            import branding
+
+            self._mark_image = branding.logo_image(20)
+        except Exception:  # noqa: BLE001
+            self._mark_image = None
+        if self._mark_image is not None:
+            mark = tk.Label(bar, image=self._mark_image, bg=theme["title_bg"])
+        else:
+            mark = tk.Label(bar, text="\U0001F9E0", bg=theme["title_bg"],
+                            fg=theme["accent"], font=self.font(11))
+        mark.pack(side="left", padx=(9, 6))
+        self._titlebar_mark = mark
 
         self.title_label = tk.Label(bar, text="Cerebro", bg=theme["title_bg"],
                                     fg=theme["text"], font=self.font(10, "bold"),
@@ -1091,6 +1115,67 @@ class CerebroWidget:
         self.expanded = False
         self._animate_to(width, height)
         self._normal_size = None
+
+    # --------------------------------------------------------------- motion
+    def _fade_in(self, duration_ms: int = 220) -> None:
+        """
+        Ease the window up to its configured opacity on launch.
+
+        The widget is always-on-top and frameless, so without this it simply
+        appears over whatever the user is doing. A short fade reads as arriving
+        rather than interrupting.
+        """
+        try:
+            target = float(self.config.get("opacity", 1.0))
+        except (TypeError, ValueError):
+            target = 1.0
+
+        steps = 12
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except tk.TclError:
+            return          # some window managers do not support alpha at all
+
+        def frame(step: int) -> None:
+            if not self.root.winfo_exists():
+                return
+            ratio = min(1.0, step / steps)
+            try:
+                # Ease-out, so it settles rather than stopping dead.
+                self.root.attributes("-alpha", target * (1 - (1 - ratio) ** 3))
+            except tk.TclError:
+                return
+            if ratio < 1.0:
+                self.root.after(max(8, duration_ms // steps), lambda: frame(step + 1))
+
+        frame(0)
+
+    def _pulse_dot(self, label, colour: str, cycles: int = 3) -> None:
+        """
+        Breathe a status dot between its colour and the background.
+
+        Used when something changes on its own - a nudge arriving, a case being
+        detected - so a passive glance catches it without a sound or a popup.
+        """
+        theme = self.theme
+
+        def blend(ratio: float) -> str:
+            start, end = theme["surface"], colour
+            return "#" + "".join(
+                f"{round(int(start[i:i+2], 16) * (1 - ratio) + int(end[i:i+2], 16) * ratio):02x}"
+                for i in (1, 3, 5))
+
+        frames = [blend(value / 10) for value in (10, 7, 4, 7, 10)]
+
+        def step(index: int) -> None:
+            if index >= len(frames) * cycles or not label.winfo_exists():
+                if label.winfo_exists():
+                    label.configure(fg=colour)
+                return
+            label.configure(fg=frames[index % len(frames)])
+            self.root.after(110, lambda: step(index + 1))
+
+        step(0)
 
     def _animate_to(self, width: int, height: int, steps: int = 8) -> None:
         """A short size animation so the change reads as the panel breathing."""

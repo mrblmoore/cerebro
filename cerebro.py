@@ -3,6 +3,7 @@
 Cerebro — one command for everything.
 
     python cerebro.py setup      Install dependencies and prepare the workspace
+    python cerebro.py configure  Open the setup wizard
     python cerebro.py start      Start the API + open the dashboard
     python cerebro.py widget     Launch the desktop widget
     python cerebro.py watch      Watch for documents you open
@@ -44,8 +45,30 @@ EXTRAS = {
     "audio": (None, "Call recording and transcription"),
 }
 
-#: Installed by default — reading Word, Excel and PDF is core to what Cerebro
-#: does, not an optional extra the user has to discover.
+#: Everything Cerebro can use, installed in one pass at setup.
+#:
+#: Cerebro used to install a core set and leave AI, search, capture and audio
+#: behind a ``--with`` flag. That pushed a dependency problem onto the user at
+#: the worst possible moment — they would pick a provider in Settings, then hit
+#: an ImportError with no venv-aware way to fix it. Everything now lands during
+#: install, so choosing a provider or turning on a feature is only ever a
+#: setting, never a trip to pip.
+#:
+#: Each entry is (path relative to ROOT, human description, required).
+#: A required group failing stops setup; an optional one only warns, because
+#: some wheels need platform toolchains that not every machine has.
+ALL_REQUIREMENTS = (
+    ("backend/requirements.txt", "Backend core", True),
+    ("backend/requirements-documents.txt", "Word, Excel, PowerPoint and PDF", True),
+    ("backend/requirements-ai.txt", "OpenAI and Amazon Bedrock", True),
+    ("backend/requirements-search.txt", "Qdrant vector search", False),
+    ("backend/requirements-postgres.txt", "PostgreSQL driver", False),
+    ("desktop/requirements.txt", "Desktop widget", True),
+    ("desktop/requirements-capture.txt", "Activity capture (screenshots, typed text)", False),
+    ("desktop/requirements-audio.txt", "Call recording and transcription", False),
+)
+
+#: Kept for callers that still reference it.
 DEFAULT_REQUIREMENTS = ("requirements.txt", "requirements-documents.txt")
 
 
@@ -191,36 +214,32 @@ def cmd_setup(args) -> int:
     run([python, "-m", "pip", "install", "--quiet", "--upgrade", "pip"],
         stdout=subprocess.DEVNULL)
 
-    step("Installing the backend…")
-    if run([python, "-m", "pip", "install", "--quiet",
-            "-r", BACKEND / "requirements.txt"]) != 0:
-        fail("Dependency installation failed. Scroll up for the error from pip.")
-        return 1
-    ok("Backend dependencies installed")
+    # Everything goes in now so no feature can fail later with an ImportError
+    # the user has to resolve by hand. --minimal opts out for a lean install.
+    groups = ALL_REQUIREMENTS
+    if getattr(args, "minimal", False):
+        groups = tuple(group for group in ALL_REQUIREMENTS if group[2])
+        warn("Minimal install — optional features are skipped\n")
 
-    step("Installing document support (Word, Excel, PDF)…")
-    if run([python, "-m", "pip", "install", "--quiet",
-            "-r", BACKEND / "requirements-documents.txt"]) == 0:
-        ok("Document support installed")
-    else:
-        warn("Document support failed to install — Cerebro still runs without it")
-
-    step("Installing the desktop widget…")
-    run([python, "-m", "pip", "install", "--quiet", "-r", DESKTOP / "requirements.txt"],
-        stdout=subprocess.DEVNULL)
-    ok("Desktop dependencies installed")
-
-    for extra in args.with_extras or []:
-        requirements, description = EXTRAS.get(extra, (None, None))
-        if description is None:
-            warn(f"Unknown extra '{extra}' — skipping")
+    skipped = []
+    for relative_path, description, required in groups:
+        path = ROOT / relative_path
+        if not path.exists():
             continue
-        path = (DESKTOP / "requirements-audio.txt") if extra == "audio" else (BACKEND / requirements)
         step(f"Installing {description}…")
         if run([python, "-m", "pip", "install", "--quiet", "-r", path]) == 0:
             ok(description)
+        elif required:
+            fail("Dependency installation failed. Scroll up for the error from pip.")
+            return 1
         else:
-            warn(f"{description} failed to install — Cerebro still works without it")
+            warn(f"{description} — skipped, Cerebro still runs without it")
+            skipped.append(description)
+
+    if skipped:
+        print(Style.dim(
+            "\n  These need a compiler or system library that this machine is missing.\n"
+            "  Everything else is installed; the features above stay switched off."))
 
     head("4. Preparing the workspace")
     result = subprocess.run(
@@ -238,17 +257,37 @@ def cmd_setup(args) -> int:
     ok("Database initialised")
     ok(f"Configuration at {(BACKEND / '.env').relative_to(ROOT)}")
 
-    head("Setup complete")
+    head("5. Configuring Cerebro")
     launcher = "cerebro.bat" if IS_WINDOWS else "./cerebro.sh"
+    if getattr(args, "no_wizard", False):
+        step("Skipped — run it later with " + f"{launcher} configure")
+    else:
+        step("Opening the setup wizard…")
+        # Tkinter is missing from some Linux Python builds; the browser wizard
+        # covers that case, so a failure here is a fallback, not an error.
+        if cmd_configure(argparse.Namespace(first_run=True)) != 0:
+            warn("Could not open the setup window.")
+            print(Style.dim(f"  Start Cerebro and configure it in your browser, or "
+                            f"run {launcher} configure"))
+
+    head("Setup complete")
     print(f"""
   Start Cerebro:      {Style.bold(f'{launcher} start')}
   Desktop widget:     {Style.bold(f'{launcher} widget')}
+  Change your setup:  {Style.bold(f'{launcher} configure')}
   Check the install:  {Style.bold(f'{launcher} doctor')}
-
-  The first time you start it, a setup page opens in your browser.
-  It takes about a minute and everything can be changed later.
 """)
     return 0
+
+
+# ---------------------------------------------------------------- configure
+def cmd_configure(args) -> int:
+    """Open the setup wizard — the same one the Windows installer runs."""
+    wizard = DESKTOP / "setup_wizard.py"
+    if not wizard.exists():
+        fail("setup_wizard.py is missing from this install.")
+        return 1
+    return run([python_for(), wizard] + (["--first-run"] if getattr(args, "first_run", False) else []))
 
 
 # -------------------------------------------------------------------- start
@@ -262,7 +301,7 @@ def cmd_start(args) -> int:
 
     if not have_venv():
         warn("No virtual environment found — running setup first.\n")
-        if cmd_setup(argparse.Namespace(recreate=False, with_extras=[])) != 0:
+        if cmd_setup(argparse.Namespace(recreate=False, with_extras=[], minimal=False, no_wizard=True)) != 0:
             return 1
 
     if is_running():
@@ -427,7 +466,7 @@ def cmd_doctor(args) -> int:
              "import importlib.util as u, json;"
              "print(json.dumps({n: u.find_spec(n) is not None for n in "
              "['fastapi','uvicorn','pydantic_settings','sqlalchemy','requests','openai',"
-             "'qdrant_client','docx','openpyxl','pypdf']}))"],
+             "'qdrant_client','docx','openpyxl','pypdf','boto3','awscrt','mss','PIL']}))"],
             capture_output=True, text=True,
         )
         try:
@@ -448,9 +487,18 @@ def cmd_doctor(args) -> int:
                 warn(f"{name} is missing — Cerebro cannot read some document types")
                 problems.append("Install document support: pip install -r "
                                 "backend/requirements-documents.txt")
-        for name, extra in (("openai", "ai"), ("qdrant_client", "search")):
+        # boto3 without awscrt is the combination that breaks Bedrock's
+        # cross-Region models at request-signing time, so call it out by name
+        # rather than leaving the user to decode botocore's own message.
+        if found.get("boto3") and not found.get("awscrt"):
+            warn("awscrt is missing — Amazon Bedrock cross-Region models will fail to sign")
+            problems.append("Reinstall dependencies: python cerebro.py setup")
+        for name, label in (("openai", "OpenAI"), ("boto3", "Amazon Bedrock"),
+                            ("awscrt", "Bedrock request signing"),
+                            ("qdrant_client", "Qdrant search"),
+                            ("mss", "activity capture"), ("PIL", "screenshots")):
             print(f"  {Style.dim('○') if not found.get(name) else Style.green('✓')} "
-                  f"{name} {Style.dim('(optional)' if not found.get(name) else '')}")
+                  f"{name} {Style.dim(f'({label})')}")
     else:
         warn("Skipped — no virtual environment yet")
 
@@ -532,9 +580,20 @@ def main() -> int:
     setup = subparsers.add_parser("setup", help="install dependencies and prepare the workspace")
     setup.add_argument("--recreate", action="store_true",
                        help="delete and rebuild the virtual environment")
+    setup.add_argument("--minimal", action="store_true",
+                       help="install only the core, skipping optional features")
+    setup.add_argument("--no-wizard", action="store_true",
+                       help="do not open the setup wizard when installing finishes")
+    # Everything it used to gate is now installed by default, so this is a
+    # no-op kept so existing scripts and docs do not break.
     setup.add_argument("--with", dest="with_extras", action="append", choices=sorted(EXTRAS),
-                       help="install an optional extra (repeatable)")
+                       help=argparse.SUPPRESS)
     setup.set_defaults(func=cmd_setup)
+
+    configure = subparsers.add_parser(
+        "configure", help="open the setup wizard to change how Cerebro is set up")
+    configure.add_argument("--first-run", action="store_true", help=argparse.SUPPRESS)
+    configure.set_defaults(func=cmd_configure)
 
     start = subparsers.add_parser("start", help="start the API and open the dashboard")
     start.add_argument("--host")

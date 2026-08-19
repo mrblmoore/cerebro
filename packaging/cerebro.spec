@@ -2,12 +2,13 @@
 #
 #   pyinstaller packaging/cerebro.spec --noconfirm
 #
-# Produces two executables in dist/Cerebro/:
-#   Cerebro.exe        console app that runs the API and opens the dashboard
-#   CerebroWidget.exe  windowed app, the always-on-top panel
+# Produces three executables in dist/Cerebro/:
+#   Cerebro.exe             console app that runs the API and opens the dashboard
+#   CerebroWidget.exe       windowed app, the always-on-top panel
+#   CerebroSetupWizard.exe  windowed setup, run by the installer as its last step
 #
 # They share one bundle directory, so the Python runtime and libraries are
-# included once rather than twice.
+# included once rather than three times.
 
 import sys
 from pathlib import Path
@@ -21,6 +22,10 @@ block_cipher = None
 # The web UI is read at runtime from app/web, so it must be shipped as data.
 datas = [
     (str(BACKEND / "app" / "web"), "app/web"),
+    # The bundled Inter font and the logo. Without these the packaged widget
+    # and wizard silently fall back to a system font and a blank icon, which
+    # only shows up on a machine that has never had the source tree.
+    (str(ROOT / "assets"), "assets"),
     (str(ROOT / "browser-extension" / "src"), "browser-extension"),
     (str(BACKEND / ".env.example"), "."),
     (str(ROOT / "VERSION"), "."),
@@ -41,7 +46,13 @@ hiddenimports = [
     "uvicorn.lifespan", "uvicorn.lifespan.on",
     "sqlalchemy.dialects.sqlite",
     "openai", "boto3", "botocore", "botocore.config",
-    "mss", "pynput", "pynput.keyboard",
+    # awscrt backs botocore's SigV4a signing, which Bedrock cross-Region
+    # inference profiles resolve to. It is reached through a botocore plugin
+    # lookup rather than a plain import, so static analysis never finds it and
+    # the frozen build would fail at request-signing time without these.
+    "awscrt", "awscrt.auth", "awscrt.http", "awscrt.io",
+    "botocore.crt", "botocore.crt.auth", "botocore.httpsession",
+    "mss", "pynput", "pynput.keyboard", "PIL", "PIL.Image",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
     # Every service is pinned here rather than left to static discovery: many are
@@ -79,7 +90,7 @@ widget = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
-        "widget", "widget_config", "win_integration", "agent",
+        "widget", "widget_config", "win_integration", "agent", "branding",
         "activity_recorder", "screenpipe_launcher", "mss", "PIL",
         "PIL.Image", "pynput", "pynput.keyboard",
     ],
@@ -89,7 +100,28 @@ widget = Analysis(
     cipher=block_cipher,
 )
 
-MERGE((server, "cerebro_app", "Cerebro"), (widget, "cerebro_widget_app", "CerebroWidget"))
+wizard = Analysis(
+    [str(ROOT / "packaging" / "cerebro_setup_app.py")],
+    pathex=[str(BACKEND), str(DESKTOP), str(ROOT)],
+    binaries=[],
+    datas=datas,
+    # The wizard reaches most of the backend: it saves settings, opens the
+    # database, calls the AI provider and lists models. It also needs Tkinter,
+    # which the server build deliberately excludes.
+    hiddenimports=hiddenimports + [
+        "setup_wizard", "branding", "tkinter", "tkinter.ttk", "tkinter.filedialog",
+        "app.core.setup_checks", "app.core.model_catalog",
+        "app.services.model_discovery", "app.api.copilot",
+    ],
+    hookspath=[],
+    runtime_hooks=[],
+    excludes=[],
+    cipher=block_cipher,
+)
+
+MERGE((server, "cerebro_app", "Cerebro"),
+      (widget, "cerebro_widget_app", "CerebroWidget"),
+      (wizard, "cerebro_setup_app", "CerebroSetupWizard"))
 
 server_pyz = PYZ(server.pure, server.zipped_data, cipher=block_cipher)
 server_exe = EXE(
@@ -110,9 +142,19 @@ widget_exe = EXE(
     icon=str(ROOT / "packaging" / "cerebro.ico") if (ROOT / "packaging" / "cerebro.ico").exists() else None,
 )
 
+wizard_pyz = PYZ(wizard.pure, wizard.zipped_data, cipher=block_cipher)
+wizard_exe = EXE(
+    wizard_pyz, wizard.scripts, [],
+    exclude_binaries=True,
+    name="CerebroSetupWizard",
+    console=False,              # the installer runs this; a console would flash
+    icon=str(ROOT / "packaging" / "cerebro.ico") if (ROOT / "packaging" / "cerebro.ico").exists() else None,
+)
+
 COLLECT(
     server_exe, server.binaries, server.zipfiles, server.datas,
     widget_exe, widget.binaries, widget.zipfiles, widget.datas,
+    wizard_exe, wizard.binaries, wizard.zipfiles, wizard.datas,
     strip=False,
     upx=False,
     name="Cerebro",

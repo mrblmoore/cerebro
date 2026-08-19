@@ -6,10 +6,23 @@ Source installs use the commands below.
 
 ### Windows release installer
 
-Download `CerebroSetup.exe` from the matching GitHub release and run it. The
-installer creates shortcuts for Cerebro, the widget, and the bundled browser
-extension folder. The widget starts Cerebro and its desktop helpers, and starts
-at sign-in by default. No separate Python installation is needed.
+Download `CerebroSetup.exe` from the matching GitHub release and run it. No
+separate Python installation is needed — the runtime and every dependency are
+inside the installer.
+
+**Setup happens inside the installer.** Its last step opens a short wizard that
+checks what is installed, prepares the database, connects an AI model and, if
+you want it, the Microsoft 365 folders. Each of those is *tested* before you
+move on, so when the wizard closes Cerebro is configured and working — there is
+no browser page to visit afterwards and nothing else to fill in.
+
+Anything missing that Cerebro can install itself, it offers to install on the
+spot, into its own environment. You can reopen the wizard any time from
+**Start → Cerebro Setup**.
+
+The installer also creates shortcuts for Cerebro, the widget, and the bundled
+browser extension folder. The widget starts Cerebro and its desktop helpers, and
+starts at sign-in by default.
 
 Chrome and Edge intentionally require one user confirmation for unpacked
 extensions: open the **Install Browser Extension** Start-menu shortcut, then use
@@ -55,14 +68,16 @@ Either route runs the same cross-platform installer. It will:
 4. create the SQLite database under `data/`;
 5. write `backend/.env` with every default documented inline.
 
-To install an optional extra at the same time:
+Setup installs **everything** Cerebro can use — the cloud AI SDKs, document
+readers, Qdrant and PostgreSQL drivers, activity capture and audio — so turning
+a feature on later is a setting, never another install. Anything that needs a
+compiler your machine lacks is reported and skipped; the rest still installs.
+
+For a lean install of just the core:
 
 ```bash
-python cerebro.py setup --with ai --with search
+python cerebro.py setup --minimal
 ```
-
-Valid extras: `ai` (OpenAI-compatible and Amazon Bedrock SDKs), `search` (Qdrant), `postgres` (PostgreSQL
-driver), `audio` (call recording and transcription).
 
 If an install goes wrong, `python cerebro.py setup --recreate` rebuilds the
 virtual environment from scratch.
@@ -76,17 +91,20 @@ virtual environment from scratch.
 | Start | double-click `start.bat` | `./cerebro.sh start` |
 | Menu | double-click `cerebro.bat` | `./cerebro.sh` |
 
-Your browser opens the **setup wizard** the first time. Six short steps:
+On a source install, `setup` finishes by opening the same **setup wizard** the
+Windows installer runs. Five short steps, each verified before you continue:
 
-1. **Welcome** — a system check confirming everything installed correctly.
-2. **Storage** — keep the built-in SQLite database, or point at PostgreSQL.
-3. **AI model** — optional; skip it and add one later if you want to.
-4. **Knowledge search** — built-in vector store, or Qdrant.
-5. **Desktop & browser** — how to start the widget and load the extension.
-6. **Done** — a summary of what you chose.
+1. **Welcome** — what is installed, with a one-click fix for anything missing.
+2. **Storage** — the built-in database, or PostgreSQL. Tested by opening it.
+3. **AI model** — pick a provider and a model from a list. Tested by asking it
+   a question.
+4. **Microsoft 365** — optional Outlook/Teams and Copilot Studio folders.
+   Tested by writing and reading them.
+5. **Finish** — a summary of what passed.
 
-After that, `http://localhost:8000` is your dashboard and `/settings` has
-everything the wizard asked, plus the advanced options it did not.
+Reopen it any time with `cerebro.bat configure` (or `./cerebro.sh configure`).
+`http://localhost:8000` is your dashboard, and `/settings` has everything the
+wizard asked plus the advanced options it did not.
 
 ---
 
@@ -130,7 +148,6 @@ need them.
 
 ```bash
 docker compose up -d postgres
-pip install -r backend/requirements-postgres.txt
 ```
 
 Then in **Settings → Database** set:
@@ -145,7 +162,6 @@ Restart Cerebro for the change to take effect.
 
 ```bash
 docker compose up -d qdrant
-pip install -r backend/requirements-search.txt
 ```
 
 Then in **Settings → Knowledge Search** set the Qdrant URL to
@@ -153,20 +169,37 @@ Then in **Settings → Knowledge Search** set the Qdrant URL to
 
 ### AI generation
 
+Every AI SDK ships with the install, so switching provider is only ever a
+setting. In each case, press **Refresh** beside Model to list what your account
+can actually use, rather than typing a model ID from memory.
+
 * **Ollama** (local, no key): install [Ollama](https://ollama.com), run
   `ollama pull llama3.1`, then choose Ollama in **Settings → AI Provider**.
-* **OpenAI**: `pip install -r backend/requirements-ai.txt`, then paste your key
-  in **Settings → AI Provider** and press **Test connection**.
-* **Amazon Bedrock**: `pip install -r backend/requirements-ai.txt`, choose
-  Amazon Bedrock in **Settings → AI Provider**, then enter the AWS Region and a
-  Bedrock model or inference profile ID. Use the default AWS credential chain,
-  a named profile, or temporary access keys. The identity needs
-  `bedrock:InvokeModel` permission.
+  Refresh lists exactly the models you have pulled.
+* **OpenAI**: paste your key in **Settings → AI Provider** and press
+  **Test connection**.
+* **Amazon Bedrock**: choose Amazon Bedrock in **Settings → AI Provider**, pick
+  your AWS Region, then press **Refresh** next to Model to list the models your
+  account has enabled — everything in that list is guaranteed to work, so there
+  is no model ID to type.
+
+  AWS has no single API key the way OpenAI does: it signs every request with an
+  identity. Four ways to give it one, under **How to sign in to AWS**:
+
+  | Option | Use it when |
+  |---|---|
+  | Use the AWS sign-in already on this computer | You already use the AWS CLI, SSO, or an IAM role — nothing to enter |
+  | Bedrock API key | You want the simplest setup: create one key in the Bedrock console under **API keys** and paste it |
+  | Named AWS profile | You keep several AWS accounts in `~/.aws/config` |
+  | AWS access key ID and secret | You were handed a key pair, ideally a temporary one |
+
+  Whichever you pick, the identity needs `bedrock:InvokeModel`, and the model
+  must be switched on for your account under **Model access** in the Bedrock
+  console.
 
 ### Call transcription
 
 ```bash
-pip install -r desktop/requirements-audio.txt
 python desktop/audio_recorder.py
 ```
 
@@ -201,6 +234,23 @@ Tkinter ships with Python on Windows and macOS. On Debian/Ubuntu:
 **The extension shows “offline”**
 Cerebro is not running, or its URL differs from the one on the extension's
 options page. Start Cerebro, then press **Test connection** there.
+
+**“Install botocore[crt]” keeps appearing, but it is already installed**
+You almost certainly installed it into a different Python. Cerebro runs from its
+own virtual environment in `.venv/`, so a plain `pip install` at a normal prompt
+lands somewhere Cerebro never looks. Re-run setup, which installs into the right
+place:
+
+```bash
+python cerebro.py setup        # or setup.bat on Windows
+```
+
+To check which interpreter has it:
+
+```bash
+.venv/bin/python -c "import awscrt; print(awscrt.__version__)"      # macOS / Linux
+.venv\Scripts\python -c "import awscrt; print(awscrt.__version__)"  # Windows
+```
 
 **Everything is broken and I want to start over**
 Delete `data/` and `backend/.env`, then run setup again. That resets Cerebro
