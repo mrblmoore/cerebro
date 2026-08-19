@@ -1894,6 +1894,18 @@ def test_setup_and_package_contract():
           r'{app}\_internal\browser-extension' in installer)
     check("Browser extension version matches the release version",
           manifest["version"] == version)
+    workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text(encoding="utf-8")
+    check("Every pull request runs the Windows package contract",
+          "pull_request:\n    paths:" not in workflow)
+    check("Release metadata is validated before dependencies are installed",
+          workflow.index("- name: Validate release metadata")
+          < workflow.index("- name: Install dependencies"))
+    check("Release tags must match VERSION and current main",
+          "does not match VERSION" in workflow
+          and "Tag the tested main commit instead" in workflow)
+    check("Extension metadata is checked before packaging",
+          "Browser extension version" in workflow
+          and "does not match VERSION" in workflow)
     check("Screenpipe integration defaults on", Settings().SCREENPIPE_ENABLED is True)
 
 

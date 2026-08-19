@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cerebro",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Detects CRM cases in your browser and keeps Cerebro's context in sync.",
   "permissions": [
     "storage",
