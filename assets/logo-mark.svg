@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"
+     role="img" aria-label="Cerebro">
+  <title>Cerebro</title>
+  <defs>
+    <linearGradient id="brain" x1="24" y1="28" x2="232" y2="228" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8B7CF6"/>
+      <stop offset="0.55" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <linearGradient id="trace" x1="60" y1="40" x2="200" y2="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8FAFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#CFFAFE" stop-opacity="0.75"/>
+    </linearGradient>
+    <!-- One half is drawn and mirrored, so the two hemispheres cannot drift apart. -->
+    <path id="half" d="M128 30
+      C 106 30 88 41 80 59
+      C 60 58 44 71 42 90
+      C 27 98 20 116 26 133
+      C 17 149 22 170 38 179
+      C 41 199 58 212 78 209
+      C 90 221 110 227 128 222 Z"/>
+    <path id="halfTrace" d="M128 52
+      C 112 52 100 60 96 74
+      C 78 76 68 88 70 102
+      C 56 110 54 126 62 138
+      C 56 152 62 168 76 174
+      C 82 188 98 196 112 192"
+      fill="none"/>
+  </defs>
+
+  <g>
+    <use href="#half" fill="url(#brain)"/>
+    <use href="#half" fill="url(#brain)" transform="translate(256,0) scale(-1,1)"/>
+  </g>
+
+  <!-- Circuit traces: the "digital" half of the idea. -->
+  <g stroke="url(#trace)" stroke-width="7" stroke-linecap="round" fill="none" opacity="0.9">
+    <use href="#halfTrace"/>
+    <use href="#halfTrace" transform="translate(256,0) scale(-1,1)"/>
+    <path d="M128 34 L128 224" stroke-width="8"/>
+    <path d="M96 74 L128 92"/>
+    <path d="M160 74 L128 92"/>
+    <path d="M70 102 L128 128"/>
+    <path d="M186 102 L128 128"/>
+    <path d="M62 138 L128 164"/>
+    <path d="M194 138 L128 164"/>
+  </g>
+
+  <!-- Nodes, brightest at the junctions so the mark still reads at 16px. -->
+  <g fill="#FFFFFF">
+    <circle cx="128" cy="92" r="12"/>
+    <circle cx="128" cy="128" r="13"/>
+    <circle cx="128" cy="164" r="12"/>
+    <circle cx="96" cy="74" r="9"/><circle cx="160" cy="74" r="9"/>
+    <circle cx="70" cy="102" r="9"/><circle cx="186" cy="102" r="9"/>
+    <circle cx="62" cy="138" r="9"/><circle cx="194" cy="138" r="9"/>
+    <circle cx="76" cy="174" r="8"/><circle cx="180" cy="174" r="8"/>
+  </g>
+</svg>

@@ -45,14 +45,12 @@ for _candidate in (_HERE.parent / "backend", _HERE, _HERE.parent):
         break
 
 
-#: The widget's palette, so the two feel like one product.
-T = {
-    "bg": "#12161d", "surface": "#1a1f28", "surface2": "#222834",
-    "border": "#2b323f", "text": "#e7eaf0", "dim": "#9aa4b2", "faint": "#6b7484",
-    "accent": "#7c74f5", "accent_text": "#ffffff",
-    "ok": "#49c07d", "warn": "#e0a536", "err": "#f0705f",
-}
+import branding
 
+#: Shared with the widget and the web UI, so all three feel like one product.
+T = branding.DARK
+
+#: Resolved once Tk exists — see :func:`Wizard._init_branding`.
 FONT = "Segoe UI" if os.name == "nt" else "DejaVu Sans"
 
 
@@ -84,12 +82,25 @@ class Wizard(tk.Tk):
         self.minsize(820, 580)
         self._centre()
 
+        self._init_branding()
         self._style_ttk()
         self._build_frame()
         self._render()
         self.after(80, self._drain_results)
 
     # ------------------------------------------------------------- chrome
+    def _init_branding(self):
+        """Register the bundled font and set the window icon, before any widget."""
+        global FONT
+        try:
+            FONT = branding.load_fonts()
+        except Exception:  # noqa: BLE001 - the default font is fine
+            pass
+        branding.apply_window_icon(self)
+        # Held on the instance because Tk garbage-collects images it cannot see
+        # a reference to, which shows up as a silently blank label.
+        self.logo = branding.logo_image(48)
+
     def _style_ttk(self):
         """ttk ships light grey; without this the dropdowns look pasted on."""
         style = ttk.Style(self)
@@ -133,10 +144,16 @@ class Wizard(tk.Tk):
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
-        tk.Label(self.sidebar, text="Cerebro", bg=T["surface"], fg=T["text"],
-                 font=(FONT, 19, "bold")).pack(anchor="w", padx=22, pady=(26, 2))
-        tk.Label(self.sidebar, text="Setup", bg=T["surface"], fg=T["faint"],
-                 font=(FONT, 10)).pack(anchor="w", padx=22, pady=(0, 22))
+        brand = tk.Frame(self.sidebar, bg=T["surface"])
+        brand.pack(fill="x", padx=22, pady=(26, 22))
+        if self.logo is not None:
+            tk.Label(brand, image=self.logo, bg=T["surface"]).pack(side="left", padx=(0, 11))
+        words = tk.Frame(brand, bg=T["surface"])
+        words.pack(side="left")
+        tk.Label(words, text="Cerebro", bg=T["surface"], fg=T["text"],
+                 font=(FONT, 18, "bold")).pack(anchor="w")
+        tk.Label(words, text="Setup", bg=T["surface"], fg=T["faint"],
+                 font=(FONT, 10)).pack(anchor="w")
         self.step_labels = []
         for _key, title, _sub in self.STEPS:
             label = tk.Label(self.sidebar, text=title, bg=T["surface"], fg=T["faint"],
@@ -255,6 +272,93 @@ class Wizard(tk.Tk):
     def _set_status(self, message, kind="dim"):
         self.status.configure(text=message, fg=T.get(kind, T["dim"]))
 
+    # --------------------------------------------------------------- motion
+    def _start_spinner(self, message):
+        """
+        A braille spinner in the status line.
+
+        Tk has no animation primitive, so this is an after() loop. Every check
+        the wizard runs talks to something slow — a database, an AI provider, a
+        synced folder — and a frozen window is the difference between "working"
+        and "hung".
+        """
+        self._spin_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        self._spin_index = 0
+        self._spin_message = message
+        self._spin_active = True
+
+        def tick():
+            if not self._spin_active:
+                return
+            frame = self._spin_frames[self._spin_index % len(self._spin_frames)]
+            self._spin_index += 1
+            self.status.configure(text=f"{frame}  {self._spin_message}", fg=T["dim"])
+            self._spin_job = self.after(80, tick)
+
+        tick()
+
+    def _stop_spinner(self):
+        self._spin_active = False
+        job = getattr(self, "_spin_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:  # noqa: BLE001 - already fired
+                pass
+            self._spin_job = None
+
+    def _flash(self, widget, colour_key="ok"):
+        """Briefly tint a widget, to confirm something just succeeded."""
+        try:
+            original = widget.cget("fg")
+        except Exception:  # noqa: BLE001
+            return
+        widget.configure(fg=T[colour_key])
+        self.after(900, lambda: widget.winfo_exists() and widget.configure(fg=original))
+
+    def _animate_step_in(self):
+        """
+        Fade the window's step content in.
+
+        Tk cannot fade a frame, so this steps the *text* colours from the
+        background toward their final value, which reads as the panel resolving.
+        Cheap, and it makes step changes feel deliberate rather than abrupt.
+        """
+        steps = 6
+
+        def blend(start, end, ratio):
+            return "#" + "".join(
+                f"{round(int(start[i:i + 2], 16) * (1 - ratio) + int(end[i:i + 2], 16) * ratio):02x}"
+                for i in (1, 3, 5))
+
+        widgets = []
+        def collect(parent):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Label):
+                    try:
+                        widgets.append((child, child.cget("fg")))
+                    except Exception:  # noqa: BLE001
+                        pass
+                collect(child)
+        collect(self.body)
+
+        def frame(index):
+            if index > steps:
+                for widget, final in widgets:
+                    if widget.winfo_exists():
+                        widget.configure(fg=final)
+                return
+            ratio = index / steps
+            for widget, final in widgets:
+                if widget.winfo_exists():
+                    try:
+                        widget.configure(fg=blend(T["bg"], final, ratio))
+                    except Exception:  # noqa: BLE001 - named colours, skip
+                        pass
+            self.after(18, lambda: frame(index + 1))
+
+        frame(0)
+
     # ------------------------------------------------------------ routing
     def _render(self):
         for index, label in enumerate(self.step_labels):
@@ -287,6 +391,7 @@ class Wizard(tk.Tk):
         self.next_button.configure(text="Finish" if key == "done" else "Continue")
 
         getattr(self, f"_step_{key}")()
+        self._animate_step_in()
 
     def _next(self):
         if self.busy:
@@ -331,10 +436,11 @@ class Wizard(tk.Tk):
         return True
 
     # ------------------------------------------------ background testing
-    def _run_async(self, work, on_done):
+    def _run_async(self, work, on_done, message="Working…"):
         """Run a slow check off the UI thread so the window never freezes."""
         self.busy = True
         self.next_button.configure(state="disabled")
+        self._start_spinner(message)
 
         def worker():
             try:
@@ -349,6 +455,7 @@ class Wizard(tk.Tk):
             while True:
                 callback, value, error = self._results.get_nowait()
                 self.busy = False
+                self._stop_spinner()
                 self.next_button.configure(state="normal")
                 callback(value, error)
         except queue.Empty:
@@ -410,7 +517,6 @@ class Wizard(tk.Tk):
         from app.core import setup_checks
 
         names = [c["component"] for c in checks]
-        self._set_status(f"Installing {len(names)} component(s)… this can take a minute.")
 
         def work():
             return [setup_checks.repair(name) for name in names]
@@ -426,7 +532,7 @@ class Wizard(tk.Tk):
                 self._set_status("Installed. Re-checking…", "ok")
             self._render()
 
-        self._run_async(work, done)
+        self._run_async(work, done, "Installing — this can take a minute…")
 
     # ---------------------------------------------------------- database
     def _step_database(self):
@@ -498,7 +604,6 @@ class Wizard(tk.Tk):
     def _test_database(self):
         if not self._save():
             return
-        self._set_status("Opening the database…")
 
         def work():
             from app.core import check_database, init_db
@@ -519,7 +624,7 @@ class Wizard(tk.Tk):
                     "  If this is PostgreSQL, check the server is running and the "
                     "connection string is right.", "err")
 
-        self._run_async(work, done)
+        self._run_async(work, done, "Opening the database…")
 
     # ---------------------------------------------------------------- ai
     def _step_ai(self):
@@ -690,7 +795,6 @@ class Wizard(tk.Tk):
     def _refresh_models(self, provider):
         if not self._save():
             return
-        self._set_status("Asking the provider which models you can use…")
 
         def work():
             from app.core.model_catalog import CUSTOM
@@ -708,12 +812,11 @@ class Wizard(tk.Tk):
                              "ok" if result["live"] else "warn")
             self._render_ai_detail()
 
-        self._run_async(work, done)
+        self._run_async(work, done, "Asking the provider which models you can use…")
 
     def _test_ai(self):
         if not self._save():
             return
-        self._set_status("Asking the model to answer a test question…")
 
         def work():
             from app.services.llm_service import LLMService
@@ -730,7 +833,7 @@ class Wizard(tk.Tk):
             else:
                 self._set_status(result.get("detail") or "The model did not answer.", "err")
 
-        self._run_async(work, done)
+        self._run_async(work, done, "Asking the model to answer a test question…")
 
     # --------------------------------------------------------- microsoft
     def _step_microsoft(self):
@@ -784,7 +887,6 @@ class Wizard(tk.Tk):
     def _test_microsoft(self):
         if not self._save():
             return
-        self._set_status("Writing and reading the folders…")
 
         def work():
             from app.core.config import settings
@@ -820,7 +922,7 @@ class Wizard(tk.Tk):
                     f"{name}: {r.get('detail') or 'OK'}" for name, r in results), "ok")
                 self._render()
 
-        self._run_async(work, done)
+        self._run_async(work, done, "Writing and reading the folders…")
 
     # -------------------------------------------------------------- done
     def _step_done(self):

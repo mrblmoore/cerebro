@@ -431,6 +431,203 @@ def test_database_round_trip():
         db.close()
 
 
+def test_everything_is_explained():
+    """Any setting that is not self-evident has to say what it is for."""
+    print("\nSettings are explained")
+
+    from app.core import settings_store
+
+    described = settings_store.describe()
+    check("Every group explains itself",
+          all(group.get("description") for group in described["groups"]))
+
+    # A checkbox called "Debug mode" speaks for itself. A box wanting a path, a
+    # URL, a key or a bare number does not, and guessing is how people give up.
+    unexplained = []
+    for field in described["fields"]:
+        if field.get("help"):
+            continue
+        key = field["key"]
+        if field["type"] in ("url", "password") or any(
+                word in key for word in
+                ("DIR", "PATH", "URL", "KEY", "ID", "TOKEN", "MODEL", "LIMIT",
+                 "INTERVAL", "SECONDS", "DAYS", "MAX", "MIN")):
+            unexplained.append(key)
+    check("Every non-obvious setting has help text", not unexplained,
+          f"missing: {unexplained}")
+
+    # A "Test connection" button wired to a target the backend does not handle
+    # returns a 404 that reads as a broken integration.
+    import re
+    html = (ROOT / "backend" / "app" / "web" / "settings.html").read_text()
+    block = html.split("TEST_TARGETS = {")[1].split("}")[0]
+    ui_targets = dict(re.findall(r"(\w+):\s*'(\w+)'", block))
+    api = (ROOT / "backend" / "app" / "api" / "system.py").read_text()
+    backend_targets = set(re.findall(r'if target == "(\w+)"', api))
+    for tab, target in sorted(ui_targets.items()):
+        check(f"The {tab} tab's test target exists", target in backend_targets)
+
+
+def test_installer_integrity():
+    """Every file and executable the installer names actually exists."""
+    print("\nInstaller integrity")
+
+    import re
+
+    iss = (ROOT / "packaging" / "installer.iss").read_text()
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+
+    # A missing image is a compile error on the Windows runner, which is a slow
+    # and confusing way to find out.
+    for line in set(re.findall(
+            r'(?:SetupIconFile|WizardImageFile|WizardSmallImageFile)=([^\n]+)', iss)):
+        for item in line.split(","):
+            item = item.strip()
+            path = ROOT / "packaging" / item.replace("\\", "/")
+            check(f"Installer image {item} exists", path.is_file())
+
+    # An installer that launches an exe PyInstaller never built produces a
+    # "file not found" at the end of a successful install.
+    for name in sorted(set(re.findall(r'#\{?(\w*ExeName)\}?', iss))):
+        define = re.search(rf'#define {name}\s+"([^"]+)"', iss)
+        if not define:
+            continue
+        exe = define.group(1)
+        check(f"{exe} is built by the spec",
+              f'name="{exe.replace(".exe", "")}"' in spec)
+
+    check("The wizard is what the installer runs at the end",
+          "CerebroSetupWizard.exe" in iss and "postinstall" in iss)
+    check("The welcome text says what Cerebro is", "WelcomeLabel2=" in iss)
+    check("The finish text says what happens next", "FinishedLabel=" in iss)
+
+
+def test_branding_assets():
+    """The logo, the font and the icon all ship, and are wired everywhere."""
+    print("\nBranding assets")
+
+    # The font is bundled rather than fetched from a CDN: Cerebro is local-first
+    # and often runs with no outbound internet, where a webfont silently fails.
+    web_font = ROOT / "backend" / "app" / "web" / "static" / "fonts" / "InterVariable.woff2"
+    desktop_font = ROOT / "assets" / "fonts" / "InterVariable.ttf"
+    check("The web font is bundled", web_font.is_file())
+    check("The desktop font is bundled", desktop_font.is_file())
+    check("The font licence ships with it",
+          (ROOT / "assets" / "fonts" / "Inter-LICENSE.txt").is_file())
+
+    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text()
+    check("The CSS declares the bundled face", "@font-face" in css)
+    check("The CSS serves the font locally, not from a CDN",
+          "/static/fonts/InterVariable.woff2" in css
+          and "fonts.googleapis.com" not in css and "fonts.gstatic.com" not in css)
+    check("Inter leads the sans stack", '--sans: "Inter Variable"' in css)
+
+    icon = ROOT / "packaging" / "cerebro.ico"
+    check("The Windows icon exists", icon.is_file())
+    check("The icon is not a stub", icon.stat().st_size > 20_000)
+
+    for size in (32, 48, 64, 128, 256):
+        check(f"The {size}px logo ships",
+              (ROOT / "assets" / "icons" / f"cerebro-{size}.png").is_file())
+    check("The web favicon ships",
+          (ROOT / "backend" / "app" / "web" / "static" / "cerebro-256.png").is_file())
+
+    for name in ("logo-mark.svg", "logo-mark-small.svg"):
+        svg = (ROOT / "assets" / name).read_text()
+        check(f"{name} is valid XML", svg.strip().startswith("<svg") and "</svg>" in svg)
+        # The mark is mirrored rather than drawn twice, so the hemispheres
+        # cannot drift apart when the shape is edited.
+        check(f"{name} mirrors its halves", "scale(-1,1)" in svg)
+
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    check("The frozen build ships the assets", '"assets"' in spec)
+    check("The frozen build ships the branding module", '"branding"' in spec)
+
+    installer = (ROOT / "packaging" / "installer.iss").read_text()
+    check("The installer uses the icon", "SetupIconFile=cerebro.ico" in installer)
+    check("The installer is branded", "WizardImageFile=" in installer)
+    for image in ("wizard-image.bmp", "wizard-image@2x.bmp",
+                  "wizard-small.bmp", "wizard-small@2x.bmp"):
+        check(f"{image} exists", (ROOT / "packaging" / "images" / image).is_file())
+
+    # Inno reads a .iss without a BOM in the system ANSI codepage, so anything
+    # outside ASCII can reach a user's screen mangled.
+    check("The installer script is pure ASCII",
+          all(ord(character) < 128 for character in installer))
+
+
+def test_motion_and_icons():
+    """Animation is present, consistent, and can be turned off."""
+    print("\nMotion and icons")
+
+    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text()
+    check("Shared easing and duration tokens exist",
+          "--ease:" in css and "--fast:" in css and "--slow:" in css)
+    for animation in ("cb-rise", "cb-fade", "cb-spin", "cb-shimmer", "cb-pulse-ring", "cb-pop"):
+        check(f"The {animation} animation is defined", f"@keyframes {animation}" in css)
+    # Interface animation causes motion sickness for some people, and this app
+    # is designed to sit on screen all day.
+    check("Reduced motion is honoured", "prefers-reduced-motion: reduce" in css)
+    check("Reduced motion overrides every animation",
+          "animation-duration: .01ms !important" in css)
+
+    js = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.js").read_text()
+    check("The topbar carries the logo", '<svg class="mark"' in js)
+    check("The logo is inline, not a request", "logo-mark.svg" not in js)
+    check("Settings groups have drawn icons", "GROUP_ICONS" in js)
+    # Emoji render in a different style and colour on every OS.
+    for group in ("general", "database", "ai", "knowledge", "copilot", "logging"):
+        check(f"The {group} group has an icon", f"'{group}':" in js)
+    check("Icons follow the theme colour", "currentColor" in js)
+
+    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    check("The wizard uses the shared palette", "branding.DARK" in wizard)
+    check("The wizard registers the bundled font", "branding.load_fonts()" in wizard)
+    check("The wizard shows the logo", "branding.logo_image" in wizard)
+    check("The wizard has a spinner for slow work", "_start_spinner" in wizard)
+    check("The spinner is stopped when work finishes", "_stop_spinner" in wizard)
+    check("Steps animate in", "_animate_step_in" in wizard)
+
+    widget = (ROOT / "desktop" / "widget.py").read_text()
+    check("The widget uses the bundled font", "branding.load_fonts()" in widget)
+    check("The widget shows the logo in its title bar", "branding.logo_image" in widget)
+    check("The widget fades in on launch", "_fade_in" in widget)
+    check("The widget can pulse a status dot", "_pulse_dot" in widget)
+
+
+def test_branding_module():
+    """branding.py degrades safely when assets or a display are missing."""
+    print("\nBranding module")
+
+    sys.path.insert(0, str(ROOT / "desktop"))
+    try:
+        import branding
+    finally:
+        sys.path.pop(0)
+
+    check("Assets resolve to a real directory", branding.assets_dir().is_dir())
+    check("The font file is found",
+          (branding.assets_dir() / "fonts" / "InterVariable.ttf").is_file())
+    check("An icon path is found", bool(branding.icon_path()))
+
+    # Called with no Tk root, as the widget does before its window exists.
+    family = branding.load_fonts()
+    check("A font family is always returned", isinstance(family, str) and family)
+
+    # Without a display there is no PhotoImage, and that must not raise.
+    try:
+        branding.logo_image(32)
+        safe = True
+    except Exception:
+        safe = False
+    check("Loading the logo never raises", safe)
+
+    check("Light and dark palettes have the same keys",
+          set(branding.DARK) == set(branding.LIGHT))
+    check("The palette matches the web accent",
+          branding.DARK["accent"] == "#7c74f5")
+
+
 def test_setup_checks_and_repair():
     """Preflight explains itself, and repair targets the right interpreter."""
     print("\nSetup checks")
@@ -1675,6 +1872,9 @@ def main() -> int:
                   test_bedrock_provider, test_model_catalog_and_discovery,
                   test_setup_checks_and_repair, test_setup_wizard,
                   test_database_resilience, test_database_round_trip,
+                  test_everything_is_explained, test_installer_integrity,
+                  test_branding_assets, test_motion_and_icons,
+                  test_branding_module,
                   test_copilot_instructions,
                   test_bedrock_credential_modes, test_bundled_dependencies,
                   test_enterprise_normalisation, test_enterprise_ingest_and_reply,

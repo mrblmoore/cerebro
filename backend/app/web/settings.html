@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cerebro · Settings</title>
   <link rel="stylesheet" href="/static/cerebro.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+  <link rel="icon" type="image/png" href="/static/cerebro-256.png">
 </head>
 <body>
   <div id="topbar"></div>
@@ -150,7 +150,7 @@ function renderPanel() {
     ${active === 'copilot' ? '<div id="copilot-guide"></div>' : ''}
     <div class="card">
       <header>
-        <span style="font-size:16px">${group.icon}</span>
+        <span class="gicon">${groupIcon(group)}</span>
         <h2>${esc(group.title)}</h2>
         ${testTarget ? `<button class="btn-sm" id="test">Test connection</button>` : ''}
       </header>
@@ -360,7 +360,7 @@ function bold(text) {
 function renderTabs() {
   document.getElementById('tabs').innerHTML = description.groups.map((group) => `
     <button data-tab="${esc(group.id)}" aria-selected="${group.id === active}">
-      ${group.icon} ${esc(group.title)}
+      <span class="gicon">${groupIcon(group)}</span>${esc(group.title)}
     </button>`).join('');
 
   document.querySelectorAll('[data-tab]').forEach((button) => {

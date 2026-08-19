@@ -1,5 +1,19 @@
 /* Cerebro design system — shared by the dashboard, setup wizard and settings. */
 
+/*
+ * Inter is bundled rather than pulled from a font CDN: Cerebro is local-first
+ * and often runs on machines with no outbound internet, and a webfont that
+ * silently fails to load is a visual regression nobody notices until a demo.
+ * "InterVariable" is one file covering every weight.
+ */
+@font-face {
+  font-family: "Inter Variable";
+  src: url("/static/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
 
@@ -26,7 +40,14 @@
   --radius-sm: 6px;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 8px 24px rgba(16, 24, 40, .06);
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  --sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont,
+          "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+
+  /* One easing curve and two durations, so everything that moves feels like
+     the same product rather than a pile of independent effects. */
+  --ease: cubic-bezier(.22, .61, .36, 1);
+  --fast: 140ms;
+  --slow: 260ms;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -63,7 +84,12 @@ body {
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  /* Inter's optical sizing and tighter tracking at display sizes. */
+  font-optical-sizing: auto;
+  letter-spacing: -0.006em;
 }
+
+h1, h2, h3 { letter-spacing: -0.02em; }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -90,11 +116,16 @@ p { margin: 0 0 12px; color: var(--text-dim); }
 }
 
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 15px; }
+/* The mark is an inline SVG now, so it carries its own gradient rather than
+   sitting on a tinted tile. It leans in slightly on hover — enough to feel
+   alive, not enough to be a distraction on a page you keep open all day. */
 .brand .mark {
-  display: grid; place-items: center;
-  width: 26px; height: 26px; border-radius: 7px;
-  background: linear-gradient(135deg, var(--accent), #a855f7);
-  color: #fff; font-size: 14px;
+  width: 26px; height: 26px; display: block; flex: none;
+  transition: transform var(--slow) var(--ease), filter var(--slow) var(--ease);
+}
+.brand:hover .mark {
+  transform: scale(1.07) rotate(-3deg);
+  filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--accent) 45%, transparent));
 }
 .brand small { color: var(--text-faint); font-weight: 400; font-size: 11px; }
 
@@ -342,3 +373,132 @@ code.inline {
 .right { text-align: right; }
 .nowrap { white-space: nowrap; }
 .hidden { display: none !important; }
+
+/* ------------------------------------------------------------------ motion
+ *
+ * Motion here is functional, not decorative: it shows where new content came
+ * from, keeps a slow request from looking like a hang, and gives controls a
+ * physical sense of being pressed.
+ *
+ * Everything is wrapped by the reduced-motion query at the bottom. Some people
+ * get motion sickness from interface animation, and this app is meant to sit
+ * on screen all day.
+ */
+
+@keyframes cb-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cb-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes cb-spin { to { transform: rotate(360deg); } }
+@keyframes cb-shimmer {
+  from { background-position: -420px 0; }
+  to   { background-position: 420px 0; }
+}
+@keyframes cb-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent); }
+}
+@keyframes cb-pop {
+  0%   { transform: scale(.82); opacity: 0; }
+  60%  { transform: scale(1.04); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* Cards arrive in sequence, so the eye follows the page being built rather
+   than having a finished screen appear at once. */
+.card { animation: cb-rise var(--slow) var(--ease) both; }
+.card:nth-of-type(2) { animation-delay: 40ms; }
+.card:nth-of-type(3) { animation-delay: 80ms; }
+.card:nth-of-type(4) { animation-delay: 120ms; }
+
+.wrap > h1 { animation: cb-rise var(--slow) var(--ease) both; }
+
+/* Buttons: a quick lift on hover, and a real press on click. */
+button, .btn-sm, .pill {
+  transition: background-color var(--fast) var(--ease),
+              border-color var(--fast) var(--ease),
+              color var(--fast) var(--ease),
+              transform var(--fast) var(--ease),
+              box-shadow var(--fast) var(--ease);
+}
+button:not(:disabled):hover, .btn-sm:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+button:not(:disabled):active, .btn-sm:not(:disabled):active {
+  transform: translateY(0) scale(.985);
+}
+button:disabled { cursor: progress; }
+
+input, select, textarea {
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+input:focus, select:focus, textarea:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Rows highlight on hover so a long list stays trackable. */
+.list .row, .tabs button { transition: background-color var(--fast) var(--ease); }
+
+/* A spinner for anything that has to wait on the network. */
+.spinner {
+  display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
+  border: 2px solid color-mix(in srgb, var(--text-faint) 45%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: cb-spin 620ms linear infinite;
+}
+
+/* Skeletons: shape-of-the-answer while it loads, instead of an empty box. */
+.skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg,
+    var(--surface-2) 0%, color-mix(in srgb, var(--surface-2) 55%, var(--surface)) 50%,
+    var(--surface-2) 100%);
+  background-size: 420px 100%;
+  animation: cb-shimmer 1.15s linear infinite;
+  color: transparent; min-height: 13px;
+}
+
+/* A live "connected" dot that breathes, so it reads as current, not painted on. */
+.pill.ok.live::before,
+.status-dot.live {
+  animation: cb-pulse-ring 2.1s var(--ease) infinite;
+}
+
+/* Toasts slide in from the corner they live in. */
+.toast { animation: cb-rise var(--slow) var(--ease) both; }
+
+/* Newly-arrived items announce themselves once. */
+.is-new { animation: cb-pop 320ms var(--ease) both; }
+
+/* Panels that swap content (settings tabs, wizard steps) fade the new one in. */
+#panel, #step, .step-body { animation: cb-fade var(--slow) var(--ease) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Group icons sit on the text baseline and inherit the tab's colour, so the
+   active tab tints its icon too. */
+.gicon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex: none;
+  color: var(--text-dim);
+  transition: color var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.tabs button .gicon { margin-right: 7px; }
+.tabs button:hover .gicon { color: var(--text); }
+.tabs button[aria-current="page"] .gicon,
+.tabs button.active .gicon { color: var(--accent); }
+.card header .gicon { color: var(--accent); width: 18px; height: 18px; }
+.card header .gicon svg { width: 18px; height: 18px; }

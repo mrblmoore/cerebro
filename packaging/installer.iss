@@ -3,7 +3,7 @@
 ; Build with Inno Setup 6:
 ;   iscc packaging\installer.iss
 ;
-; Produces dist\CerebroSetup.exe — a single file the user double-clicks. It needs
+; Produces dist\CerebroSetup.exe - a single file the user double-clicks. It needs
 ; no Python, no admin rights and no prerequisites: PyInstaller has already bundled
 ; the runtime, and the install goes to the user's own profile.
 
@@ -48,6 +48,14 @@ ArchitecturesInstallIn64BitMode=x64compatible
 
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
+SetupIconFile=cerebro.ico
+
+; Branding. Inno picks the size matching the user's display scaling, so each
+; image ships at 1x and 2x rather than being upscaled into a blurry mess.
+WizardImageFile=images\wizard-image.bmp,images\wizard-image@2x.bmp
+WizardSmallImageFile=images\wizard-small.bmp,images\wizard-small@2x.bmp
+WizardImageStretch=yes
+WizardImageAlphaFormat=none
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
@@ -55,10 +63,19 @@ RestartApplications=no
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Messages]
+WelcomeLabel1=Welcome to Cerebro
+WelcomeLabel2=Cerebro is a second brain for technical support. It follows the case you are working on, remembers how you have solved things before, and drafts your notes and replies.%n%nEverything stays on this computer - your cases, documents and recordings never leave it unless you connect a cloud AI model yourself.%n%nThis takes about a minute. Setup runs at the end and will get you working.
+FinishedHeadingLabel=Cerebro is installed
+FinishedLabel=Leave the box below ticked and setup will open next. It checks everything installed correctly, prepares your database and connects a model - testing each one - so Cerebro is ready to use when it closes.
+
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; \
+Name: "desktopicon"; Description: "Put Cerebro on my desktop"; \
   GroupDescription: "Shortcuts:"
-Name: "widgetstartup"; Description: "Start the Cerebro widget when I sign in"; \
+; The widget is a small always-on-top panel showing the current case, so the
+; description says what it is rather than just naming it.
+Name: "widgetstartup"; \
+  Description: "Start the Cerebro widget when I sign in (a small always-on-top panel)"; \
   GroupDescription: "Startup:"
 
 [Files]
@@ -80,7 +97,7 @@ Name: "{userstartup}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks:
 [Run]
 ; Configuration is part of installing, not a separate errand afterwards. The
 ; wizard checks dependencies, sets up the database, connects an AI provider and
-; tests each one before it closes — so "installed" and "ready to use" are the
+; tests each one before it closes - so "installed" and "ready to use" are the
 ; same moment. It offers to start Cerebro itself at the end, which is why the
 ; widget is not launched separately here.
 ;
@@ -102,7 +119,7 @@ Type: filesandordirs; Name: "{app}\_internal\__pycache__"
 [Code]
 { Cerebro keeps its database, logs and settings in %LOCALAPPDATA%\Cerebro,
   deliberately outside the install directory so an upgrade never touches them.
-  On uninstall the user chooses whether that goes too — losing an entire case
+  On uninstall the user chooses whether that goes too - losing an entire case
   history to a routine uninstall would be a nasty surprise. }
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var

@@ -22,6 +22,10 @@ block_cipher = None
 # The web UI is read at runtime from app/web, so it must be shipped as data.
 datas = [
     (str(BACKEND / "app" / "web"), "app/web"),
+    # The bundled Inter font and the logo. Without these the packaged widget
+    # and wizard silently fall back to a system font and a blank icon, which
+    # only shows up on a machine that has never had the source tree.
+    (str(ROOT / "assets"), "assets"),
     (str(ROOT / "browser-extension" / "src"), "browser-extension"),
     (str(BACKEND / ".env.example"), "."),
     (str(ROOT / "VERSION"), "."),
@@ -86,7 +90,7 @@ widget = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
-        "widget", "widget_config", "win_integration", "agent",
+        "widget", "widget_config", "win_integration", "agent", "branding",
         "activity_recorder", "screenpipe_launcher", "mss", "PIL",
         "PIL.Image", "pynput", "pynput.keyboard",
     ],
@@ -105,7 +109,7 @@ wizard = Analysis(
     # database, calls the AI provider and lists models. It also needs Tkinter,
     # which the server build deliberately excludes.
     hiddenimports=hiddenimports + [
-        "setup_wizard", "tkinter", "tkinter.ttk", "tkinter.filedialog",
+        "setup_wizard", "branding", "tkinter", "tkinter.ttk", "tkinter.filedialog",
         "app.core.setup_checks", "app.core.model_catalog",
         "app.services.model_discovery", "app.api.copilot",
     ],
