@@ -338,17 +338,17 @@ def test_bundled_dependencies():
     """Everything a feature needs ships with the install, not after it."""
     print("\nBundled dependencies")
 
-    ai_requirements = (ROOT / "backend" / "requirements-ai.txt").read_text()
+    ai_requirements = (ROOT / "backend" / "requirements-ai.txt").read_text(encoding="utf-8")
     # Bedrock cross-Region inference profiles sign with SigV4a, which botocore
     # can only do with its "crt" extra. Without this pin the first Bedrock call
     # dies asking the user to install it by hand.
     check("botocore's CRT extra is pinned", "botocore[crt]" in ai_requirements)
 
-    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text(encoding="utf-8")
     check("The frozen build bundles awscrt", '"awscrt"' in spec)
     check("The frozen build bundles botocore's CRT auth", "botocore.crt.auth" in spec)
 
-    launcher = (ROOT / "cerebro.py").read_text()
+    launcher = (ROOT / "cerebro.py").read_text(encoding="utf-8")
     check("Setup installs every requirement group", "ALL_REQUIREMENTS" in launcher)
     for group in ("requirements-ai.txt", "requirements-documents.txt",
                   "requirements-capture.txt", "requirements-audio.txt"):
@@ -368,7 +368,7 @@ def test_database_resilience():
     # create_engine imports the driver eagerly, so this class of failure lands
     # at import time. If it were fatal, one wrong setting would leave no way
     # back into the UI to correct it.
-    source = (ROOT / "backend" / "app" / "core" / "database.py").read_text()
+    source = (ROOT / "backend" / "app" / "core" / "database.py").read_text(encoding="utf-8")
     check("Engine creation is guarded", "ENGINE_ERROR" in source)
     check("A broken URL falls back to the built-in database",
           "default_database_url()" in source)
@@ -387,7 +387,7 @@ def test_database_resilience():
     from app.core import setup_checks
     check("The PostgreSQL driver is a repairable component",
           "postgres" in setup_checks.COMPONENTS)
-    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text(encoding="utf-8")
     check("The wizard offers to install the driver",
           'component_status("postgres")' in wizard)
 
@@ -431,6 +431,60 @@ def test_database_round_trip():
         db.close()
 
 
+def test_file_reads_declare_encoding():
+    """
+    Every file read must name its encoding.
+
+    Python uses the *locale* encoding when none is given. That is UTF-8 on the
+    machines this is usually developed on and cp1252 on a Windows runner, so a
+    bare read_text() works everywhere except the one place it matters — and it
+    fails on the first em-dash or tick mark in a source file, which is exactly
+    how this broke the v0.3.6 installer build.
+    """
+    print("\nFile reads declare an encoding")
+
+    import re
+
+    targets = [ROOT / "test_mvp.py", ROOT / "cerebro.py"]
+    for directory in ("backend/app", "desktop", "packaging"):
+        targets.extend(sorted((ROOT / directory).rglob("*.py")))
+
+    # A read with no encoding= before the closing paren on the same line.
+    bare_read_text = re.compile(r"\.read_text\((?![^)]*encoding=)")
+    bare_open = re.compile(r"(?<![\w.])open\(\s*[^)]*?[\"'\w)][^)]*\)"
+                           r"(?<!encoding)", re.X)
+
+    offenders = []
+    for path in targets:
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for number, line in enumerate(source.splitlines(), 1):
+            if "encoding=" in line:
+                continue
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if bare_read_text.search(line):
+                offenders.append(f"{path.relative_to(ROOT)}:{number} read_text()")
+            # Only a real call site: "with open(...)" or "x = open(...)".
+            # Matching a bare "open(" also hits the word inside string literals,
+            # including this test's own message.
+            if re.search(r"(?:with|=)\s+open\(", line) and "urlopen" not in line \
+                    and not re.search(r"[\"']([rw]b|[rw]b\+)[\"']", line):
+                offenders.append(f"{path.relative_to(ROOT)}:{number} open()")
+
+    check("No file is read without an explicit encoding", not offenders,
+          "; ".join(offenders[:4]))
+
+    # The source tree genuinely contains non-ASCII, which is what makes the
+    # above matter rather than being a style rule.
+    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text(encoding="utf-8")
+    check("Source files really do contain non-ASCII",
+          any(ord(character) > 127 for character in wizard))
+
+
 def test_everything_is_explained():
     """Any setting that is not self-evident has to say what it is for."""
     print("\nSettings are explained")
@@ -459,10 +513,10 @@ def test_everything_is_explained():
     # A "Test connection" button wired to a target the backend does not handle
     # returns a 404 that reads as a broken integration.
     import re
-    html = (ROOT / "backend" / "app" / "web" / "settings.html").read_text()
+    html = (ROOT / "backend" / "app" / "web" / "settings.html").read_text(encoding="utf-8")
     block = html.split("TEST_TARGETS = {")[1].split("}")[0]
     ui_targets = dict(re.findall(r"(\w+):\s*'(\w+)'", block))
-    api = (ROOT / "backend" / "app" / "api" / "system.py").read_text()
+    api = (ROOT / "backend" / "app" / "api" / "system.py").read_text(encoding="utf-8")
     backend_targets = set(re.findall(r'if target == "(\w+)"', api))
     for tab, target in sorted(ui_targets.items()):
         check(f"The {tab} tab's test target exists", target in backend_targets)
@@ -474,8 +528,8 @@ def test_installer_integrity():
 
     import re
 
-    iss = (ROOT / "packaging" / "installer.iss").read_text()
-    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    iss = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text(encoding="utf-8")
 
     # A missing image is a compile error on the Windows runner, which is a slow
     # and confusing way to find out.
@@ -515,7 +569,7 @@ def test_branding_assets():
     check("The font licence ships with it",
           (ROOT / "assets" / "fonts" / "Inter-LICENSE.txt").is_file())
 
-    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text()
+    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text(encoding="utf-8")
     check("The CSS declares the bundled face", "@font-face" in css)
     check("The CSS serves the font locally, not from a CDN",
           "/static/fonts/InterVariable.woff2" in css
@@ -533,17 +587,17 @@ def test_branding_assets():
           (ROOT / "backend" / "app" / "web" / "static" / "cerebro-256.png").is_file())
 
     for name in ("logo-mark.svg", "logo-mark-small.svg"):
-        svg = (ROOT / "assets" / name).read_text()
+        svg = (ROOT / "assets" / name).read_text(encoding="utf-8")
         check(f"{name} is valid XML", svg.strip().startswith("<svg") and "</svg>" in svg)
         # The mark is mirrored rather than drawn twice, so the hemispheres
         # cannot drift apart when the shape is edited.
         check(f"{name} mirrors its halves", "scale(-1,1)" in svg)
 
-    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text(encoding="utf-8")
     check("The frozen build ships the assets", '"assets"' in spec)
     check("The frozen build ships the branding module", '"branding"' in spec)
 
-    installer = (ROOT / "packaging" / "installer.iss").read_text()
+    installer = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
     check("The installer uses the icon", "SetupIconFile=cerebro.ico" in installer)
     check("The installer is branded", "WizardImageFile=" in installer)
     for image in ("wizard-image.bmp", "wizard-image@2x.bmp",
@@ -560,7 +614,7 @@ def test_motion_and_icons():
     """Animation is present, consistent, and can be turned off."""
     print("\nMotion and icons")
 
-    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text()
+    css = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.css").read_text(encoding="utf-8")
     check("Shared easing and duration tokens exist",
           "--ease:" in css and "--fast:" in css and "--slow:" in css)
     for animation in ("cb-rise", "cb-fade", "cb-spin", "cb-shimmer", "cb-pulse-ring", "cb-pop"):
@@ -571,7 +625,7 @@ def test_motion_and_icons():
     check("Reduced motion overrides every animation",
           "animation-duration: .01ms !important" in css)
 
-    js = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.js").read_text()
+    js = (ROOT / "backend" / "app" / "web" / "static" / "cerebro.js").read_text(encoding="utf-8")
     check("The topbar carries the logo", '<svg class="mark"' in js)
     check("The logo is inline, not a request", "logo-mark.svg" not in js)
     check("Settings groups have drawn icons", "GROUP_ICONS" in js)
@@ -580,7 +634,7 @@ def test_motion_and_icons():
         check(f"The {group} group has an icon", f"'{group}':" in js)
     check("Icons follow the theme colour", "currentColor" in js)
 
-    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text(encoding="utf-8")
     check("The wizard uses the shared palette", "branding.DARK" in wizard)
     check("The wizard registers the bundled font", "branding.load_fonts()" in wizard)
     check("The wizard shows the logo", "branding.logo_image" in wizard)
@@ -588,7 +642,7 @@ def test_motion_and_icons():
     check("The spinner is stopped when work finishes", "_stop_spinner" in wizard)
     check("Steps animate in", "_animate_step_in" in wizard)
 
-    widget = (ROOT / "desktop" / "widget.py").read_text()
+    widget = (ROOT / "desktop" / "widget.py").read_text(encoding="utf-8")
     check("The widget uses the bundled font", "branding.load_fonts()" in widget)
     check("The widget shows the logo in its title bar", "branding.logo_image" in widget)
     check("The widget fades in on launch", "_fade_in" in widget)
@@ -667,7 +721,7 @@ def test_setup_wizard():
     """The wizard the installer runs covers every step and is wired in."""
     print("\nSetup wizard")
 
-    source = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    source = (ROOT / "desktop" / "setup_wizard.py").read_text(encoding="utf-8")
     steps = ["welcome", "database", "ai", "microsoft", "done"]
     for step in steps:
         check(f"The wizard has a {step} step", f"_step_{step}" in source)
@@ -682,15 +736,15 @@ def test_setup_wizard():
     check("Finishing marks setup complete", "mark_setup_complete" in source)
     check("Missing dependencies can be repaired in place", "_repair" in source)
 
-    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text(encoding="utf-8")
     check("The wizard is built as its own executable", "CerebroSetupWizard" in spec)
     check("The wizard bundles Tkinter", '"tkinter"' in spec)
 
-    installer = (ROOT / "packaging" / "installer.iss").read_text()
+    installer = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
     check("The installer runs the wizard", "CerebroSetupWizard.exe" in installer)
     check("The installer runs it as a first run", "--first-run" in installer)
 
-    launcher = (ROOT / "cerebro.py").read_text()
+    launcher = (ROOT / "cerebro.py").read_text(encoding="utf-8")
     check("A source install can open the wizard too", "def cmd_configure" in launcher)
     check("Setup ends by configuring", "5. Configuring Cerebro" in launcher)
 
@@ -938,7 +992,7 @@ def test_enterprise_ingest_and_reply():
 
     files = list(outbox.glob("*.json"))
     check("Exactly one file written for Power Automate", len(files) == 1)
-    written = _json.loads(files[0].read_text())
+    written = _json.loads(files[0].read_text(encoding="utf-8"))
     check("Outbound payload carries the action", written["action"] == "reply_email")
     check("Outbound payload carries the recipient",
           written["to"] == ["person@company.com"])
@@ -1410,11 +1464,11 @@ def test_copilot_bridge():
     check("Memory published", (folder / "memory.json").exists())
     check("Style published", (folder / "style.json").exists())
 
-    context = _json.loads((folder / "context.json").read_text())
+    context = _json.loads((folder / "context.json").read_text(encoding="utf-8"))
     check("Context carries a freshness stamp", "generated_at" in context)
     check("Context includes suggestions", "suggestions" in context)
 
-    memory = _json.loads((folder / "memory.json").read_text())
+    memory = _json.loads((folder / "memory.json").read_text(encoding="utf-8"))
     check("Memory payload has no raw activity",
           not any(key in memory for key in ("screenshots", "keystrokes", "activity")))
 
@@ -1438,7 +1492,7 @@ def test_copilot_bridge():
     os.utime(bad, (0, 0))
     bridge.drain_commands()
     refusal = _json.loads(
-        sorted((folder / "results").glob("*cmd-bad*"))[0].read_text())
+        sorted((folder / "results").glob("*cmd-bad*"))[0].read_text(encoding="utf-8"))
     check("Non-permitted command refused", refusal["ok"] is False)
     check("Refusal explains why", "not-permitted" in refusal["error"]
           or "Unknown" in refusal["error"])
@@ -1453,7 +1507,7 @@ def test_copilot_bridge():
     os.utime(staged, (0, 0))
     bridge.drain_commands()
     outcome = _json.loads(
-        sorted((folder / "results").glob("*cmd-change*"))[0].read_text())
+        sorted((folder / "results").glob("*cmd-change*"))[0].read_text(encoding="utf-8"))
     check("Changes wait for approval in approve mode", outcome.get("staged") is True)
 
     status = bridge.status()
@@ -1568,7 +1622,7 @@ def test_copilot_approval_flow():
         os.utime(cmd2, (0, 0))
         bridge.drain_commands()
         result2 = _json.loads(
-            sorted((folder / "results").glob("*cmd-approve-2*"))[0].read_text())
+            sorted((folder / "results").glob("*cmd-approve-2*"))[0].read_text(encoding="utf-8"))
         check("Duplicate stage reports it is already pending",
               result2.get("duplicate") is True)
     finally:
@@ -1598,7 +1652,7 @@ def test_copilot_memory_redaction():
         memory_type="fact")
 
     CopilotBridge(db).publish()
-    published = _json.loads((folder / "memory.json").read_text())
+    published = _json.loads((folder / "memory.json").read_text(encoding="utf-8"))
     blob = _json.dumps(published)
     check("Secret redacted before publishing", "Hunter2" not in blob)
     check("Memory still published", published["count"] >= 1)
@@ -1872,6 +1926,7 @@ def main() -> int:
                   test_bedrock_provider, test_model_catalog_and_discovery,
                   test_setup_checks_and_repair, test_setup_wizard,
                   test_database_resilience, test_database_round_trip,
+                  test_file_reads_declare_encoding,
                   test_everything_is_explained, test_installer_integrity,
                   test_branding_assets, test_motion_and_icons,
                   test_branding_module,
