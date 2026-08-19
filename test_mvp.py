@@ -246,6 +246,113 @@ def test_llm_disabled():
     check("Generation returns guidance, not an exception", "Settings" in summary)
 
 
+def test_model_catalog_and_discovery():
+    """Model dropdowns always offer something, and never raise on a dead provider."""
+    print("\nModel catalogue and discovery")
+
+    from app.core import model_catalog, settings_store
+    from app.services import model_discovery
+
+    description = settings_store.describe()
+    model_fields = [f for f in description["fields"] if f["type"] == "model"]
+    check("Every provider's model field is a dropdown", len(model_fields) == 5)
+    check("Model fields name their provider",
+          all(f["model_provider"] for f in model_fields))
+    check("Model dropdowns are pre-populated",
+          all(len(f["options"]) >= 3 for f in model_fields))
+    check("Every dropdown offers a custom escape hatch",
+          all(any(o["id"] == model_catalog.CUSTOM for o in f["options"])
+              for f in model_fields))
+
+    # Chat and embedding catalogues must stay distinct: an embedding endpoint
+    # rejects a chat model ID, which is a confusing failure to debug.
+    chat = {m["id"] for m in model_catalog.fallback_models("openai")}
+    embedding = {m["id"] for m in model_catalog.fallback_models("openai_embedding")}
+    check("Chat and embedding catalogues do not overlap", not (chat & embedding))
+
+    # A configured value that is not in the curated list must survive.
+    options = model_catalog.options("openai", "my-private-deployment")
+    check("An existing custom model stays selectable",
+          options[0]["id"] == "my-private-deployment")
+
+    # Discovery must degrade, never raise — the settings page has to render.
+    for provider in ("openai", "ollama", "qwen", "unknown-provider"):
+        try:
+            models, error = model_discovery.discover(provider)
+            ok = True
+        except Exception:
+            ok, models, error = False, [], ""
+        check(f"Listing {provider} degrades instead of raising", ok)
+        if provider != "unknown-provider":
+            check(f"{provider} falls back to a usable list", len(models) > 0 and bool(error))
+
+
+def test_bedrock_credential_modes():
+    """Every AWS sign-in mode is honoured, and CRT trouble explains itself."""
+    print("\nBedrock credentials")
+
+    from app.core.config import settings
+    from app.services.llm_service import _bedrock_error, LLMNotConfigured
+
+    # The stock botocore message points at a pip that fixes the wrong Python.
+    # Ours has to name Cerebro's setup instead.
+    crt = _bedrock_error(Exception(
+        "MissingDependencyException: Using CRT_AUTH requires an additional "
+        "dependency. pip install botocore[crt]"))
+    check("A missing CRT dependency is explained", isinstance(crt, LLMNotConfigured))
+    check("CRT guidance points at Cerebro's own setup", "setup" in str(crt))
+    check("CRT guidance warns against a plain pip install", "pip install" in str(crt))
+
+    check("Access denied names the needed permission",
+          "bedrock:InvokeModel" in str(_bedrock_error(
+              Exception("AccessDeniedException: not authorized"))))
+    check("An expired token says so",
+          "expired" in str(_bedrock_error(Exception("ExpiredTokenException"))).lower())
+    check("An unrelated error passes through unchanged",
+          type(_bedrock_error(ValueError("something else"))) is ValueError)
+
+    previous = {key: getattr(settings, key) for key in
+                ("BEDROCK_AUTH_MODE", "BEDROCK_API_KEY", "BEDROCK_MODEL_ID",
+                 "BEDROCK_REGION", "LLM_PROVIDER")}
+    try:
+        for key, value in (("LLM_PROVIDER", "bedrock"), ("BEDROCK_REGION", "us-east-1"),
+                           ("BEDROCK_MODEL_ID", "us.example.chat-v1:0")):
+            object.__setattr__(settings, key, value)
+
+        object.__setattr__(settings, "BEDROCK_AUTH_MODE", "api_key")
+        object.__setattr__(settings, "BEDROCK_API_KEY", "")
+        check("An API key mode with no key is not 'configured'",
+              settings.llm_configured is False)
+
+        object.__setattr__(settings, "BEDROCK_API_KEY", "ABSKtest")
+        check("An API key alone is enough to be configured",
+              settings.llm_configured is True)
+    finally:
+        for key, value in previous.items():
+            object.__setattr__(settings, key, value)
+
+
+def test_bundled_dependencies():
+    """Everything a feature needs ships with the install, not after it."""
+    print("\nBundled dependencies")
+
+    ai_requirements = (ROOT / "backend" / "requirements-ai.txt").read_text()
+    # Bedrock cross-Region inference profiles sign with SigV4a, which botocore
+    # can only do with its "crt" extra. Without this pin the first Bedrock call
+    # dies asking the user to install it by hand.
+    check("botocore's CRT extra is pinned", "botocore[crt]" in ai_requirements)
+
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    check("The frozen build bundles awscrt", '"awscrt"' in spec)
+    check("The frozen build bundles botocore's CRT auth", "botocore.crt.auth" in spec)
+
+    launcher = (ROOT / "cerebro.py").read_text()
+    check("Setup installs every requirement group", "ALL_REQUIREMENTS" in launcher)
+    for group in ("requirements-ai.txt", "requirements-documents.txt",
+                  "requirements-capture.txt", "requirements-audio.txt"):
+        check(f"Setup installs {group}", group in launcher)
+
+
 def test_bedrock_provider():
     """Bedrock uses Converse and never needs real AWS credentials in tests."""
     print("\nAI provider (Amazon Bedrock)")
@@ -1349,7 +1456,8 @@ def main() -> int:
 
     for suite in (test_version_source, test_event_detector, test_context_engine, test_event_flow,
                   test_embeddings, test_knowledge_search, test_llm_disabled,
-                  test_bedrock_provider,
+                  test_bedrock_provider, test_model_catalog_and_discovery,
+                  test_bedrock_credential_modes, test_bundled_dependencies,
                   test_enterprise_normalisation, test_enterprise_ingest_and_reply,
                   test_document_reading, test_document_editing,
                   test_sharepoint_resolution, test_document_tracking,

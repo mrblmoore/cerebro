@@ -41,7 +41,13 @@ hiddenimports = [
     "uvicorn.lifespan", "uvicorn.lifespan.on",
     "sqlalchemy.dialects.sqlite",
     "openai", "boto3", "botocore", "botocore.config",
-    "mss", "pynput", "pynput.keyboard",
+    # awscrt backs botocore's SigV4a signing, which Bedrock cross-Region
+    # inference profiles resolve to. It is reached through a botocore plugin
+    # lookup rather than a plain import, so static analysis never finds it and
+    # the frozen build would fail at request-signing time without these.
+    "awscrt", "awscrt.auth", "awscrt.http", "awscrt.io",
+    "botocore.crt", "botocore.crt.auth", "botocore.httpsession",
+    "mss", "pynput", "pynput.keyboard", "PIL", "PIL.Image",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
     # Every service is pinned here rather than left to static discovery: many are

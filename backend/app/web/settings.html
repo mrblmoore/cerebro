@@ -38,6 +38,10 @@ document.getElementById('topbar').innerHTML = topbar('/settings');
 let description = null;
 let active = 'general';
 const pending = {};
+//: Live model lists per provider, once Refresh has been pressed.
+const liveModels = {};
+//: Model fields the user has switched to free-text entry.
+const customModel = {};
 
 const TEST_TARGETS = { database: 'database', ai: 'ai', knowledge: 'knowledge',
                        enterprise: 'enterprise', documents: 'documents', desktop: 'screenpipe',
@@ -61,6 +65,38 @@ function fieldControl(field) {
       <span class="track"></span><span>${esc(field.label)}</span>
     </label>
     ${field.help ? `<div class="help muted" style="font-size:12px;margin-top:4px">${esc(field.help)}</div>` : ''}`;
+  }
+
+  // A model dropdown plus a Refresh that asks the provider what this account
+  // can really use. Picking "Custom model ID…" swaps in a free-text box, so a
+  // brand-new or private model is never locked out by the list.
+  if (field.type === 'model') {
+    const live = liveModels[field.model_provider];
+    const options = live ? live.models : field.options;
+    const known = options.some((option) => option.id === value);
+    const custom = customModel[field.key] || (value && !known);
+
+    return `<span class="name">${esc(field.label)}</span>
+      ${field.help ? `<span class="help">${esc(field.help)}</span>` : ''}
+      <div style="display:flex;gap:8px;align-items:center">
+        <select data-model-select="${esc(field.key)}" style="flex:1">
+          ${options.map((option) => `
+            <option value="${esc(option.id)}"${option.id === value && !custom ? ' selected' : ''}>
+              ${esc(option.label || option.id)}${option.note ? ` — ${esc(option.note)}` : ''}
+            </option>`).join('')}
+          <option value="__custom__"${custom ? ' selected' : ''}>Custom model ID…</option>
+        </select>
+        <button class="btn-sm" data-model-refresh="${esc(field.model_provider)}"
+                title="Ask the provider which models this account can use">Refresh</button>
+      </div>
+      ${custom ? `<input type="text" data-key="${esc(field.key)}" value="${esc(value)}"
+             placeholder="${esc(field.placeholder || '')}" autocomplete="off"
+             style="margin-top:8px">` : `<input type="hidden" data-key="${esc(field.key)}" value="${esc(value)}">`}
+      ${live ? `<div class="help muted" style="font-size:12px;margin-top:4px">
+          ${live.live
+            ? `✓ ${live.models.length - 1} model${live.models.length === 2 ? '' : 's'} available to your account.`
+            : esc(live.error)}
+        </div>` : ''}`;
   }
 
   if (field.type === 'select') {
@@ -147,6 +183,40 @@ function renderPanel() {
       pending[key] = input.type === 'checkbox' ? input.checked : input.value;
       updateDirty();
       if (controllers.has(key)) renderPanel();
+    };
+  });
+
+  document.querySelectorAll('[data-model-select]').forEach((select) => {
+    select.onchange = () => {
+      const key = select.dataset.modelSelect;
+      if (select.value === '__custom__') {
+        // Keep whatever was chosen as the starting point for editing.
+        customModel[key] = true;
+      } else {
+        delete customModel[key];
+        pending[key] = select.value;
+      }
+      updateDirty();
+      renderPanel();
+    };
+  });
+
+  document.querySelectorAll('[data-model-refresh]').forEach((button) => {
+    button.onclick = async () => {
+      const provider = button.dataset.modelRefresh;
+      // Credentials the user just typed have to be saved before the server
+      // can authenticate with them.
+      if (isDirty() && !(await save())) return;
+      button.disabled = true;
+      button.textContent = 'Loading…';
+      try {
+        const result = await API.get(`/api/system/models/${provider}`);
+        liveModels[provider] = result;
+        if (!result.live) toast(result.error, 'err', 8000);
+        renderPanel();
+      } catch (error) {
+        toast(error.message, 'err', 7000);
+      } finally { button.disabled = false; button.textContent = 'Refresh'; }
     };
   });
 

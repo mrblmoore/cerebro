@@ -33,7 +33,7 @@ everything.
 | `SQLALCHEMY_ECHO` | `false` | Log every SQL statement |
 
 Changing the database needs a restart. Install the driver first:
-`pip install -r backend/requirements-postgres.txt`.
+the PostgreSQL driver, which setup already installed.
 
 ## AI Provider
 
@@ -43,7 +43,7 @@ knowledge — you only lose generated summaries and troubleshooting steps.
 | Setting | Default | Notes |
 |---|---|---|
 | `LLM_PROVIDER` | `none` | `none`, `openai`, `ollama`, `qwen` or `bedrock` |
-| `OPENAI_API_KEY` | — | Needs `pip install -r backend/requirements-ai.txt` |
+| `OPENAI_API_KEY` | — | The SDK ships with the install |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
 | `OPENAI_BASE_URL` | — | For Azure OpenAI or any OpenAI-compatible gateway |
 | `OLLAMA_URL` | `http://localhost:11434` | Local models — no key, nothing leaves the machine |

@@ -11,6 +11,7 @@ Two rules shape this module:
    surfaces as actionable guidance rather than an ImportError at boot.
 """
 
+import os
 from typing import Any, Dict, List
 
 import requests
@@ -31,6 +32,122 @@ NOT_CONFIGURED = (
 
 class LLMNotConfigured(RuntimeError):
     """Raised internally when a provider is selected but missing credentials."""
+
+
+def _bedrock_error(exc: Exception) -> Exception:
+    """
+    Translate a Bedrock failure into something a non-engineer can act on.
+
+    Returned rather than raised so callers keep their ``raise ... from exc``
+    chain and the original traceback survives.
+    """
+    text = str(exc)
+    lowered = text.lower()
+
+    # botocore raises MissingDependencyException asking for "pip install
+    # botocore[crt]" when it needs SigV4a, which cross-Region inference
+    # profiles use. Cerebro ships awscrt, so hitting this means the running
+    # interpreter is not Cerebro's own — the usual cause is a hand-rolled
+    # install into system Python. Say so, because the stock message sends
+    # people to a pip that fixes the wrong environment.
+    if "botocore[crt]" in lowered or "crt_auth" in lowered or "awscrt" in lowered:
+        return LLMNotConfigured(
+            "This Bedrock model needs AWS's CRT signing library, which Cerebro "
+            "normally installs for you. Re-run Cerebro's setup ('cerebro.bat setup' "
+            "on Windows, './cerebro.sh setup' otherwise) so it lands in Cerebro's "
+            "own environment — installing it with a plain 'pip install' usually "
+            "goes to a different Python and will not take effect."
+        )
+
+    if "accessdeniedexception" in lowered or "not authorized" in lowered:
+        return LLMNotConfigured(
+            "Those AWS credentials cannot invoke this model. The identity needs "
+            "bedrock:InvokeModel, and the model must be enabled for your account "
+            "under Model access in the Amazon Bedrock console."
+        )
+    if "validationexception" in lowered and "model" in lowered:
+        return LLMNotConfigured(
+            f"Amazon Bedrock rejected the model ID '{settings.BEDROCK_MODEL_ID}'. "
+            "Pick one from the list in Settings — that list comes from your own "
+            "account, so every entry in it is valid for this Region."
+        )
+    if "resourcenotfound" in lowered:
+        return LLMNotConfigured(
+            f"'{settings.BEDROCK_MODEL_ID}' does not exist in {settings.BEDROCK_REGION}. "
+            "Choose a different model or Region in Settings."
+        )
+    if "unrecognizedclient" in lowered or ("invalid" in lowered and "token" in lowered):
+        return LLMNotConfigured(
+            "AWS rejected those credentials. Check them in Settings → AI Provider."
+        )
+    if "throttl" in lowered or "toomanyrequests" in lowered:
+        return RuntimeError("Amazon Bedrock is rate-limiting this account. Try again shortly.")
+    if "expiredtoken" in lowered:
+        return LLMNotConfigured(
+            "Those temporary AWS credentials have expired. Refresh them and save again."
+        )
+    return exc
+
+
+def bedrock_session():
+    """
+    Build an authenticated boto3 Session from the configured credential mode.
+
+    Shared by generation and by model discovery so the two can never disagree
+    about which identity is in play.
+
+    Bedrock has no single "API key" the way OpenAI does — AWS authenticates by
+    signing each request, so a request needs either an access key pair or an
+    ambient identity (SSO, an IAM role, environment variables). The one
+    exception is a Bedrock API key, a bearer token AWS added specifically to
+    give Bedrock the simple key-in-a-box flow every other provider has; boto3
+    picks it up from ``AWS_BEARER_TOKEN_BEDROCK``.
+    """
+    try:
+        import boto3
+    except ImportError as exc:
+        raise LLMNotConfigured(
+            "The AWS SDK is not installed. Reinstall Cerebro's dependencies with "
+            "'cerebro.bat setup' (Windows) or './cerebro.sh setup', which installs "
+            "them into Cerebro's own environment."
+        ) from exc
+
+    auth_mode = (settings.BEDROCK_AUTH_MODE or "default").lower()
+    session_kwargs: Dict[str, Any] = {"region_name": settings.BEDROCK_REGION}
+
+    if auth_mode == "profile":
+        if not settings.BEDROCK_AWS_PROFILE:
+            raise LLMNotConfigured("Select an AWS profile for Amazon Bedrock.")
+        session_kwargs["profile_name"] = settings.BEDROCK_AWS_PROFILE
+
+    elif auth_mode == "keys":
+        if not (settings.BEDROCK_AWS_ACCESS_KEY_ID
+                and settings.BEDROCK_AWS_SECRET_ACCESS_KEY):
+            raise LLMNotConfigured(
+                "AWS access key ID and secret access key are both required."
+            )
+        session_kwargs.update({
+            "aws_access_key_id": settings.BEDROCK_AWS_ACCESS_KEY_ID,
+            "aws_secret_access_key": settings.BEDROCK_AWS_SECRET_ACCESS_KEY,
+            "aws_session_token": settings.BEDROCK_AWS_SESSION_TOKEN or None,
+        })
+
+    elif auth_mode == "api_key":
+        if not settings.BEDROCK_API_KEY:
+            raise LLMNotConfigured(
+                "Paste a Bedrock API key, or switch to another credential mode."
+            )
+        # botocore reads this from the environment; setting it here keeps the
+        # key in Cerebro's .env rather than requiring a machine-wide variable.
+        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = settings.BEDROCK_API_KEY
+
+    elif auth_mode != "default":
+        raise LLMNotConfigured(f"Unknown Amazon Bedrock credential mode: {auth_mode}")
+
+    if auth_mode != "api_key":
+        os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+
+    return boto3.Session(**session_kwargs)
 
 
 class LLMService:
@@ -261,36 +378,9 @@ Answer in 1-2 sentences."""
         if not settings.BEDROCK_REGION or not settings.BEDROCK_MODEL_ID:
             raise LLMNotConfigured("Amazon Bedrock Region and model ID are required.")
 
-        try:
-            import boto3
-            from botocore.config import Config
-        except ImportError as exc:
-            raise LLMNotConfigured(
-                "The AWS SDK is not installed. Run: pip install -r "
-                "backend/requirements-ai.txt"
-            ) from exc
+        from botocore.config import Config
 
-        auth_mode = (settings.BEDROCK_AUTH_MODE or "default").lower()
-        session_kwargs: Dict[str, Any] = {"region_name": settings.BEDROCK_REGION}
-        if auth_mode == "profile":
-            if not settings.BEDROCK_AWS_PROFILE:
-                raise LLMNotConfigured("Select an AWS profile for Amazon Bedrock.")
-            session_kwargs["profile_name"] = settings.BEDROCK_AWS_PROFILE
-        elif auth_mode == "keys":
-            if not (settings.BEDROCK_AWS_ACCESS_KEY_ID
-                    and settings.BEDROCK_AWS_SECRET_ACCESS_KEY):
-                raise LLMNotConfigured(
-                    "AWS access key ID and secret access key are both required."
-                )
-            session_kwargs.update({
-                "aws_access_key_id": settings.BEDROCK_AWS_ACCESS_KEY_ID,
-                "aws_secret_access_key": settings.BEDROCK_AWS_SECRET_ACCESS_KEY,
-                "aws_session_token": settings.BEDROCK_AWS_SESSION_TOKEN or None,
-            })
-        elif auth_mode != "default":
-            raise LLMNotConfigured(f"Unknown Amazon Bedrock credential mode: {auth_mode}")
-
-        session = boto3.Session(**session_kwargs)
+        session = bedrock_session()
         client = session.client(
             "bedrock-runtime",
             endpoint_url=settings.BEDROCK_ENDPOINT_URL or None,
@@ -300,15 +390,18 @@ Answer in 1-2 sentences."""
                 retries={"mode": "standard", "max_attempts": 3},
             ),
         )
-        response = client.converse(
-            modelId=settings.BEDROCK_MODEL_ID,
-            system=[{"text": SYSTEM_PROMPT}],
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={
-                "temperature": settings.LLM_TEMPERATURE,
-                "maxTokens": settings.LLM_MAX_TOKENS,
-            },
-        )
+        try:
+            response = client.converse(
+                modelId=settings.BEDROCK_MODEL_ID,
+                system=[{"text": SYSTEM_PROMPT}],
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inferenceConfig={
+                    "temperature": settings.LLM_TEMPERATURE,
+                    "maxTokens": settings.LLM_MAX_TOKENS,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised as guidance below
+            raise _bedrock_error(exc) from exc
 
         blocks = (
             response.get("output", {})

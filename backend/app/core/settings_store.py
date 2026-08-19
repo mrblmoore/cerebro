@@ -47,9 +47,13 @@ class Field:
     label: str
     group: str
     help: str = ""
-    type: str = "text"  # text | password | number | bool | select | url
+    type: str = "text"  # text | password | number | bool | select | url | model
     options: List[Dict[str, str]] = field(default_factory=list)
     placeholder: str = ""
+    #: For ``type="model"``: which provider's catalogue to offer. The browser
+    #: renders a dropdown and asks /api/system/models to replace the built-in
+    #: list with the models this account can actually use.
+    model_provider: str = ""
     advanced: bool = False
     #: Connection URLs embed credentials; mask the password rather than serving
     #: it to the browser, and restore it when the UI sends the masked value back.
@@ -177,7 +181,9 @@ FIELDS: List[Field] = [
           ]),
     Field("OPENAI_API_KEY", "OpenAI API key", "ai", "Stored locally in backend/.env.",
           type="password", placeholder="sk-...", show_if=("LLM_PROVIDER", ["openai"])),
-    Field("OPENAI_MODEL", "OpenAI model", "ai", placeholder="gpt-4o-mini",
+    Field("OPENAI_MODEL", "OpenAI model", "ai",
+          "Pick from the list, or choose Custom to type an ID.",
+          type="model", model_provider="openai", placeholder="gpt-4o-mini",
           show_if=("LLM_PROVIDER", ["openai"])),
     Field("OPENAI_BASE_URL", "OpenAI base URL", "ai",
           "Override for Azure OpenAI or any OpenAI-compatible gateway.", type="url",
@@ -186,27 +192,43 @@ FIELDS: List[Field] = [
           show_if=("LLM_PROVIDER", ["openai"])),
     Field("OLLAMA_URL", "Ollama URL", "ai", type="url", placeholder="http://localhost:11434",
           show_if=("LLM_PROVIDER", ["ollama"])),
-    Field("OLLAMA_MODEL", "Ollama model", "ai", placeholder="llama3.1",
+    Field("OLLAMA_MODEL", "Ollama model", "ai",
+          "Refresh to list the models you have pulled locally.",
+          type="model", model_provider="ollama", placeholder="llama3.1",
           show_if=("LLM_PROVIDER", ["ollama"])),
     Field("QWEN_API_URL", "Qwen API URL", "ai", type="url", show_if=("LLM_PROVIDER", ["qwen"])),
     Field("QWEN_API_KEY", "Qwen API key", "ai", type="password",
           show_if=("LLM_PROVIDER", ["qwen"])),
-    Field("QWEN_MODEL", "Qwen model", "ai", placeholder="qwen-plus",
+    Field("QWEN_MODEL", "Qwen model", "ai",
+          "Pick from the list, or choose Custom to type an ID.",
+          type="model", model_provider="qwen", placeholder="qwen-plus",
           show_if=("LLM_PROVIDER", ["qwen"])),
     Field("BEDROCK_REGION", "AWS Region", "ai",
           "The Region where Cerebro sends Bedrock Runtime requests.",
           placeholder="us-east-1", show_if=("LLM_PROVIDER", ["bedrock"])),
-    Field("BEDROCK_MODEL_ID", "Model or inference profile ID", "ai",
-          "Paste a Bedrock model ID, inference profile ID, or provisioned model ARN.",
-          placeholder="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    Field("BEDROCK_MODEL_ID", "Model", "ai",
+          "Press Refresh to list the models your AWS account has enabled in this "
+          "Region — every entry in that list is guaranteed to work.",
+          type="model", model_provider="bedrock",
+          placeholder="us.anthropic.claude-sonnet-4-20250514-v1:0",
           show_if=("LLM_PROVIDER", ["bedrock"])),
-    Field("BEDROCK_AUTH_MODE", "AWS credentials", "ai",
-          "The default AWS SDK chain is recommended and supports AWS CLI, SSO, roles, and environment credentials.",
+    Field("BEDROCK_AUTH_MODE", "How to sign in to AWS", "ai",
+          "AWS has no single API key like OpenAI — it signs each request with an "
+          "identity. Pick 'Bedrock API key' for the simplest setup, or use an "
+          "identity this computer already has.",
           type="select", options=[
-              {"value": "default", "label": "Default AWS credential chain (recommended)"},
+              {"value": "default",
+               "label": "Use the AWS sign-in already on this computer (recommended)"},
+              {"value": "api_key", "label": "Bedrock API key — paste a single key"},
               {"value": "profile", "label": "Named AWS profile"},
-              {"value": "keys", "label": "Access keys stored by Cerebro"},
+              {"value": "keys", "label": "AWS access key ID and secret"},
           ], show_if=("LLM_PROVIDER", ["bedrock"])),
+    Field("BEDROCK_API_KEY", "Bedrock API key", "ai",
+          "Create one in the Amazon Bedrock console under API keys. Stored locally "
+          "in backend/.env and never returned by the settings API.",
+          type="password", placeholder="ABSK...",
+          show_if_all=[("LLM_PROVIDER", ["bedrock"]),
+                       ("BEDROCK_AUTH_MODE", ["api_key"])]),
     Field("BEDROCK_AWS_PROFILE", "AWS profile name", "ai",
           "Profile from your shared AWS config or credentials file.", placeholder="default",
           show_if_all=[("LLM_PROVIDER", ["bedrock"]),
@@ -253,6 +275,8 @@ FIELDS: List[Field] = [
               {"value": "openai", "label": "OpenAI-compatible embedding API"},
           ]),
     Field("OPENAI_EMBEDDING_MODEL", "Embedding model", "knowledge",
+          "Embedding models are a separate family — a chat model ID is rejected here.",
+          type="model", model_provider="openai_embedding",
           placeholder="text-embedding-3-small", advanced=True,
           show_if=("EMBEDDING_PROVIDER", ["openai"])),
 
@@ -437,6 +461,7 @@ def describe(include_values: bool = True) -> Dict[str, Any]:
             "placeholder": f.placeholder,
             "advanced": f.advanced,
             "secret": f.secret,
+            "model_provider": f.model_provider,
             "show_if": ({"key": f.show_if[0], "values": [str(v).lower() if isinstance(v, bool) else v
                                                           for v in f.show_if[1]]}
                         if f.show_if else None),
@@ -456,6 +481,15 @@ def describe(include_values: bool = True) -> Dict[str, Any]:
                 entry["value"] = mask_url_password(value or "")
             else:
                 entry["value"] = "" if value is None else value
+
+        # Seed a model dropdown with the curated list so the page is usable
+        # before any credentials exist. The browser replaces this with the
+        # account's real models the moment Refresh is pressed.
+        if f.type == "model":
+            from app.core import model_catalog
+            entry["options"] = model_catalog.options(
+                f.model_provider, str(entry.get("value") or "")
+            )
         payload["fields"].append(entry)
 
     return payload

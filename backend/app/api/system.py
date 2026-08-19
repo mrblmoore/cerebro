@@ -229,6 +229,25 @@ async def write_settings(changes: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+@router.get("/models/{provider}", dependencies=[Depends(require_local_origin)])
+def list_models(provider: str) -> Dict[str, Any]:
+    """
+    The models this account can actually use, asked of the provider itself.
+
+    Never fails: if the provider cannot be reached or the credentials are not
+    in place yet, the curated fallback comes back with ``live: false`` and a
+    plain-language reason, so the dropdown always has something in it.
+    """
+    from app.core.model_catalog import CUSTOM
+    from app.services import model_discovery
+
+    models, error = model_discovery.discover(provider)
+    models = list(models) + [
+        {"id": CUSTOM, "label": "Custom model ID…", "note": "Type any ID the provider accepts"}
+    ]
+    return {"provider": provider, "models": models, "live": not error, "error": error}
+
+
 @router.post("/setup/complete", dependencies=[Depends(require_local_origin)])
 async def complete_setup() -> Dict[str, Any]:
     settings_store.mark_setup_complete()

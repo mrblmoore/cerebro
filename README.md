@@ -102,16 +102,17 @@ Everything the UI does is a documented REST endpoint.
 
 ## Optional extras
 
-Cerebro works fully without any of these. Add them when you want them:
+Every Python package Cerebro can use is installed during setup, so none of
+these needs a trip to `pip` — they are switches, not installs:
 
 | Extra | What it adds | How |
 |---|---|---|
-| AI provider | Case summaries, troubleshooting steps, reply drafts, document Q&A | Settings → AI Provider. A local [Ollama](https://ollama.com) model needs no API key. |
-| Cloud AI SDKs | Required for OpenAI and Amazon Bedrock | `pip install -r backend/requirements-ai.txt` |
+| AI provider | Case summaries, troubleshooting steps, reply drafts, document Q&A | Settings → AI Provider, then pick a model from the list. A local [Ollama](https://ollama.com) model needs no API key. |
 | Outlook & Teams | Mail and chat as live context | Two Power Automate flows and a folder — [guide](docs/POWER_AUTOMATE.md) |
 | PostgreSQL | Shared database for a team | `docker compose up -d postgres`, then Settings → Database |
 | Qdrant | Vector search at scale | `docker compose up -d qdrant`, then Settings → Knowledge Search |
-| Call transcription | Records and transcribes calls locally | `pip install -r desktop/requirements-audio.txt` |
+| Call transcription | Records and transcribes calls locally | Settings → Audio |
+| Activity capture | Screenshots and typed text for the memory | Settings → Activity capture |
 | Screenpipe | Continuous desktop capture through a separately licensed official installation; Cerebro connects automatically | Settings → Desktop Capture |
 
 ---

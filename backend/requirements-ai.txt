@@ -1,5 +1,14 @@
-# Optional: AI generation via OpenAI-compatible APIs and Amazon Bedrock.
-# Not needed for Ollama or Qwen, which are called over plain HTTP.
+# AI generation via OpenAI-compatible APIs and Amazon Bedrock.
+# Installed by default so switching providers in Settings never needs a
+# second trip to pip. Ollama and Qwen are called over plain HTTP and need
+# nothing from this file.
 #   pip install -r backend/requirements-ai.txt
 openai>=1.30,<2.0
 boto3>=1.34,<2.0
+
+# botocore's "crt" extra pulls in awscrt, which botocore requires to sign
+# requests with SigV4a. Amazon Bedrock's cross-Region inference profiles
+# (the "us.*" / "eu.*" model IDs) resolve to SigV4a, and without this extra
+# botocore raises MissingDependencyException telling you to install it.
+# Shipping it up front means that error can never reach a user.
+botocore[crt]>=1.34,<2.0
