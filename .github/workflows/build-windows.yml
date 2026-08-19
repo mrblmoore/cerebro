@@ -13,14 +13,14 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"   # v0.3.0, v1.2.3-rc1
       - "[0-9]+.[0-9]+.[0-9]+*"    # 0.3.0 (no leading v)
+  # Run the complete packaging contract for every pull request. The installer
+  # also bundles backend, desktop, extension, asset, and version files, so a
+  # narrow path filter can let a broken package reach main without this check.
   pull_request:
-    paths:
-      - "packaging/**"
-      - "backend/requirements*.txt"
-      - ".github/workflows/build-windows.yml"
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -34,6 +34,47 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Validate release metadata
+        id: release_metadata
+        shell: pwsh
+        run: |
+          $declaredVersion = (Get-Content VERSION -Raw).Trim()
+          $versionMatch = [regex]::Match(
+            $declaredVersion,
+            '^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$'
+          )
+          if (-not $versionMatch.Success) {
+            throw "VERSION must use semantic versioning (for example 1.2.3 or 1.2.3-rc1); got '$declaredVersion'."
+          }
+
+          $manifest = Get-Content browser-extension/src/manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.version -ne $declaredVersion) {
+            throw "Browser extension version '$($manifest.version)' does not match VERSION '$declaredVersion'."
+          }
+
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($tagVersion -ne $declaredVersion) {
+              throw "Tag '$env:GITHUB_REF_NAME' does not match VERSION '$declaredVersion'."
+            }
+
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main --depth=1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not fetch origin/main for release validation."
+            }
+            $mainSha = (git rev-parse origin/main).Trim()
+            if ($env:GITHUB_SHA -ne $mainSha) {
+              throw "Release tag '$env:GITHUB_REF_NAME' points to $env:GITHUB_SHA, but current main is $mainSha. Tag the tested main commit instead."
+            }
+            $appVersion = $tagVersion
+          } else {
+            $appVersion = "$declaredVersion-dev.$env:GITHUB_RUN_NUMBER"
+          }
+
+          $versionInfoVersion = "$($versionMatch.Groups[1].Value).$($versionMatch.Groups[2].Value).$($versionMatch.Groups[3].Value).0"
+          "app_version=$appVersion" >> $env:GITHUB_OUTPUT
+          "version_info_version=$versionInfoVersion" >> $env:GITHUB_OUTPUT
 
       - name: Install dependencies
         run: |
@@ -78,23 +119,10 @@ jobs:
 
       - name: Build the installer
         shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.release_metadata.outputs.app_version }}
+          VERSION_INFO_VERSION: ${{ steps.release_metadata.outputs.version_info_version }}
         run: |
-          $declaredVersion = (Get-Content VERSION -Raw).Trim()
-          if ($declaredVersion -notmatch '^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$') {
-            throw "VERSION must use semantic versioning (for example 1.2.3 or 1.2.3-rc1); got '$declaredVersion'."
-          }
-
-          if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
-            if ($tagVersion -ne $declaredVersion) {
-              throw "Tag '$env:GITHUB_REF_NAME' does not match VERSION '$declaredVersion'."
-            }
-            $appVersion = $tagVersion
-          } else {
-            $appVersion = "$declaredVersion-dev.$env:GITHUB_RUN_NUMBER"
-          }
-
-          $versionInfoVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
           $compilerCandidates = @(
             (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
             (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
@@ -106,7 +134,7 @@ jobs:
             throw "Inno Setup 6 compiler not found. Checked: $($compilerCandidates -join ', ')"
           }
 
-          & $compiler "/DAppVersion=$appVersion" "/DVersionInfoVersion=$versionInfoVersion" packaging\installer.iss
+          & $compiler "/DAppVersion=$env:APP_VERSION" "/DVersionInfoVersion=$env:VERSION_INFO_VERSION" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE."
           }
