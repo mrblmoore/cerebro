@@ -17,6 +17,7 @@
 #define AppPublisher   "Cerebro"
 #define AppExeName     "Cerebro.exe"
 #define WidgetExeName  "CerebroWidget.exe"
+#define SetupExeName   "CerebroSetupWizard.exe"
 
 [Setup]
 AppId={{8F2C4E1A-9D3B-4A57-B6E0-1C7A5D9E3B21}
@@ -68,6 +69,7 @@ Source: "..\dist\Cerebro\*"; DestDir: "{app}"; \
 [Icons]
 Name: "{group}\Cerebro";            Filename: "{app}\{#AppExeName}"
 Name: "{group}\Cerebro Widget";     Filename: "{app}\{#WidgetExeName}"
+Name: "{group}\Cerebro Setup";      Filename: "{app}\{#SetupExeName}"
 Name: "{group}\Cerebro Dashboard";  Filename: "http://localhost:8000"
 Name: "{group}\Install Browser Extension"; Filename: "{app}\_internal\browser-extension"
 Name: "{group}\Uninstall Cerebro";  Filename: "{uninstallexe}"
@@ -76,8 +78,22 @@ Name: "{autodesktop}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks:
 Name: "{userstartup}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks: widgetstartup
 
 [Run]
-Filename: "{app}\{#WidgetExeName}"; Description: "Start Cerebro and its desktop widget now"; \
-  Flags: nowait postinstall skipifsilent
+; Configuration is part of installing, not a separate errand afterwards. The
+; wizard checks dependencies, sets up the database, connects an AI provider and
+; tests each one before it closes — so "installed" and "ready to use" are the
+; same moment. It offers to start Cerebro itself at the end, which is why the
+; widget is not launched separately here.
+;
+; Not "nowait": the installer should stay up until configuration is done,
+; otherwise the progress window vanishes and the wizard looks like a stray
+; program that opened by itself.
+Filename: "{app}\{#SetupExeName}"; Parameters: "--first-run"; \
+  Description: "Set up Cerebro now (recommended)"; \
+  Flags: postinstall skipifsilent
+
+; For anyone who unticks the box above and just wants it running.
+Filename: "{app}\{#WidgetExeName}"; Description: "Start Cerebro without setting it up"; \
+  Flags: nowait postinstall skipifsilent unchecked
 
 [UninstallDelete]
 ; PyInstaller writes caches next to the executable; leave nothing behind.

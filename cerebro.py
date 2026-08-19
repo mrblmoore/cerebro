@@ -3,6 +3,7 @@
 Cerebro — one command for everything.
 
     python cerebro.py setup      Install dependencies and prepare the workspace
+    python cerebro.py configure  Open the setup wizard
     python cerebro.py start      Start the API + open the dashboard
     python cerebro.py widget     Launch the desktop widget
     python cerebro.py watch      Watch for documents you open
@@ -256,17 +257,37 @@ def cmd_setup(args) -> int:
     ok("Database initialised")
     ok(f"Configuration at {(BACKEND / '.env').relative_to(ROOT)}")
 
-    head("Setup complete")
+    head("5. Configuring Cerebro")
     launcher = "cerebro.bat" if IS_WINDOWS else "./cerebro.sh"
+    if getattr(args, "no_wizard", False):
+        step("Skipped — run it later with " + f"{launcher} configure")
+    else:
+        step("Opening the setup wizard…")
+        # Tkinter is missing from some Linux Python builds; the browser wizard
+        # covers that case, so a failure here is a fallback, not an error.
+        if cmd_configure(argparse.Namespace(first_run=True)) != 0:
+            warn("Could not open the setup window.")
+            print(Style.dim(f"  Start Cerebro and configure it in your browser, or "
+                            f"run {launcher} configure"))
+
+    head("Setup complete")
     print(f"""
   Start Cerebro:      {Style.bold(f'{launcher} start')}
   Desktop widget:     {Style.bold(f'{launcher} widget')}
+  Change your setup:  {Style.bold(f'{launcher} configure')}
   Check the install:  {Style.bold(f'{launcher} doctor')}
-
-  The first time you start it, a setup page opens in your browser.
-  It takes about a minute and everything can be changed later.
 """)
     return 0
+
+
+# ---------------------------------------------------------------- configure
+def cmd_configure(args) -> int:
+    """Open the setup wizard — the same one the Windows installer runs."""
+    wizard = DESKTOP / "setup_wizard.py"
+    if not wizard.exists():
+        fail("setup_wizard.py is missing from this install.")
+        return 1
+    return run([python_for(), wizard] + (["--first-run"] if getattr(args, "first_run", False) else []))
 
 
 # -------------------------------------------------------------------- start
@@ -280,7 +301,7 @@ def cmd_start(args) -> int:
 
     if not have_venv():
         warn("No virtual environment found — running setup first.\n")
-        if cmd_setup(argparse.Namespace(recreate=False, with_extras=[], minimal=False)) != 0:
+        if cmd_setup(argparse.Namespace(recreate=False, with_extras=[], minimal=False, no_wizard=True)) != 0:
             return 1
 
     if is_running():
@@ -561,11 +582,18 @@ def main() -> int:
                        help="delete and rebuild the virtual environment")
     setup.add_argument("--minimal", action="store_true",
                        help="install only the core, skipping optional features")
+    setup.add_argument("--no-wizard", action="store_true",
+                       help="do not open the setup wizard when installing finishes")
     # Everything it used to gate is now installed by default, so this is a
     # no-op kept so existing scripts and docs do not break.
     setup.add_argument("--with", dest="with_extras", action="append", choices=sorted(EXTRAS),
                        help=argparse.SUPPRESS)
     setup.set_defaults(func=cmd_setup)
+
+    configure = subparsers.add_parser(
+        "configure", help="open the setup wizard to change how Cerebro is set up")
+    configure.add_argument("--first-run", action="store_true", help=argparse.SUPPRESS)
+    configure.set_defaults(func=cmd_configure)
 
     start = subparsers.add_parser("start", help="start the API and open the dashboard")
     start.add_argument("--host")

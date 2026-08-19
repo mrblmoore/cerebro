@@ -47,8 +47,11 @@ Until then, use the source install above — it has every feature.
 | Desktop widget | double-click `widget.bat` | `./cerebro.sh widget` |
 | Check the install | `cerebro.bat doctor` | `./cerebro.sh doctor` |
 
-The first start opens a **setup wizard** in your browser. It takes about a
-minute, and every answer can be changed later under **Settings**.
+Setup finishes by opening a short **wizard** — the same one the Windows
+installer runs as its last step. It checks what is installed, prepares the
+database, connects a model and tests each one, so "installed" and "ready to
+use" are the same moment. Reopen it any time with `cerebro.bat configure`, or
+change any answer later under **Settings**.
 
 Prefer a menu? Run `cerebro.bat` (or `./cerebro.sh`) with no arguments.
 

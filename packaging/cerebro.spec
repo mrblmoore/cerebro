@@ -2,12 +2,13 @@
 #
 #   pyinstaller packaging/cerebro.spec --noconfirm
 #
-# Produces two executables in dist/Cerebro/:
-#   Cerebro.exe        console app that runs the API and opens the dashboard
-#   CerebroWidget.exe  windowed app, the always-on-top panel
+# Produces three executables in dist/Cerebro/:
+#   Cerebro.exe             console app that runs the API and opens the dashboard
+#   CerebroWidget.exe       windowed app, the always-on-top panel
+#   CerebroSetupWizard.exe  windowed setup, run by the installer as its last step
 #
 # They share one bundle directory, so the Python runtime and libraries are
-# included once rather than twice.
+# included once rather than three times.
 
 import sys
 from pathlib import Path
@@ -95,7 +96,28 @@ widget = Analysis(
     cipher=block_cipher,
 )
 
-MERGE((server, "cerebro_app", "Cerebro"), (widget, "cerebro_widget_app", "CerebroWidget"))
+wizard = Analysis(
+    [str(ROOT / "packaging" / "cerebro_setup_app.py")],
+    pathex=[str(BACKEND), str(DESKTOP), str(ROOT)],
+    binaries=[],
+    datas=datas,
+    # The wizard reaches most of the backend: it saves settings, opens the
+    # database, calls the AI provider and lists models. It also needs Tkinter,
+    # which the server build deliberately excludes.
+    hiddenimports=hiddenimports + [
+        "setup_wizard", "tkinter", "tkinter.ttk", "tkinter.filedialog",
+        "app.core.setup_checks", "app.core.model_catalog",
+        "app.services.model_discovery", "app.api.copilot",
+    ],
+    hookspath=[],
+    runtime_hooks=[],
+    excludes=[],
+    cipher=block_cipher,
+)
+
+MERGE((server, "cerebro_app", "Cerebro"),
+      (widget, "cerebro_widget_app", "CerebroWidget"),
+      (wizard, "cerebro_setup_app", "CerebroSetupWizard"))
 
 server_pyz = PYZ(server.pure, server.zipped_data, cipher=block_cipher)
 server_exe = EXE(
@@ -116,9 +138,19 @@ widget_exe = EXE(
     icon=str(ROOT / "packaging" / "cerebro.ico") if (ROOT / "packaging" / "cerebro.ico").exists() else None,
 )
 
+wizard_pyz = PYZ(wizard.pure, wizard.zipped_data, cipher=block_cipher)
+wizard_exe = EXE(
+    wizard_pyz, wizard.scripts, [],
+    exclude_binaries=True,
+    name="CerebroSetupWizard",
+    console=False,              # the installer runs this; a console would flash
+    icon=str(ROOT / "packaging" / "cerebro.ico") if (ROOT / "packaging" / "cerebro.ico").exists() else None,
+)
+
 COLLECT(
     server_exe, server.binaries, server.zipfiles, server.datas,
     widget_exe, widget.binaries, widget.zipfiles, widget.datas,
+    wizard_exe, wizard.binaries, wizard.zipfiles, wizard.datas,
     strip=False,
     upx=False,
     name="Cerebro",

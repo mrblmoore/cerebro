@@ -57,9 +57,11 @@ PASSED = []
 FAILED = []
 
 
-def check(label, condition):
+def check(label, condition, detail=""):
+    """``detail`` is shown only on failure — a hint about what went wrong."""
     (PASSED if condition else FAILED).append(label)
-    print(f"  {'✓' if condition else '✗'} {label}")
+    suffix = f"  ({detail})" if detail and not condition else ""
+    print(f"  {'✓' if condition else '✗'} {label}{suffix}")
 
 
 def session():
@@ -351,6 +353,214 @@ def test_bundled_dependencies():
     for group in ("requirements-ai.txt", "requirements-documents.txt",
                   "requirements-capture.txt", "requirements-audio.txt"):
         check(f"Setup installs {group}", group in launcher)
+
+
+def test_database_resilience():
+    """A bad database setting must never stop Cerebro from starting."""
+    print("\nDatabase resilience")
+
+    from app.core.database import _explain, check_database
+
+    result = check_database()
+    check("The working database reports ok", result["ok"] is True)
+    check("It names the dialect", "sqlite" in result["detail"].lower())
+
+    # create_engine imports the driver eagerly, so this class of failure lands
+    # at import time. If it were fatal, one wrong setting would leave no way
+    # back into the UI to correct it.
+    source = (ROOT / "backend" / "app" / "core" / "database.py").read_text()
+    check("Engine creation is guarded", "ENGINE_ERROR" in source)
+    check("A broken URL falls back to the built-in database",
+          "default_database_url()" in source)
+
+    check("A missing driver is explained, not dumped",
+          "not installed" in _explain("ModuleNotFoundError: No module named 'psycopg'"))
+    check("The explanation says data is safe meanwhile",
+          "built-in database" in _explain("No module named 'psycopg'"))
+    check("A refused connection is explained",
+          "listening" in _explain("connection refused"))
+    check("Bad credentials are explained",
+          "rejected" in _explain("password authentication failed for user"))
+    check("An unknown error passes through unchanged",
+          _explain("something unexpected") == "something unexpected")
+
+    from app.core import setup_checks
+    check("The PostgreSQL driver is a repairable component",
+          "postgres" in setup_checks.COMPONENTS)
+    wizard = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    check("The wizard offers to install the driver",
+          'component_status("postgres")' in wizard)
+
+
+def test_database_round_trip():
+    """Write through the models and read it back, on a real database file."""
+    print("\nDatabase round trip")
+
+    from app.core.database import SessionLocal, engine
+    from sqlalchemy import inspect
+
+    tables = set(inspect(engine).get_table_names())
+    for required in ("events", "context_state", "memories", "tasks",
+                     "tracked_documents", "enterprise_messages"):
+        check(f"Table {required} exists", required in tables)
+
+    from app.models.event import Event
+    db = SessionLocal()
+    try:
+        marker = f"ROUNDTRIP-{os.getpid()}"
+        db.add(Event(event_type="CRM_CASE_OPENED", source="test",
+                     case_id=marker, data={"customer": "Round Trip Ltd"}))
+        db.commit()
+
+        # A second session, so this reads from the database rather than the
+        # identity map of the session that wrote it.
+        other = SessionLocal()
+        try:
+            found = other.query(Event).filter(Event.case_id == marker).one_or_none()
+            check("A written event is readable from a new session", found is not None)
+            check("Its JSON payload survives the round trip",
+                  bool(found) and found.data.get("customer") == "Round Trip Ltd")
+        finally:
+            other.close()
+
+        db.query(Event).filter(Event.case_id == marker).delete()
+        db.commit()
+        check("It can be deleted again",
+              db.query(Event).filter(Event.case_id == marker).count() == 0)
+    finally:
+        db.close()
+
+
+def test_setup_checks_and_repair():
+    """Preflight explains itself, and repair targets the right interpreter."""
+    print("\nSetup checks")
+
+    from app.core import setup_checks
+
+    report = setup_checks.preflight()
+    check("Preflight reports every component",
+          len(report["checks"]) == len(setup_checks.COMPONENTS))
+    check("Preflight names the running Python", bool(report["python"]))
+    check("Core is marked required",
+          next(c for c in report["checks"] if c["component"] == "core")["required"] is True)
+    check("Every component explains why it matters",
+          all(c["why"] for c in report["checks"]))
+
+    # Bedrock must list awscrt, not just boto3: boto3 alone imports fine and
+    # then fails at request-signing time, which is the bug this guards.
+    check("Bedrock's check includes awscrt",
+          "awscrt" in setup_checks.COMPONENTS["bedrock"]["modules"])
+    check("Providers map to their dependency group",
+          setup_checks.component_for_provider("bedrock") == "bedrock"
+          and setup_checks.component_for_provider("ollama") is None)
+
+    check("An unknown component is refused, not crashed",
+          setup_checks.repair("not-a-component")["ok"] is False)
+    check("Repairing something already present is a no-op",
+          setup_checks.repair("core")["ok"] is True)
+
+    # Every component must name a requirements file that actually exists,
+    # otherwise "install what's missing" is a button that cannot work.
+    for name, spec in setup_checks.COMPONENTS.items():
+        check(f"{name} points at a real requirements file",
+              (ROOT / spec["requirements"]).exists())
+
+
+def test_setup_wizard():
+    """The wizard the installer runs covers every step and is wired in."""
+    print("\nSetup wizard")
+
+    source = (ROOT / "desktop" / "setup_wizard.py").read_text()
+    steps = ["welcome", "database", "ai", "microsoft", "done"]
+    for step in steps:
+        check(f"The wizard has a {step} step", f"_step_{step}" in source)
+    check("Every step is registered in order",
+          all(f'"{s}"' in source.split("STEPS = [")[1].split("]")[0] for s in steps))
+
+    # Each configurable step must actually verify itself — the whole promise is
+    # that finishing setup means it was tested, not assumed.
+    for tester in ("_test_database", "_test_ai", "_test_microsoft"):
+        check(f"{tester} exists", f"def {tester}" in source)
+    check("Slow checks run off the UI thread", "_run_async" in source)
+    check("Finishing marks setup complete", "mark_setup_complete" in source)
+    check("Missing dependencies can be repaired in place", "_repair" in source)
+
+    spec = (ROOT / "packaging" / "cerebro.spec").read_text()
+    check("The wizard is built as its own executable", "CerebroSetupWizard" in spec)
+    check("The wizard bundles Tkinter", '"tkinter"' in spec)
+
+    installer = (ROOT / "packaging" / "installer.iss").read_text()
+    check("The installer runs the wizard", "CerebroSetupWizard.exe" in installer)
+    check("The installer runs it as a first run", "--first-run" in installer)
+
+    launcher = (ROOT / "cerebro.py").read_text()
+    check("A source install can open the wizard too", "def cmd_configure" in launcher)
+    check("Setup ends by configuring", "5. Configuring Cerebro" in launcher)
+
+
+def test_copilot_instructions():
+    """The pasted instructions must match what the bridge actually implements."""
+    print("\nCopilot Studio instructions")
+
+    import json as _json
+    import re as _re
+
+    from app.services.copilot_bridge import ALLOWED_COMMANDS
+    from app.services.copilot_guide import AGENT_INSTRUCTIONS, guide, instructions
+
+    text = instructions("D:/OneDrive/Cerebro/copilot")
+    check("The real folder replaces the placeholder",
+          "{FOLDER}" not in text and "D:/OneDrive/Cerebro/copilot" in text)
+    check("Escaped braces are unescaped for the reader",
+          "{{" not in text and "}}" not in text)
+    check("A blank folder still reads sensibly",
+          "OneDrive" in instructions(""))
+
+    # An agent told about an action that does not exist writes command files
+    # that are refused; one it is not told about is a capability lost. Both
+    # directions have to stay in sync with the whitelist.
+    documented = set(_re.findall(r'"action":\s*"([a-z_]+)"', text))
+    check("Every allowed command is documented",
+          documented >= set(ALLOWED_COMMANDS),
+          f"missing: {sorted(set(ALLOWED_COMMANDS) - documented)}")
+    check("No command is documented that does not exist",
+          documented <= set(ALLOWED_COMMANDS),
+          f"extra: {sorted(documented - set(ALLOWED_COMMANDS))}")
+
+    # Every JSON example must parse; a malformed one teaches the agent to
+    # write malformed command files.
+    examples = _re.findall(r'\{"action".*?\}(?=\n)', text, _re.S)
+    check("The instructions carry JSON examples", len(examples) >= len(ALLOWED_COMMANDS))
+    bad = []
+    for example in examples:
+        try:
+            _json.loads(" ".join(example.split()))
+        except ValueError:
+            bad.append(example[:40])
+    check("Every JSON example parses", not bad, f"bad: {bad}")
+
+    # The folder layout must describe the real one.
+    check("The command folder is named correctly", "commands/" in text)
+    check("The processed folder matches the bridge", "commands/processed" in text)
+    check("A stale archive/ folder is not invented", "\n    archive/" not in text)
+    for name in ("context.json", "memory.json", "style.json"):
+        check(f"{name} is described", name in text)
+
+    # Real field names, so the agent reads the files rather than guessing.
+    for field_name in ("generated_at", "current_case", "on_a_call", "persona",
+                       "style_card", "confidence", "command_file"):
+        check(f"The schema names {field_name}", field_name in text)
+
+    check("Result files are explained", "result-cmd-" in text)
+    check("The agent is told not to wait for results", "do NOT wait" in text.replace("do not wait", "do NOT wait"))
+    check("Staleness has explicit thresholds", "10 minutes" in text)
+
+    payload = guide()
+    check("The guide serves the filled-in instructions",
+          "{FOLDER}" not in payload["instructions"])
+    check("OneDrive is the required tool",
+          any(tool["required"] for tool in payload["tools"]
+              if "OneDrive" in tool["name"]))
 
 
 def test_bedrock_provider():
@@ -1068,10 +1278,16 @@ def test_copilot_guide():
     instructions = payload["instructions"]
     check("Instructions mention context.json", "context.json" in instructions)
     check("Instructions mention style.json", "style.json" in instructions)
+    # Asserted on intent rather than an exact sentence: the wording is expected
+    # to be rewritten, the two guarantees are not.
+    lowered = instructions.lower()
     check("Instructions forbid sending without approval",
-          "without showing the user the draft" in instructions)
+          "showing the draft" in lowered or "showing the user the draft" in lowered)
+    check("Instructions require an explicit yes before sending",
+          "explicit yes" in lowered)
     check("Instructions tell it not to invent desktop state",
-          "Never invent desktop state" in instructions)
+          "never invent desktop state" in lowered
+          or "never claim to see their screen" in lowered)
 
     # Every command the instructions advertise must really be permitted, or the
     # agent will be told to do things Cerebro refuses.
@@ -1457,6 +1673,9 @@ def main() -> int:
     for suite in (test_version_source, test_event_detector, test_context_engine, test_event_flow,
                   test_embeddings, test_knowledge_search, test_llm_disabled,
                   test_bedrock_provider, test_model_catalog_and_discovery,
+                  test_setup_checks_and_repair, test_setup_wizard,
+                  test_database_resilience, test_database_round_trip,
+                  test_copilot_instructions,
                   test_bedrock_credential_modes, test_bundled_dependencies,
                   test_enterprise_normalisation, test_enterprise_ingest_and_reply,
                   test_document_reading, test_document_editing,

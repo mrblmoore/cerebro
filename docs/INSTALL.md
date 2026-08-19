@@ -6,10 +6,23 @@ Source installs use the commands below.
 
 ### Windows release installer
 
-Download `CerebroSetup.exe` from the matching GitHub release and run it. The
-installer creates shortcuts for Cerebro, the widget, and the bundled browser
-extension folder. The widget starts Cerebro and its desktop helpers, and starts
-at sign-in by default. No separate Python installation is needed.
+Download `CerebroSetup.exe` from the matching GitHub release and run it. No
+separate Python installation is needed — the runtime and every dependency are
+inside the installer.
+
+**Setup happens inside the installer.** Its last step opens a short wizard that
+checks what is installed, prepares the database, connects an AI model and, if
+you want it, the Microsoft 365 folders. Each of those is *tested* before you
+move on, so when the wizard closes Cerebro is configured and working — there is
+no browser page to visit afterwards and nothing else to fill in.
+
+Anything missing that Cerebro can install itself, it offers to install on the
+spot, into its own environment. You can reopen the wizard any time from
+**Start → Cerebro Setup**.
+
+The installer also creates shortcuts for Cerebro, the widget, and the bundled
+browser extension folder. The widget starts Cerebro and its desktop helpers, and
+starts at sign-in by default.
 
 Chrome and Edge intentionally require one user confirmation for unpacked
 extensions: open the **Install Browser Extension** Start-menu shortcut, then use
@@ -78,17 +91,20 @@ virtual environment from scratch.
 | Start | double-click `start.bat` | `./cerebro.sh start` |
 | Menu | double-click `cerebro.bat` | `./cerebro.sh` |
 
-Your browser opens the **setup wizard** the first time. Six short steps:
+On a source install, `setup` finishes by opening the same **setup wizard** the
+Windows installer runs. Five short steps, each verified before you continue:
 
-1. **Welcome** — a system check confirming everything installed correctly.
-2. **Storage** — keep the built-in SQLite database, or point at PostgreSQL.
-3. **AI model** — optional; skip it and add one later if you want to.
-4. **Knowledge search** — built-in vector store, or Qdrant.
-5. **Desktop & browser** — how to start the widget and load the extension.
-6. **Done** — a summary of what you chose.
+1. **Welcome** — what is installed, with a one-click fix for anything missing.
+2. **Storage** — the built-in database, or PostgreSQL. Tested by opening it.
+3. **AI model** — pick a provider and a model from a list. Tested by asking it
+   a question.
+4. **Microsoft 365** — optional Outlook/Teams and Copilot Studio folders.
+   Tested by writing and reading them.
+5. **Finish** — a summary of what passed.
 
-After that, `http://localhost:8000` is your dashboard and `/settings` has
-everything the wizard asked, plus the advanced options it did not.
+Reopen it any time with `cerebro.bat configure` (or `./cerebro.sh configure`).
+`http://localhost:8000` is your dashboard, and `/settings` has everything the
+wizard asked plus the advanced options it did not.
 
 ---
 
