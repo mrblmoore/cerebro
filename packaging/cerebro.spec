@@ -63,12 +63,14 @@ hiddenimports = [
     "awscrt", "awscrt.auth", "awscrt.http", "awscrt.io",
     "botocore.crt", "botocore.crt.auth", "botocore.httpsession",
     "mss", "pynput", "pynput.keyboard", "PIL", "PIL.Image",
+    "multipart", "python_multipart",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
     # Every service is pinned here rather than left to static discovery: many are
     # imported lazily inside functions (to keep optional deps optional), which is
     # exactly the pattern PyInstaller's analysis can miss in a frozen build.
     "app.services.activity_service", "app.services.context_engine",
+    "app.services.chat_images", "app.services.chat_service",
     "app.services.copilot_bridge", "app.services.copilot_guide",
     "app.services.document_editors", "app.services.document_readers",
     "app.services.document_service", "app.services.embeddings",
