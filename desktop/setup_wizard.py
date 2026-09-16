@@ -45,6 +45,15 @@ for _candidate in (_HERE.parent / "backend", _HERE, _HERE.parent):
         break
 
 
+def _bundled_root() -> Path:
+    """Where shipped extras (docs, the Power Automate package) live: next to
+    the frozen exe, or the repo root in a source checkout."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return _HERE.parent
+
+
+
 import branding
 
 #: Shared with the widget and the web UI, so all three feel like one product.
@@ -844,12 +853,23 @@ class Wizard(tk.Tk):
                    pad=(0, (0, 12)))
 
         card = self._card(self.body)
-        self._text(card, "Outlook and Teams (Power Automate)", colour=T["text"],
-                   bold=True, pad=(14, (12, 2)))
+        self._text(card, "Outlook, Teams and Dynamics 365 (Power Automate)",
+                   colour=T["text"], bold=True, pad=(14, (12, 2)))
         self._text(card,
-                   "Two Power Automate flows drop messages into a folder. Leave "
-                   "blank if you are not using them yet.",
+                   "An importable flow package handles this for you — Outlook and "
+                   "Dynamics are fully pre-built; Teams needs you to pick your "
+                   "team and channel after importing (that part is tenant-specific, "
+                   "so it can't be pre-filled). Leave the folder blank if you are "
+                   "not using this yet.",
                    pad=(14, (0, 6)))
+        pa_row = tk.Frame(card, bg=T["surface"])
+        pa_row.pack(fill="x", padx=14, pady=(0, 6))
+        self._button(pa_row, "Reveal the flow package",
+                     self._reveal_power_automate_package).pack(side="left")
+        self._button(pa_row, "How to import it",
+                     self._open_power_automate_quickstart).pack(side="left", padx=(8, 0))
+        self._button(pa_row, "Create the OneDrive folders for me",
+                     self._create_onedrive_folders).pack(side="left", padx=(8, 0))
         self._folder_field(card, "ENTERPRISE_INBOX_DIR", "Inbound folder")
 
         card2 = self._card(self.body)
@@ -863,6 +883,81 @@ class Wizard(tk.Tk):
         self._folder_field(card2, "COPILOT_BRIDGE_DIR", "Shared OneDrive folder")
 
         self._button(self.body, "Test these folders", self._test_microsoft).pack(anchor="w", pady=(4, 0))
+
+    def _detect_onedrive_root(self):
+        """
+        OneDrive publishes the local sync root in an environment variable —
+        ``OneDriveCommercial`` for a work/school account, ``OneDrive`` for a
+        personal one. Trying both, in that order, covers the normal case
+        without asking the user anything. Returns a ``Path`` or ``None``.
+        """
+        for var in ("OneDriveCommercial", "OneDrive"):
+            value = os.environ.get(var)
+            if value and Path(value).is_dir():
+                return Path(value)
+        return None
+
+    def _create_onedrive_folders(self):
+        onedrive = self._detect_onedrive_root()
+        if onedrive is None:
+            self._set_status(
+                "Couldn't find a synced OneDrive on this machine. Create "
+                "\\Cerebro\\enterprise-inbox and \\enterprise-outbox in your "
+                "OneDrive folder yourself, then paste the inbox path below.",
+                "warn")
+            return
+
+        inbox = onedrive / "Cerebro" / "enterprise-inbox"
+        outbox = onedrive / "Cerebro" / "enterprise-outbox"
+        try:
+            inbox.mkdir(parents=True, exist_ok=True)
+            outbox.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._set_status(f"Couldn't create the folders: {exc}", "err")
+            return
+
+        self.pending["ENTERPRISE_INBOX_DIR"] = str(inbox)
+        if hasattr(self, "_inbox_field_var"):
+            self._inbox_field_var.set(str(inbox))
+        self._set_status(
+            f"Created {inbox} and {outbox}. Point the imported flows at these "
+            "same folder names in OneDrive online.", "ok")
+
+    def _power_automate_package(self):
+        """The importable flow zip, wherever this build keeps it."""
+        root = _bundled_root()
+        for candidate in (
+            root / "power_automate" / "Cerebro-Bridge.zip",       # frozen build
+            root / "packaging" / "power_automate" / "dist" / "Cerebro-Bridge.zip",  # source checkout
+        ):
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _reveal_power_automate_package(self):
+        package = self._power_automate_package()
+        if package is None:
+            self._set_status(
+                "The flow package isn't built in this copy of Cerebro. Run "
+                "python packaging/build_power_automate_package.py, or use the "
+                "manual steps in docs/POWER_AUTOMATE.md.", "warn")
+            return
+        try:
+            os.startfile(package.parent)  # noqa: S606 - Windows-only wizard
+        except Exception:
+            webbrowser.open(package.parent.as_uri())
+
+    def _open_power_automate_quickstart(self):
+        root = _bundled_root()
+        for candidate in (root / "docs" / "POWER_AUTOMATE_QUICKSTART.md",
+                          root.parent / "docs" / "POWER_AUTOMATE_QUICKSTART.md"):
+            if candidate.exists():
+                try:
+                    os.startfile(candidate)  # noqa: S606 - Windows-only wizard
+                except Exception:
+                    webbrowser.open(candidate.as_uri())
+                return
+        self._set_status("Couldn't find the quickstart doc in this copy of Cerebro.", "warn")
 
     def _folder_field(self, parent, key, label):
         row = tk.Frame(parent, bg=parent["bg"])
@@ -883,6 +978,9 @@ class Wizard(tk.Tk):
                 variable.set(chosen)
 
         self._button(line, "Browse…", browse).pack(side="left", padx=(8, 0))
+        if key == "ENTERPRISE_INBOX_DIR":
+            self._inbox_field_var = variable
+        return variable
 
     def _test_microsoft(self):
         if not self._save():

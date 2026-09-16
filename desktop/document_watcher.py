@@ -20,6 +20,7 @@ questions about it or edit it.
 import argparse
 import os
 import re
+import struct
 import sys
 import time
 from pathlib import Path
@@ -166,6 +167,106 @@ def recently_modified(folders: Iterable[Path], within_seconds: int = 300,
     return found
 
 
+# --------------------------------------------------------- recent, anywhere
+def _read_lnk_target(lnk_path: Path) -> Optional[str]:
+    """
+    Best-effort ``.lnk`` shortcut target, read from the raw shell-link format
+    (MS-SHLLINK) so this needs no extra dependency (no ``pywin32``, no COM).
+
+    Only the ``LinkInfo`` block is decoded — enough to get a local path back
+    for the common case of "Office/Adobe/Explorer made a shortcut to a file on
+    this machine". Anything else (network paths with no local base path,
+    corrupt or unusually-shaped links) is left alone; a parsing miss here
+    just means one fewer document noticed, never a crash.
+    """
+    try:
+        data = lnk_path.read_bytes()
+    except OSError:
+        return None
+
+    # Header: 4-byte size (always 0x4C), 16-byte CLSID, then LinkFlags at +20.
+    if len(data) < 78 or data[:4] != b"\x4c\x00\x00\x00":
+        return None
+    (link_flags,) = struct.unpack_from("<I", data, 20)
+
+    offset = 76
+    has_id_list = bool(link_flags & 0x1)
+    has_link_info = bool(link_flags & 0x2)
+
+    if has_id_list:
+        if offset + 2 > len(data):
+            return None
+        (id_list_size,) = struct.unpack_from("<H", data, offset)
+        offset += 2 + id_list_size
+
+    if not has_link_info or offset + 4 > len(data):
+        return None
+
+    info_start = offset
+    try:
+        (info_size,) = struct.unpack_from("<I", data, info_start)
+        (header_size,) = struct.unpack_from("<I", data, info_start + 4)
+        (info_flags,) = struct.unpack_from("<I", data, info_start + 8)
+        (local_base_offset,) = struct.unpack_from("<I", data, info_start + 16)
+    except struct.error:
+        return None
+
+    if not (info_flags & 0x1):   # VolumeIDAndLocalBasePath not present
+        return None
+
+    # Newer links (header size >= 0x24) prefer the unicode offset when present.
+    unicode_offset = 0
+    if header_size >= 0x24 and info_start + 28 <= len(data):
+        (unicode_offset,) = struct.unpack_from("<I", data, info_start + 24)
+
+    try:
+        start = info_start + (unicode_offset or local_base_offset)
+        end = data.index(b"\x00\x00" if unicode_offset else b"\x00", start)
+        if unicode_offset:
+            end += end % 2   # land on a 2-byte boundary
+            raw = data[start:end]
+            return raw.decode("utf-16-le", errors="ignore") or None
+        return data[start:end].decode("mbcs" if os.name == "nt" else "latin-1",
+                                      errors="ignore") or None
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def recent_shell_items(limit: int = 20) -> List[Path]:
+    """
+    Anything Windows itself remembers you opened, wherever it lives.
+
+    ``shell:Recent`` (``%APPDATA%\\...\\Windows\\Recent``) gets a shortcut from
+    Explorer/Office/Adobe/etc. for essentially every document a user opens,
+    regardless of which folder it is in — this is what lets Cerebro notice a
+    random ``.docx`` on a USB drive or a one-off download without it having to
+    sit inside a folder anyone configured to watch.
+    """
+    if not IS_WINDOWS:
+        return []
+
+    base = os.environ.get("APPDATA")
+    if not base:
+        return []
+    recent_dir = Path(base) / "Microsoft" / "Windows" / "Recent"
+
+    try:
+        shortcuts = sorted(recent_dir.glob("*.lnk"),
+                          key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    except OSError:
+        return []
+
+    found: List[Path] = []
+    for shortcut in shortcuts:
+        target = _read_lnk_target(shortcut)
+        if not target:
+            continue
+        path = Path(target)
+        if path.is_file() and interesting(path):
+            found.append(path.resolve())
+    return found
+
+
 # ------------------------------------------------------------------ runner
 class DocumentWatcher:
     def __init__(self, api_url: str, folders: List[Path], interval: float):
@@ -224,6 +325,11 @@ class DocumentWatcher:
         active = foreground_document(self.folders)
         if active:
             seen.add(active)
+
+        # The Windows shell's own "recently opened" record — not bounded to
+        # the watched folders, so this is what catches a document opened from
+        # somewhere nobody told Cerebro to look.
+        seen.update(recent_shell_items())
 
         if not seen and not IS_WINDOWS:
             seen.update(recently_modified(self.folders))

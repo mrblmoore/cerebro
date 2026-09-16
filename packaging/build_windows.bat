@@ -47,6 +47,9 @@ set "VERSION_INFO_VERSION=!VERSION_MAJOR!.!VERSION_MINOR!.!VERSION_PATCH!.0"
 %BUILDPY% -m pip install --quiet -r desktop\requirements-capture.txt || exit /b 1
 %BUILDPY% -m pip install --quiet pyinstaller || exit /b 1
 
+echo   Building the Outlook/Teams flow package...
+%BUILDPY% packaging\build_power_automate_package.py || exit /b 1
+
 echo   [2/4] Cleaning previous output...
 if exist "dist\Cerebro" rmdir /s /q "dist\Cerebro"
 if exist "build" rmdir /s /q "build"

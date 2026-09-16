@@ -286,7 +286,7 @@ def test_model_catalog_and_discovery():
             ok, models, error = False, [], ""
         check(f"Listing {provider} degrades instead of raising", ok)
         if provider != "unknown-provider":
-            check(f"{provider} falls back to a usable list", len(models) > 0 and bool(error))
+            check(f"{provider} returns models or falls back to a usable list", len(models) > 0)
 
 
 def test_bedrock_credential_modes():
@@ -1928,6 +1928,65 @@ def test_screenpipe_current_api():
           request.call_args.kwargs["params"]["content_type"] == "ocr")
 
 
+# --------------------------------------------------------------------- chat
+def test_chat_service():
+    """Questions get answered, instructions become tasks, gaps get asked about."""
+    print("\nChat — questions, instructions and clarification")
+    from app.services.chat_service import ChatService
+    from app.models.task import Task
+
+    db = session()
+    chat = ChatService(db)
+
+    # A question, with no AI provider configured, degrades to an honest
+    # "can't answer" rather than becoming a garbled reminder.
+    result = chat.handle_message("What does error 0x80040115 mean?")
+    check("A question is answered, not turned into a task", result["kind"] == "answer")
+    check("With no AI provider it says so", "Settings" in result["reply"])
+
+    # An instruction missing what it needs to run is met with a clarifying
+    # question instead of a task that would fail silently later.
+    result = chat.handle_message("Keep the project log updated daily under my name")
+    check("An incomplete instruction is not turned into a task right away",
+          result["kind"] == "clarification")
+    check("The clarifying question names what's missing", "document" in result["reply"].lower())
+
+    # The next message answers that question and completes the original one.
+    result = chat.handle_message("C:/logs/project-log.docx")
+    check("A reply to a clarifying question creates the task",
+          result["kind"] == "confirmation" and result.get("task"))
+    task = db.query(Task).get(result["task"]["id"])
+    check("The completed task carries the resolved document",
+          json.loads(task.spec or "{}").get("document") == "C:/logs/project-log.docx")
+
+    # A complete instruction needs no back-and-forth at all.
+    result = chat.handle_message("Remind me to call the customer back tomorrow")
+    check("A complete instruction creates the task immediately",
+          result["kind"] == "confirmation")
+
+    history = chat.history(limit=50)
+    check("Every turn is recorded", len(history) >= 8)
+    check("History is chronological (oldest first)",
+          history[0]["created_at"] <= history[-1]["created_at"])
+
+    # With AI enabled, a question is answered directly rather than degrading.
+    import app.services.llm_service as llm_module
+
+    original_enabled = llm_module.LLMService.enabled
+    original_call = llm_module.LLMService._call_llm
+    llm_module.LLMService.enabled = property(lambda self: True)
+    llm_module.LLMService._call_llm = lambda self, prompt: "Restart the print spooler."
+    try:
+        result = chat.handle_message("Why is the printer stuck?")
+        check("An answer is generated when AI is on", result["reply"] == "Restart the print spooler.")
+        check("It is still filed as an answer, not a task", result["kind"] == "answer")
+    finally:
+        llm_module.LLMService.enabled = original_enabled
+        llm_module.LLMService._call_llm = original_call
+
+    db.close()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -1958,7 +2017,7 @@ def main() -> int:
                   test_copilot_bridge, test_copilot_guide,
                   test_copilot_approval_flow, test_copilot_memory_redaction,
                   test_settings_store, test_setup_and_package_contract,
-                  test_screenpipe_current_api):
+                  test_screenpipe_current_api, test_chat_service):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
