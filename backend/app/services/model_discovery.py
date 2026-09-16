@@ -32,6 +32,11 @@ def discover(provider: str) -> Tuple[List[Dict[str, str]], str]:
     """
     Return ``(models, error)``. ``error`` is empty when the list came from the
     provider; otherwise it explains why the curated fallback is being shown.
+
+    For Ollama we deliberately keep the curated fallback visible until the user
+    has actually chosen the provider in Cerebro. A machine may have a local
+    Ollama service running, but the setup screen still has to render and behave
+    like a blank configuration before the user opts into it.
     """
     provider = (provider or "").lower()
     try:
@@ -40,6 +45,8 @@ def discover(provider: str) -> Tuple[List[Dict[str, str]], str]:
         if provider == "bedrock":
             return _bedrock(), ""
         if provider == "ollama":
+            if settings.LLM_PROVIDER.lower() != "ollama" and settings.OLLAMA_MODEL == "llama3.1":
+                raise RuntimeError("Ollama is not configured. Showing the built-in list.")
             return _ollama(), ""
         if provider == "qwen":
             return _qwen(), ""
@@ -139,9 +146,18 @@ def _bedrock() -> List[Dict[str, str]]:
     the ``bedrock`` control-plane client, not ``bedrock-runtime``.
     """
     from app.services.llm_service import bedrock_session  # local: optional dependency
+    from botocore.config import Config
 
     session = bedrock_session()
-    client = session.client("bedrock", endpoint_url=None)
+    # Every other provider here bails out within LIST_TIMEOUT; boto3's own
+    # defaults are far longer (tens of seconds per retry), so an unreachable
+    # or slow AWS endpoint would make "Refresh" hang far longer than any other
+    # provider before the fallback list appears.
+    client = session.client(
+        "bedrock", endpoint_url=None,
+        config=Config(connect_timeout=LIST_TIMEOUT, read_timeout=LIST_TIMEOUT,
+                      retries={"max_attempts": 1}),
+    )
 
     models: List[Dict[str, str]] = []
     seen = set()

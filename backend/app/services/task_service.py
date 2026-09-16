@@ -186,6 +186,23 @@ def compute_next_run(schedule: str, at_time: str = None,
     return target
 
 
+def describe_confirmation(task: Task) -> str:
+    """A human confirmation of what was understood, in persona. Shared by the
+    task API and the chat service so both phrase things the same way."""
+    from app.services.style_service import persona
+
+    subject = "We'll" if persona() == "partner" else "I'll"
+    when = {
+        "once": f"once, {'today' if task.at_time else 'shortly'}",
+        "daily": f"every day{' at ' + task.at_time if task.at_time else ''}",
+        "weekdays": f"on weekdays{' at ' + task.at_time if task.at_time else ''}",
+        "weekly": "weekly",
+        "hourly": "every hour",
+        "manual": "when you ask",
+    }.get(task.schedule, task.schedule)
+    return f"{subject} {task.title.lower()} — {when}."
+
+
 # ------------------------------------------------------------- service
 class TaskService:
     def __init__(self, db: Session):
@@ -193,10 +210,20 @@ class TaskService:
 
     def create_from_instruction(self, instruction: str,
                                 context: Dict[str, Any] = None,
-                                source: str = "user") -> Task:
-        """Parse and store a task from natural language."""
+                                source: str = "user",
+                                extra_spec: Dict[str, Any] = None) -> Task:
+        """
+        Parse and store a task from natural language.
+
+        ``extra_spec`` merges values the keyword parser cannot pull out of free
+        text on its own — the chat service uses it to fold in a document path
+        or similar detail the user gave in reply to a clarifying question,
+        without needing an AI provider to have understood it.
+        """
         parsed = parse_instruction(instruction, context)
         spec = parsed.get("spec") or {}
+        if extra_spec:
+            spec = {**spec, **{k: v for k, v in extra_spec.items() if v}}
 
         # If the instruction is about "this document", pin the active one now.
         if parsed.get("kind") == "document_update" and not spec.get("document"):

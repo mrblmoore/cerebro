@@ -58,18 +58,9 @@ def instruct(request: InstructIn, db: Session = Depends(get_db)) -> Dict[str, An
 
 def _confirm(task: Task) -> str:
     """A human confirmation of what was understood, in persona."""
-    from app.services.style_service import persona
+    from app.services.task_service import describe_confirmation
 
-    subject = "We'll" if persona() == "partner" else "I'll"
-    when = {
-        "once": f"once, {'today' if task.at_time else 'shortly'}",
-        "daily": f"every day{' at ' + task.at_time if task.at_time else ''}",
-        "weekdays": f"on weekdays{' at ' + task.at_time if task.at_time else ''}",
-        "weekly": "weekly",
-        "hourly": "every hour",
-        "manual": "when you ask",
-    }.get(task.schedule, task.schedule)
-    return f"{subject} {task.title.lower()} — {when}."
+    return describe_confirmation(task)
 
 
 @router.get("", dependencies=[Depends(require_local_origin)])

@@ -74,6 +74,37 @@ class ApiClient:
             body = response.read().decode("utf-8")
         return json.loads(body) if body else None
 
+    def get_bytes(self, path: str, timeout: float = 10.0) -> bytes:
+        """A raw GET — for fetching an image back, not JSON."""
+        request = urllib.request.Request(f"{self.base_url}{path}")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+
+    def upload_image(self, file_path, timeout: float = 15.0) -> dict:
+        """
+        POST a local image file as ``multipart/form-data``.
+
+        Built by hand rather than pulling in a dependency: the widget is
+        deliberately stdlib-only (see ``desktop/requirements.txt``), and a
+        single-file upload is a small enough body to construct directly.
+        """
+        path = Path(file_path)
+        boundary = f"----cerebro-{int(time.time() * 1000)}"
+        data = path.read_bytes()
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8") + data + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        request = urllib.request.Request(
+            f"{self.base_url}/api/chat/upload-image", data=body, method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                     "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     def poll(self) -> dict:
         """One round of everything the widget displays."""
         snapshot = {"online": False}
@@ -122,6 +153,21 @@ def _friendly_error(exc: Exception) -> str:
     return str(exc)[:80]
 
 
+def _short_time(iso_timestamp) -> str:
+    """"3:41 PM" from an ISO timestamp — the chat header cares about the
+    moment, not the date. ``%-I``/``%#I`` (no leading zero) differ by platform,
+    so this strips it by hand instead."""
+    if not iso_timestamp:
+        return ""
+    try:
+        from datetime import datetime
+
+        text = datetime.fromisoformat(iso_timestamp).strftime("%I:%M %p")
+        return text.lstrip("0") or text
+    except (ValueError, TypeError):
+        return ""
+
+
 # --------------------------------------------------------------- the widget
 class CerebroWidget:
     def __init__(self, config: dict):
@@ -138,6 +184,15 @@ class CerebroWidget:
         self.search_query = ""
         self.searching = False
         self.ask_reply = None
+        self.chat_history = []
+        self.chat_loaded = False
+        #: name -> tk.PhotoImage, kept alive so Tk does not garbage-collect it.
+        self.image_cache = {}
+        self.image_pending = set()
+        #: stored name of an image attached to the message being composed.
+        self.pending_image = None
+        self.pending_image_name = None
+        self.pending_image_uploading = False
         self.expanded = False
         self._normal_size = None
         self._stop = threading.Event()
@@ -397,7 +452,20 @@ class CerebroWidget:
         # Leaving the Ask tab collapses any expansion it caused.
         if key != "ask" and self.expanded:
             self.restore_size()
+        if key == "ask" and not self.chat_loaded:
+            self._load_chat_history()
         self.render()
+
+    def _load_chat_history(self):
+        self.chat_loaded = True
+
+        def worker():
+            try:
+                result = self.api.request("/api/chat/history?limit=50")
+                self.results.put(("chat_history", (result or {}).get("messages") or []))
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True).start()
 
     def render(self):
         theme = self.theme
@@ -407,6 +475,17 @@ class CerebroWidget:
                 bg=theme["surface"] if selected else theme["bg"],
                 fg=theme["text"] if selected else theme["dim"],
             )
+
+        # A background poll lands every few seconds and re-renders whatever tab
+        # is open. If that happens while someone is mid-sentence in the Ask
+        # box, the destroy-and-rebuild below would silently wipe what they had
+        # typed. Save it here and put it back once the fresh Entry exists.
+        draft = None
+        if self.active_tab == "ask" and getattr(self, "ask_entry", None):
+            try:
+                draft = (self.ask_entry.get(), self.ask_entry.index(tk.INSERT))
+            except tk.TclError:
+                draft = None
 
         for child in self.content.winfo_children():
             child.destroy()
@@ -418,7 +497,19 @@ class CerebroWidget:
             "docs": self._render_docs,
             "search": self._render_search,
         }[self.active_tab]
-        renderer(ScrollArea(self.content, self))
+        scroll = ScrollArea(self.content, self)
+        renderer(scroll)
+
+        if draft and getattr(self, "ask_entry", None):
+            text, cursor = draft
+            if text:
+                self.ask_entry.insert(0, text)
+                self.ask_entry.icursor(cursor)
+                self.ask_entry.focus_set()
+
+        if self.active_tab == "ask" and (self.chat_history or []):
+            # Keep the newest messages in view, like any real chat client.
+            self.root.after(30, lambda: scroll.canvas.yview_moveto(1.0))
 
     def _render_context(self, area):
         context = self.snapshot.get("context") or {}
@@ -506,40 +597,177 @@ class CerebroWidget:
                     anchor="w", padx=10, pady=(0, 9))
 
     def _render_ask(self, area):
-        """Type an instruction; see Cerebro's reply and its open nudges."""
+        """Talk to Cerebro: general questions, instructions, or an answer to
+        something it asked you — and see the running thread plus open nudges."""
         theme = self.theme
 
         box = tk.Frame(area.inner, bg=theme["bg"])
-        box.pack(fill="x", padx=10, pady=(2, 6))
+        box.pack(fill="x", padx=10, pady=(2, 4))
+        entry_row = tk.Frame(box, bg=theme["bg"])
+        entry_row.pack(fill="x")
         self.ask_entry = tk.Entry(
-            box, bg=theme["surface2"], fg=theme["text"], font=self.font(9),
+            entry_row, bg=theme["surface2"], fg=theme["text"], font=self.font(9),
             insertbackground=theme["text"], relief="flat", highlightthickness=1,
             highlightbackground=theme["border"], highlightcolor=theme["accent"])
-        self.ask_entry.pack(fill="x", ipady=6, ipadx=6)
+        self.ask_entry.pack(side="left", fill="x", expand=True, ipady=6, ipadx=6)
         self.ask_entry.bind("<Return>", lambda _e: self._send_instruction())
-        placeholder = ("Tell me what to do — “remind me…”, "
-                       "“keep this doc updated daily under my name”…")
+        attach = tk.Label(entry_row, text="📎", bg=theme["surface2"], fg=theme["dim"],
+                          font=self.font(11), cursor="hand2", padx=8)
+        attach.pack(side="left", fill="y", padx=(4, 0))
+        attach.bind("<Button-1>", lambda _e: self._pick_image())
+
+        if self.pending_image_name:
+            chip = tk.Frame(box, bg=theme["surface2"])
+            chip.pack(fill="x", pady=(4, 0))
+            label = ("🖼 uploading…" if self.pending_image_uploading
+                     else f"🖼 {self.pending_image_name}")
+            tk.Label(chip, text=label, bg=theme["surface2"], fg=theme["dim"],
+                     font=self.font(8), anchor="w").pack(side="left", padx=8, pady=3)
+            remove = tk.Label(chip, text="✕", bg=theme["surface2"], fg=theme["faint"],
+                              font=self.font(8), cursor="hand2")
+            remove.pack(side="right", padx=8)
+            remove.bind("<Button-1>", lambda _e: self._clear_pending_image())
+
+        placeholder = ("Ask me anything, tell me what to do, attach an image, or "
+                       "answer what I just asked you…")
         tk.Label(area.inner, text=placeholder, bg=theme["bg"], fg=theme["faint"],
                  font=self.font(8), anchor="w", justify="left",
-                 wraplength=self.root.winfo_width() - 30).pack(fill="x", padx=12, pady=(0, 8))
+                 wraplength=self.root.winfo_width() - 30).pack(fill="x", padx=12, pady=(4, 8))
 
-        if getattr(self, "ask_reply", None):
-            card = tk.Frame(area.inner, bg=theme["accent_soft"] if "accent_soft" in theme
-                            else theme["surface"])
-            card.pack(fill="x", padx=10, pady=(0, 8))
-            tk.Label(card, text=self.ask_reply, bg=card["bg"], fg=theme["text"],
-                     font=self.font(9), justify="left", anchor="w",
-                     wraplength=self.root.winfo_width() - 50).pack(
-                fill="x", padx=10, pady=8)
+        history = getattr(self, "chat_history", None) or []
+        for message in history[-12:]:
+            self._chat_bubble(area.inner, message)
+        if self.ask_reply == "Working on it…" and (
+                not history or history[-1].get("role") != "assistant"):
+            tk.Label(area.inner, text="Cerebro is typing…", bg=theme["bg"],
+                     fg=theme["faint"], font=self.font(8, "italic"), anchor="w").pack(
+                fill="x", padx=12, pady=(0, 8))
 
         nudges = (self.snapshot.get("nudges") or {}).get("nudges") or []
         if nudges:
             self._heading(area.inner, "Nudges")
             for nudge in nudges:
                 self._nudge_card(area.inner, nudge)
-        elif not getattr(self, "ask_reply", None):
+        elif not history:
             self._empty(area.inner, "💬",
-                        "Ask me to do something,\nor I'll raise things here\nwhen they need you.")
+                        "Ask me anything, tell me what to do,\nor I'll raise things "
+                        "here\nwhen they need you.")
+
+    #: role -> (avatar glyph, display name), used in the bubble header.
+    _CHAT_AVATARS = {"user": ("🧑", "You"), "assistant": ("🧠", "Cerebro")}
+    _KIND_TAGS = {
+        "clarification": "asking",
+        "confirmation": "task created",
+        "instruction": None,
+        "question": None,
+        "answer": None,
+    }
+
+    def _chat_bubble(self, parent, message):
+        theme = self.theme
+        is_user = message.get("role") == "user"
+        bg = theme["accent"] if is_user else theme["surface"]
+        fg = theme["accent_text"] if is_user else theme["text"]
+        muted = theme["accent_text"] if is_user else theme["dim"]
+        glyph, name = self._CHAT_AVATARS.get(message.get("role"), ("💬", message.get("role", "")))
+
+        row = tk.Frame(parent, bg=theme["bg"])
+        row.pack(fill="x", padx=10, pady=(0, 8))
+        align = {"side": "right", "anchor": "e"} if is_user else {"side": "left", "anchor": "w"}
+        card = tk.Frame(row, bg=bg, highlightbackground=theme["border"],
+                        highlightthickness=0 if is_user else 1)
+        card.pack(**align)
+
+        header = tk.Frame(card, bg=bg)
+        header.pack(fill="x", padx=10, pady=(7, 0))
+        tk.Label(header, text=f"{glyph} {name}", bg=bg, fg=muted,
+                 font=self.font(7, "bold")).pack(side="left")
+        stamp = _short_time(message.get("created_at"))
+        if stamp:
+            tk.Label(header, text=stamp, bg=bg, fg=muted, font=self.font(7)).pack(
+                side="right")
+        tag = self._KIND_TAGS.get(message.get("kind"))
+        if tag:
+            tk.Label(header, text=f"· {tag}", bg=bg, fg=muted, font=self.font(7, "italic")).pack(
+                side="left", padx=(6, 0))
+
+        if message.get("content"):
+            tk.Label(card, text=message["content"], bg=bg, fg=fg,
+                     font=self.font(9), justify="left", anchor="w",
+                     wraplength=min(420, self.root.winfo_width() - 70)).pack(
+                fill="x", padx=10, pady=(3, 8))
+        else:
+            tk.Frame(card, bg=bg, height=4).pack()
+
+        if message.get("image_path"):
+            self._render_chat_image(card, message["image_path"], bg)
+
+        meta = message.get("meta") or {}
+        for item in (meta.get("images") or []):
+            self._render_chat_image(card, item.get("image"), bg, caption=item.get("caption"))
+
+    def _render_chat_image(self, parent, name, bg, caption: str = None):
+        if not name:
+            return
+        theme = self.theme
+        wrap = tk.Frame(parent, bg=bg)
+        wrap.pack(fill="x", padx=10, pady=(0, 8))
+
+        photo = self.image_cache.get(name)
+        if photo is not None:
+            tk.Label(wrap, image=photo, bg=bg, cursor="hand2").pack(anchor="w")
+        elif name in self.image_pending:
+            tk.Label(wrap, text="loading image…", bg=bg, fg=theme["faint"],
+                     font=self.font(8, "italic")).pack(anchor="w")
+        else:
+            tk.Label(wrap, text="🖼 loading image…", bg=bg, fg=theme["faint"],
+                     font=self.font(8, "italic")).pack(anchor="w")
+            self._fetch_chat_image(name)
+
+        if caption:
+            tk.Label(wrap, text=caption, bg=bg, fg=theme["faint"],
+                     font=self.font(7, "italic")).pack(anchor="w")
+
+    def _fetch_chat_image(self, name):
+        self.image_pending.add(name)
+
+        def worker():
+            try:
+                data = self.api.get_bytes(f"/api/chat/image/{name}")
+                self.results.put(("chat_image", (name, data)))
+            except Exception:
+                self.results.put(("chat_image", (name, None)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _pick_image(self):
+        import tkinter.filedialog as filedialog
+
+        path = filedialog.askopenfilename(
+            title="Attach an image",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.webp *.bmp")])
+        if not path:
+            return
+        self.pending_image_name = Path(path).name
+        self.pending_image_uploading = True
+        self.pending_image = None
+        self.render()
+
+        def worker():
+            try:
+                result = self.api.upload_image(path)
+                self.results.put(("image_uploaded", result.get("image")))
+            except Exception as exc:
+                self.results.put(("status", f"Couldn't attach that image: {_friendly_error(exc)}"))
+                self.results.put(("image_uploaded", None))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _clear_pending_image(self):
+        self.pending_image = None
+        self.pending_image_name = None
+        self.pending_image_uploading = False
+        self.render()
 
     def _nudge_card(self, parent, nudge):
         theme = self.theme
@@ -570,18 +798,35 @@ class CerebroWidget:
 
     def _send_instruction(self):
         instruction = self.ask_entry.get().strip()
-        if len(instruction) < 3:
+        image = self.pending_image
+        if len(instruction) < 3 and not image:
             return
+        if not instruction and image:
+            instruction = "(see attached image)"
+        self.ask_entry.delete(0, tk.END)
+        image_name = self.pending_image_name
+        self._clear_pending_image()
+        # Show the user's own message right away; the assistant's reply
+        # streams in once the request completes.
+        self.chat_history = (self.chat_history or []) + [
+            {"role": "user", "content": instruction, "kind": "message",
+             "image_path": image}
+        ]
         self.ask_reply = "Working on it…"
         self.render()
 
         def worker():
             try:
-                result = self.api.request("/api/tasks/instruct", method="POST",
-                                          payload={"instruction": instruction})
-                self.results.put(("ask", result.get("message", "Done.")))
+                payload = {"message": instruction}
+                if image:
+                    payload["image"] = image
+                result = self.api.request("/api/chat/message", method="POST",
+                                          payload=payload)
+                self.results.put(("ask", result.get("reply", "Done.")))
             except Exception as exc:
                 self.results.put(("ask", f"Couldn't do that: {_friendly_error(exc)}"))
+            finally:
+                self._load_chat_history()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1240,6 +1485,26 @@ class CerebroWidget:
                         self.expand_for(180)
                     if self.active_tab == "ask":
                         self.render()
+                elif kind == "chat_history":
+                    self.chat_history = payload
+                    if self.active_tab == "ask":
+                        self.render()
+                elif kind == "chat_image":
+                    name, data = payload
+                    self.image_pending.discard(name)
+                    if data:
+                        photo = self._make_photoimage(data)
+                        if photo is not None:
+                            self.image_cache[name] = photo
+                    if self.active_tab == "ask":
+                        self.render()
+                elif kind == "image_uploaded":
+                    self.pending_image_uploading = False
+                    self.pending_image = payload
+                    if not payload:
+                        self.pending_image_name = None
+                    if self.active_tab == "ask":
+                        self.render()
                 elif kind == "status":
                     self._flash_status(payload)
         except queue.Empty:
@@ -1247,6 +1512,25 @@ class CerebroWidget:
         except tk.TclError:
             return  # window is going away
         self.root.after(200, self._drain)
+
+    def _make_photoimage(self, data: bytes, max_side: int = 260):
+        """Bytes -> a Tk-displayable image. Uses Pillow when it's installed
+        (handles JPEG/WebP and resizing); otherwise falls back to Tk's own
+        ``PhotoImage`` which only understands GIF/PNG."""
+        try:
+            from PIL import Image, ImageTk
+            import io
+
+            image = Image.open(io.BytesIO(data))
+            image.thumbnail((max_side, max_side))
+            return ImageTk.PhotoImage(image)
+        except ImportError:
+            try:
+                return tk.PhotoImage(data=data)
+            except tk.TclError:
+                return None
+        except Exception:
+            return None
 
     def _apply_snapshot(self, snapshot: dict):
         was_online = self.online

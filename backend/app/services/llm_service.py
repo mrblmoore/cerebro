@@ -253,6 +253,101 @@ Answer in 1-2 sentences."""
             block = ""
         return f"{block}\n\n{prompt}" if block else prompt
 
+    # ------------------------------------------------------------- vision
+    def describe_image(self, image_path, question: str = None) -> str:
+        """
+        Answer a question about an image, or describe it if none is given.
+
+        Only OpenAI and Ollama are wired for vision today — those are the two
+        providers with a simple, well-documented image-in-chat format. Bedrock
+        and Qwen degrade to a clear, honest message rather than silently
+        ignoring the image, matching how an unconfigured provider behaves
+        everywhere else in this class.
+        """
+        if self.provider == "none" or not settings.llm_configured:
+            return NOT_CONFIGURED
+        if self.provider not in ("openai", "ollama"):
+            return (f"{self.provider} isn't wired for images in Cerebro yet — "
+                    "switch to OpenAI or Ollama with a vision-capable model "
+                    "(e.g. gpt-4o, llava, qwen2-vl) to have Cerebro look at images.")
+
+        from pathlib import Path
+
+        try:
+            image_bytes = Path(image_path).read_bytes()
+        except OSError as exc:
+            return f"(Couldn't read that image: {exc})"
+
+        prompt = question or ("Describe what's in this image, and call out anything "
+                              "a support engineer would care about.")
+
+        try:
+            if self.provider == "openai":
+                return self._describe_image_openai(image_bytes, prompt, Path(image_path))
+            return self._describe_image_ollama(image_bytes, prompt)
+        except Exception as exc:
+            logger.error("llm_service", "Vision request failed", {"error": str(exc)})
+            return f"(AI unavailable: {exc})"
+
+    def _describe_image_openai(self, image_bytes: bytes, prompt: str, path) -> str:
+        if not settings.OPENAI_API_KEY:
+            raise LLMNotConfigured("No OpenAI API key set (Settings → AI Provider).")
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise LLMNotConfigured(
+                "The openai package is not installed. Run: pip install -r "
+                "backend/requirements-ai.txt"
+            ) from exc
+
+        import base64
+        import mimetypes
+
+        media_type = mimetypes.guess_type(str(path))[0] or "image/png"
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+
+        client = OpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            organization=settings.OPENAI_ORG_ID or None,
+            base_url=settings.OPENAI_BASE_URL or None,
+            timeout=settings.LLM_TIMEOUT,
+        )
+        response = client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{media_type};base64,{encoded}"}},
+                ]},
+            ],
+            temperature=settings.LLM_TEMPERATURE,
+            max_tokens=settings.LLM_MAX_TOKENS,
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    def _describe_image_ollama(self, image_bytes: bytes, prompt: str) -> str:
+        import base64
+
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        endpoint = f"{settings.OLLAMA_URL.rstrip('/')}/api/chat"
+        response = requests.post(
+            endpoint,
+            json={
+                "model": settings.OLLAMA_MODEL,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt, "images": [encoded]},
+                ],
+            },
+            timeout=settings.LLM_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return (data.get("message", {}).get("content") or "").strip()
+
     # -------------------------------------------------------------- core
     def _call_llm(self, prompt: str) -> str:
         """Generation entry point. Degrades to a message, never raises."""

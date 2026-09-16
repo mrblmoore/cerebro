@@ -33,9 +33,19 @@ datas = [
 for name in ("README.md", "GETTING_STARTED.md"):
     if (ROOT / name).exists():
         datas.append((str(ROOT / name), "."))
-for name in ("INSTALL.md", "CONFIGURATION.md", "WIDGET.md", "POWER_AUTOMATE.md"):
+for name in ("INSTALL.md", "CONFIGURATION.md", "WIDGET.md", "POWER_AUTOMATE.md",
+             "POWER_AUTOMATE_QUICKSTART.md"):
     if (ROOT / "docs" / name).exists():
         datas.append((str(ROOT / "docs" / name), "docs"))
+
+# The importable Outlook/Teams/Dynamics flow package (see
+# build_power_automate_package.py). Ships next to Cerebro.exe as
+# power_automate\Cerebro-Bridge.zip so the setup wizard's Microsoft 365 step
+# can hand it to the user directly.
+_PA_ZIP = ROOT / "packaging" / "power_automate" / "dist" / "Cerebro-Bridge.zip"
+if _PA_ZIP.exists():
+    datas.append((str(_PA_ZIP), "power_automate"))
+
 
 # Uvicorn, SQLAlchemy dialects and the optional document libraries are reached
 # through dynamic imports, which PyInstaller's static analysis cannot see.
@@ -53,12 +63,14 @@ hiddenimports = [
     "awscrt", "awscrt.auth", "awscrt.http", "awscrt.io",
     "botocore.crt", "botocore.crt.auth", "botocore.httpsession",
     "mss", "pynput", "pynput.keyboard", "PIL", "PIL.Image",
+    "multipart", "python_multipart",
     "app.main", "app.models", "app.api",
     "docx", "openpyxl", "pptx", "pypdf",
     # Every service is pinned here rather than left to static discovery: many are
     # imported lazily inside functions (to keep optional deps optional), which is
     # exactly the pattern PyInstaller's analysis can miss in a frozen build.
     "app.services.activity_service", "app.services.context_engine",
+    "app.services.chat_images", "app.services.chat_service",
     "app.services.copilot_bridge", "app.services.copilot_guide",
     "app.services.document_editors", "app.services.document_readers",
     "app.services.document_service", "app.services.embeddings",

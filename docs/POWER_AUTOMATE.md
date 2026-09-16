@@ -1,5 +1,11 @@
 # Outlook and Teams, via Power Automate
 
+**Faster path:** `docs/POWER_AUTOMATE_QUICKSTART.md` has an importable flow
+package for Outlook, so you don't need to build the flows below by hand. This
+page is the full reference — read it if you want to see exactly what a flow
+does, change a field, or build the Teams inbound flow (which is manual by
+design; the quickstart explains why).
+
 Cerebro never talks to Microsoft 365 directly. Power Automate owns the
 connectors and the authentication, and hands work over as JSON files in a
 folder. Cerebro reads that folder.

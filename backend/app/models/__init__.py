@@ -1,6 +1,7 @@
 from app.models.activity import ActivitySnapshot
 from app.models.audio import AudioRecording, Transcription
 from app.models.case import Case
+from app.models.chat import ChatMessage
 from app.models.context_state import ContextState
 from app.models.document import Document
 from app.models.enterprise import EnterpriseAction, EnterpriseMessage
@@ -26,4 +27,5 @@ __all__ = [
     "StyleProfile",
     "Task",
     "Nudge",
+    "ChatMessage",
 ]

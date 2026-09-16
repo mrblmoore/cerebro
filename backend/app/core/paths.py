@@ -53,6 +53,7 @@ LOG_DIR = DATA_DIR / "logs"
 AUDIO_DIR = DATA_DIR / "audio"
 VECTOR_DIR = DATA_DIR / "vectors"
 ACTIVITY_DIR = DATA_DIR / "activity"
+CHAT_IMAGES_DIR = DATA_DIR / "chat_images"
 
 ENV_EXAMPLE = BACKEND_DIR / ".env.example"
 
@@ -62,7 +63,7 @@ DEFAULT_LOG_PATH = LOG_DIR / "cerebro.log"
 
 def ensure_data_dirs() -> None:
     """Create the runtime directories if they are missing."""
-    for directory in (DATA_DIR, LOG_DIR, AUDIO_DIR, VECTOR_DIR, ACTIVITY_DIR):
+    for directory in (DATA_DIR, LOG_DIR, AUDIO_DIR, VECTOR_DIR, ACTIVITY_DIR, CHAT_IMAGES_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 
