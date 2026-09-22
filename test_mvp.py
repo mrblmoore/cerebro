@@ -2024,6 +2024,7 @@ def test_power_automate_package():
 
         all_maps_resolve = True
         connector_auth_complete = True
+        operations = {}
 
         def connector_nodes(value):
             if isinstance(value, dict):
@@ -2034,6 +2035,18 @@ def test_power_automate_package():
             elif isinstance(value, list):
                 for child in value:
                     yield from connector_nodes(child)
+
+        def named_connector_nodes(value):
+            if isinstance(value, dict):
+                if str(value.get("type") or "").startswith("OpenApiConnection"):
+                    operation = value.get("inputs", {}).get("host", {}).get("operationId")
+                    if operation:
+                        yield operation, value
+                for child in value.values():
+                    yield from named_connector_nodes(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from named_connector_nodes(child)
 
         for flow_id in flow_ids:
             base = f"Microsoft.Flow/flows/{flow_id}"
@@ -2061,11 +2074,34 @@ def test_power_automate_package():
                 == "@parameters('$authentication')"
                 for node in connector_nodes(definition)
             )
+            operations.update(dict(named_connector_nodes(definition)))
 
         check("Connector maps resolve to declared package resources",
               all_maps_resolve)
         check("Every connector action receives import-time authentication",
               connector_auth_complete)
+        check("Polling mail and Teams triggers are not declared as webhooks",
+              operations.get("OnNewEmailV3", {}).get("type") == "OpenApiConnection"
+              and operations.get("OnNewChannelMessage", {}).get("type")
+              == "OpenApiConnection")
+        teams_trigger = operations.get("OnNewChannelMessage", {}).get("inputs", {})
+        check("Teams channel trigger uses required groupId and channelId",
+              teams_trigger.get("parameters", {}).get("groupId")
+              == "SELECT_TEAM_AFTER_IMPORT"
+              and teams_trigger.get("parameters", {}).get("channelId")
+              == "SELECT_CHANNEL_AFTER_IMPORT"
+              and "teamId" not in teams_trigger.get("parameters", {}))
+        dataverse_trigger = operations.get("SubscribeWebhookTrigger", {}).get("inputs", {})
+        check("Dataverse Case trigger uses the singular logical table name",
+              dataverse_trigger.get("parameters", {}).get(
+                  "subscriptionRequest/entityname") == "incident")
+        teams_post = operations.get("PostMessageToChannelV3", {}).get("inputs", {})
+        check("Teams outbound avoids import-time dynamic schema lookup",
+              "PostMessageToConversation" not in operations
+              and teams_post.get("parameters", {}).get("groupId")
+              == "SELECT_TEAM_AFTER_IMPORT"
+              and teams_post.get("parameters", {}).get("channelId")
+              == "SELECT_CHANNEL_AFTER_IMPORT")
         check("Nonstandard placeholder package files are gone",
               "connections.json" not in names
               and not any(name.endswith("/flow.json") for name in names))

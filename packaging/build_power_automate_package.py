@@ -15,17 +15,20 @@ other docs.
 Four flows ship, at different levels of "done":
 
 * **Outlook inbound/outbound** — fully wired. ``OnNewEmailV3``/``SendEmailV2``
-  and OneDrive's ``CreateFile``/``OnNewFile``/``DeleteFile`` take no
-  tenant-specific IDs, so nothing needs editing after import beyond picking
-  a connection.
+  and OneDrive's ``CreateFile``/``OnNewFile``/``DeleteFile`` need no
+  tenant-specific IDs.
 * **Dynamics 365 case updates** — also fully wired. The Case table's logical
-  name (``incidents``) is identical in every Dynamics environment, unlike a
-  Teams team/channel, so this is as safe to pre-fill as Outlook.
-* **Teams inbound** — wired end-to-end *except* the trigger's ``teamId``/
-  ``channelId``, which are unique per tenant and genuinely cannot be known
-  ahead of time. Importing this still saves building the whole flow; the one
-  remaining step is picking your team and channel from the trigger's own
-  dropdowns in the designer (see docs/POWER_AUTOMATE_QUICKSTART.md).
+  name is ``incident`` (singular) in Dataverse.
+* **Teams inbound/outbound** — wired end-to-end except for the tenant-specific
+  Team and Channel selections. The packaged definitions contain non-empty
+  setup markers so the legacy importer can save them; after import the user
+  replaces those markers from the trigger/action dropdowns.
+
+The Teams outbound branch intentionally uses the connector's fixed-schema V3
+channel action. The modern ``PostMessageToConversation`` action requests a
+tenant-specific dynamic schema during legacy-package import; Power Automate can
+make that metadata request before the selected connection is authenticated and
+reject the whole flow with ``GetUnifiedActionSchema``/``Unauthorized``.
 """
 
 import json
@@ -40,6 +43,12 @@ OUT_ZIP = OUT_DIR / "Cerebro-Bridge.zip"
 
 INBOX_PATH = "/Cerebro/enterprise-inbox"
 OUTBOX_PATH = "/Cerebro/enterprise-outbox"
+
+# Power Automate validates required connector parameters while it imports the
+# package. Empty strings make the legacy importer reject the definition before
+# the user gets a chance to pick their tenant-specific Team and Channel.
+SELECT_TEAM = "SELECT_TEAM_AFTER_IMPORT"
+SELECT_CHANNEL = "SELECT_CHANNEL_AFTER_IMPORT"
 
 CONNECTOR_NAMES = {
     "shared_office365": "Office 365 Outlook",
@@ -110,7 +119,8 @@ def _inbound_definition() -> dict:
         "parameters": {"$connections": {"defaultValue": {}, "type": "Object"}},
         "triggers": {
             "When_a_new_email_arrives": {
-                "type": "OpenApiConnectionWebhook",
+                # OnNewEmailV3 is a polling connector trigger, not a webhook.
+                "type": "OpenApiConnection",
                 "inputs": {
                     "host": {
                         "connectionName": "shared_office365",
@@ -165,8 +175,13 @@ def _inbound_definition() -> dict:
 
 
 def _outbound_definition() -> dict:
-    """A file appearing in the Cerebro outbox → sent as email (or, best-effort,
-    a Teams message) then deleted so it is never sent twice."""
+    """A Cerebro outbox file → email or the configured Teams channel.
+
+    The Teams action uses a fixed parameter schema so legacy package import
+    does not need an authenticated ``GetUnifiedActionSchema`` metadata call.
+    Its Team and Channel are deliberately setup markers that the user replaces
+    from two dropdowns after import.
+    """
     return {
         "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
         "contentVersion": "1.0.0.0",
@@ -252,13 +267,14 @@ def _outbound_definition() -> dict:
                             "inputs": {
                                 "host": {
                                     "connectionName": "shared_teams",
-                                    "operationId": "PostMessageToConversation",
+                                    "operationId": "PostMessageToChannelV3",
                                     "apiId": "/providers/Microsoft.PowerApps/apis/shared_teams",
                                 },
                                 "parameters": {
-                                    "poster": "Flow bot",
-                                    "location": "Channel",
-                                    "body/messageBody": "@body('Parse_JSON')?['body']",
+                                    "groupId": SELECT_TEAM,
+                                    "channelId": SELECT_CHANNEL,
+                                    "subject": "@body('Parse_JSON')?['subject']",
+                                    "content": "@body('Parse_JSON')?['body']",
                                 },
                             },
                             "runAfter": {},
@@ -288,7 +304,7 @@ def _teams_inbound_definition() -> dict:
     """
     Teams → the Cerebro inbox, same shape as the Outlook flow.
 
-    Unlike Outlook, this trigger needs a specific ``teamId``/``channelId`` —
+    Unlike Outlook, this trigger needs a specific ``groupId``/``channelId`` —
     those are unique per tenant and can't be filled in ahead of time. The
     trigger and action are wired end-to-end so importing this only leaves one
     thing to do: open the trigger step in the designer and pick your team and
@@ -300,15 +316,20 @@ def _teams_inbound_definition() -> dict:
         "parameters": {"$connections": {"defaultValue": {}, "type": "Object"}},
         "triggers": {
             "When_a_new_channel_message_is_added": {
-                "type": "OpenApiConnectionWebhook",
+                # OnNewChannelMessage is polling; Power Automate rejects it if
+                # it is declared as OpenApiConnectionWebhook.
+                "type": "OpenApiConnection",
                 "inputs": {
                     "host": {
                         "connectionName": "shared_teams",
                         "operationId": "OnNewChannelMessage",
                         "apiId": "/providers/Microsoft.PowerApps/apis/shared_teams",
                     },
-                    # Left blank on purpose — pick your team/channel after import.
-                    "parameters": {"teamId": "", "channelId": ""},
+                    # Replace these two markers from the designer dropdowns.
+                    "parameters": {
+                        "groupId": SELECT_TEAM,
+                        "channelId": SELECT_CHANNEL,
+                    },
                 },
             }
         },
@@ -348,7 +369,7 @@ def _dynamics_inbound_definition() -> dict:
     """
     Dynamics 365 (Dataverse) case created/updated → the Cerebro inbox.
 
-    Unlike Teams, the Case table's logical name (``incidents``) is identical
+    Unlike Teams, the Case table's logical name (``incident``) is identical
     in every Dynamics 365 environment, so — unlike a team/channel — this
     trigger is safe to ship fully filled in. It complements the browser
     extension: the extension only notices a case while someone has it open;
@@ -373,7 +394,7 @@ def _dynamics_inbound_definition() -> dict:
                     },
                     "parameters": {
                         "subscriptionRequest/message": 4,      # Added or Modified
-                        "subscriptionRequest/entityname": "incidents",  # the Case table
+                        "subscriptionRequest/entityname": "incident",  # the Case table
                         "subscriptionRequest/scope": 4,         # Organization
                     },
                     "authentication": "@parameters('$authentication')",
@@ -419,7 +440,7 @@ def build() -> Path:
     flows = [
         ("Cerebro - Outlook inbound", _inbound_definition(),
          ("shared_office365", "shared_onedriveforbusiness")),
-        ("Cerebro - Outlook outbound", _outbound_definition(),
+        ("Cerebro - Microsoft 365 outbound (pick Teams destination after import)", _outbound_definition(),
          ("shared_office365", "shared_onedriveforbusiness", "shared_teams")),
         ("Cerebro - Teams inbound (pick your team/channel after import)", _teams_inbound_definition(),
          ("shared_teams", "shared_onedriveforbusiness")),
