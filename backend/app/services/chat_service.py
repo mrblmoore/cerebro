@@ -58,6 +58,27 @@ IMMEDIATE_REQUESTS = (
     "read this", "look at", "find in", "tell me about",
 )
 
+VISUAL_REQUEST_MARKERS = (
+    "image", "picture", "photo", "screenshot", "diagram", "figure",
+    "chart", "graph", "visual", "illustration", "looks like",
+)
+
+DOCUMENT_REFERENCE_MARKERS = (
+    "this document", "the document", "this file", "the file", "this slide",
+    "the slide", "this page", "the page", "this deck", "the deck",
+    "this pdf", "the pdf", "this report", "the report",
+)
+
+QUERY_STOPWORDS = {
+    "about", "again", "also", "and", "are", "can", "could", "does",
+    "chart", "deck", "diagram", "document", "figure", "file", "for",
+    "from", "give", "graph", "have", "how", "illustration", "image",
+    "into", "look", "looks", "make", "page", "pdf", "photo", "picture",
+    "please", "reference", "report", "screenshot", "show", "slide", "that",
+    "the", "this", "visual", "what", "when", "where", "which", "with",
+    "would", "you",
+}
+
 
 def _looks_like_instruction(text: str) -> bool:
     lowered = text.lower()
@@ -74,6 +95,23 @@ def _looks_like_question(text: str) -> bool:
     if lowered.endswith("?"):
         return True
     return any(lowered.startswith(starter) for starter in QUESTION_STARTERS)
+
+
+def _query_terms(text: str) -> set:
+    return {
+        token for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(token) > 2 and token not in QUERY_STOPWORDS
+    }
+
+
+def _requests_visual(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in VISUAL_REQUEST_MARKERS)
+
+
+def _references_document(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in DOCUMENT_REFERENCE_MARKERS)
 
 
 def _missing_field(parsed: Dict[str, Any], context: Dict[str, Any]) -> Optional[str]:
@@ -256,24 +294,92 @@ class ChatService:
 
         return snippets[: limit * 2]
 
-    def _document_images_for_answer(self, limit: int = 2) -> List[Dict[str, str]]:
+    def _recent_answer_image_names(self, limit: int = 12) -> set:
+        """Images already shown recently, so a follow-up does not repeat them."""
+        rows = (self.db.query(ChatMessage)
+                .filter(ChatMessage.role == "assistant",
+                        ChatMessage.meta.isnot(None))
+                .order_by(ChatMessage.id.desc()).limit(limit).all())
+        seen = set()
+        for row in rows:
+            try:
+                meta = json.loads(row.meta or "{}")
+            except (TypeError, ValueError):
+                continue
+            for item in meta.get("images") or []:
+                if isinstance(item, dict) and item.get("image"):
+                    seen.add(item["image"])
+        return seen
+
+    def _document_images_for_answer(self, text: str,
+                                    context: Dict[str, Any] = None,
+                                    limit: int = 2) -> List[Dict[str, str]]:
         """
-        Images pulled from whatever document Cerebro most recently saw —
-        "the diagram on page 3" is worth showing, not just quoting near.
+        Return document images only when the question actually asks for a
+        visual/document reference, from a document relevant to that question.
+
+        Previously every answer received the first images from the most recent
+        document. That made an unrelated old diagram appear beside a general
+        question and let the same image repeat on consecutive turns.
         """
         from app.models.tracked_document import TrackedDocument
         from app.services import chat_images
 
+        visual_request = _requests_visual(text)
+        document_reference = _references_document(text)
+        if not visual_request and not document_reference:
+            return []
+
+        context = context or {}
+        active_document = str(context.get("active_document") or "").lower()
+        terms = _query_terms(text)
+
         try:
-            doc = (self.db.query(TrackedDocument)
-                  .filter(TrackedDocument.kind.in_(("docx", "pptx", "pdf")))
-                  .order_by(TrackedDocument.last_seen.desc())
-                  .first())
-            if not doc:
-                return []
+            docs = (self.db.query(TrackedDocument)
+                    .filter(TrackedDocument.kind.in_(("docx", "pptx", "pdf")))
+                    .order_by(TrackedDocument.last_seen.desc(),
+                              TrackedDocument.id.desc())
+                    .limit(12).all())
             from pathlib import Path
 
-            return chat_images.extract_document_images(Path(doc.path), doc.kind, limit=limit)
+            candidates = []
+            for recency, doc in enumerate(docs):
+                path_name = str(doc.path or "").lower()
+                doc_name = str(doc.name or "").lower()
+                active = bool(active_document and (
+                    active_document == path_name
+                    or (doc_name and active_document.endswith(doc_name))
+                    or (doc_name and doc_name == active_document)
+                ))
+                searchable = " ".join(filter(None, (
+                    doc.name, doc.summary, (doc.text_preview or "")[:8000]
+                )))
+                document_terms = _query_terms(searchable)
+                overlap = terms.intersection(document_terms)
+
+                # A topical visual request must match the document unless the
+                # UI explicitly says that document is active. A bare request
+                # such as "show the diagram" may use the freshest document.
+                if terms and not overlap and not active:
+                    continue
+                score = (100 if active else 0) + len(overlap) * 10 - recency
+                candidates.append((score, doc))
+
+            seen = self._recent_answer_image_names()
+            selected = []
+            selected_names = set(seen)
+            for _, doc in sorted(candidates, key=lambda item: item[0], reverse=True):
+                extracted = chat_images.extract_document_images(
+                    Path(doc.path), doc.kind, limit=max(6, limit * 3))
+                for item in extracted:
+                    name = item.get("image") if isinstance(item, dict) else None
+                    if not name or name in selected_names:
+                        continue
+                    selected.append(item)
+                    selected_names.add(name)
+                    if len(selected) >= limit:
+                        return selected
+            return selected
         except Exception as exc:  # noqa: BLE001 - illustrating an answer is optional
             logger.warn("chat", "Document image lookup failed", {"error": str(exc)})
             return []
@@ -312,7 +418,7 @@ class ChatService:
             hits = []
 
         sources = SourceService(self.db).context_for_query(text, limit=6)
-        images = self._document_images_for_answer()
+        images = self._document_images_for_answer(text, context)
         indexed_sources = [{
             "ref": hit.get("citation") or f"K{index}",
             "title": hit.get("title"), "kind": "knowledge",
