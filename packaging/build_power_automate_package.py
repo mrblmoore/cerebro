@@ -41,19 +41,48 @@ OUT_ZIP = OUT_DIR / "Cerebro-Bridge.zip"
 INBOX_PATH = "/Cerebro/enterprise-inbox"
 OUTBOX_PATH = "/Cerebro/enterprise-outbox"
 
+CONNECTOR_NAMES = {
+    "shared_office365": "Office 365 Outlook",
+    "shared_onedriveforbusiness": "OneDrive for Business",
+    "shared_teams": "Microsoft Teams",
+    "shared_commondataserviceforapps": "Microsoft Dataverse",
+}
 
-def _connection_reference(api_name: str) -> dict:
+
+def _connection_reference(api_name: str, connection_name: str) -> dict:
     """
     An unresolved connection reference. Power Automate's import wizard shows
     each of these as "Select during import" and lets the user pick or create
     the real connection — nothing here needs to be a genuine identifier.
     """
     return {
-        "connectionName": "",
-        "source": "Invoker",
+        "connectionName": connection_name,
+        "source": "Embedded",
         "id": f"/providers/Microsoft.PowerApps/apis/{api_name}",
         "tier": "NotSpecified",
     }
+
+
+def _add_connector_authentication(definition: dict) -> dict:
+    """Make connector actions match Power Automate's exported-flow contract."""
+    parameters = definition.setdefault("parameters", {})
+    parameters.setdefault(
+        "$authentication", {"defaultValue": {}, "type": "SecureObject"})
+
+    def visit(node):
+        if isinstance(node, dict):
+            node_type = str(node.get("type") or "")
+            inputs = node.get("inputs")
+            if node_type.startswith("OpenApiConnection") and isinstance(inputs, dict):
+                inputs.setdefault("authentication", "@parameters('$authentication')")
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(definition)
+    return definition
 
 
 def _wrapped_flow(flow_id: str, display_name: str, definition: dict, connection_refs: dict) -> dict:
@@ -389,39 +418,89 @@ def build() -> Path:
 
     flows = [
         ("Cerebro - Outlook inbound", _inbound_definition(),
-         {"shared_office365": _connection_reference("shared_office365"),
-          "shared_onedriveforbusiness": _connection_reference("shared_onedriveforbusiness")}),
+         ("shared_office365", "shared_onedriveforbusiness")),
         ("Cerebro - Outlook outbound", _outbound_definition(),
-         {"shared_office365": _connection_reference("shared_office365"),
-          "shared_onedriveforbusiness": _connection_reference("shared_onedriveforbusiness"),
-          "shared_teams": _connection_reference("shared_teams")}),
+         ("shared_office365", "shared_onedriveforbusiness", "shared_teams")),
         ("Cerebro - Teams inbound (pick your team/channel after import)", _teams_inbound_definition(),
-         {"shared_teams": _connection_reference("shared_teams"),
-          "shared_onedriveforbusiness": _connection_reference("shared_onedriveforbusiness")}),
+         ("shared_teams", "shared_onedriveforbusiness")),
         ("Cerebro - Dynamics 365 case updates", _dynamics_inbound_definition(),
-         {"shared_commondataserviceforapps": _connection_reference("shared_commondataserviceforapps"),
-          "shared_onedriveforbusiness": _connection_reference("shared_onedriveforbusiness")}),
+         ("shared_commondataserviceforapps", "shared_onedriveforbusiness")),
     ]
 
     manifest_resources = {}
-    connections_all = {}
-    entries = []  # (flow_id, wrapped_definition)
+    connector_assets = {}
+    for api_name in sorted({api for _, _, apis in flows for api in apis}):
+        api_asset_id = str(uuid.uuid4())
+        connection_asset_id = str(uuid.uuid4())
+        display_name = CONNECTOR_NAMES[api_name]
+        connection_name = f"{api_name.replace('_', '-')}-{uuid.uuid4()}"
 
-    for display_name, definition, conn_refs in flows:
+        manifest_resources[api_asset_id] = {
+            "id": f"/providers/Microsoft.PowerApps/apis/{api_name}",
+            "name": api_name,
+            "type": "Microsoft.PowerApps/apis",
+            "suggestedCreationType": "Existing",
+            "details": {"displayName": display_name},
+            "configurableBy": "System",
+            "hierarchy": "Child",
+            "dependsOn": [],
+        }
+        manifest_resources[connection_asset_id] = {
+            "type": "Microsoft.PowerApps/apis/connections",
+            "suggestedCreationType": "Existing",
+            "creationType": "Existing",
+            "details": {"displayName": f"Select {display_name} connection"},
+            "configurableBy": "User",
+            "hierarchy": "Child",
+            "dependsOn": [api_asset_id],
+        }
+        connector_assets[api_name] = {
+            "api": api_asset_id,
+            "connection": connection_asset_id,
+            "connection_name": connection_name,
+        }
+
+    entries = []  # (flow_id, wrapped_definition, apis_map, connections_map)
+
+    for display_name, definition, api_names in flows:
         flow_id = str(uuid.uuid4())
+        dependency_ids = [
+            asset_id
+            for api_name in api_names
+            for asset_id in (connector_assets[api_name]["api"],
+                             connector_assets[api_name]["connection"])
+        ]
         manifest_resources[flow_id] = {
             "type": "Microsoft.Flow/flows",
             "suggestedCreationType": "New",
-            "creationType": "New",
+            "creationType": "Existing, New, Update",
             "configurableBy": "User",
             "hierarchy": "Root",
-            "dependsOn": [],
+            "dependsOn": dependency_ids,
             "details": {"displayName": display_name},
             "id": f"/providers/Microsoft.Flow/flows/{flow_id}",
             "name": flow_id,
         }
-        entries.append((flow_id, _wrapped_flow(flow_id, display_name, definition, conn_refs)))
-        connections_all.update(conn_refs)
+        conn_refs = {
+            api_name: _connection_reference(
+                api_name, connector_assets[api_name]["connection_name"])
+            for api_name in api_names
+        }
+        apis_map = {
+            api_name: connector_assets[api_name]["api"]
+            for api_name in api_names
+        }
+        connections_map = {
+            api_name: connector_assets[api_name]["connection"]
+            for api_name in api_names
+        }
+        definition = _add_connector_authentication(definition)
+        entries.append((
+            flow_id,
+            _wrapped_flow(flow_id, display_name, definition, conn_refs),
+            apis_map,
+            connections_map,
+        ))
 
     manifest = {
         "schema": "1.0",
@@ -435,19 +514,27 @@ def build() -> Path:
         },
         "resources": manifest_resources,
     }
-    connections_json = {"connectionReferences": connections_all}
+    flow_manifest = {
+        "packageSchemaVersion": "1.0",
+        "flowAssets": {"assetPaths": [flow_id for flow_id, *_ in entries]},
+    }
 
     if OUT_ZIP.exists():
         OUT_ZIP.unlink()
     with zipfile.ZipFile(OUT_ZIP, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-        zf.writestr("connections.json", json.dumps(connections_json, indent=2))
-        for flow_id, wrapped in entries:
+        zf.writestr(
+            "Microsoft.Flow/flows/manifest.json",
+            json.dumps(flow_manifest, indent=2),
+        )
+        for flow_id, wrapped, apis_map, connections_map in entries:
             base = f"Microsoft.Flow/flows/{flow_id}"
             zf.writestr(f"{base}/definition.json", json.dumps(wrapped, indent=2))
-            zf.writestr(f"{base}/flow.json", json.dumps(
-                {"properties": {"displayName": wrapped["properties"]["displayName"], "state": "Stopped"}},
-                indent=2))
+            zf.writestr(f"{base}/apisMap.json", json.dumps(apis_map, indent=2))
+            zf.writestr(
+                f"{base}/connectionsMap.json",
+                json.dumps(connections_map, indent=2),
+            )
 
     return OUT_ZIP
 

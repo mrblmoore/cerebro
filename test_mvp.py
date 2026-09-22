@@ -1980,6 +1980,9 @@ def test_setup_and_package_contract():
     check("CI builds the importable flow before PyInstaller collects assets",
           workflow.index("Build the Power Automate import package")
           < workflow.index("Build the executables"))
+    check("Releases include the standalone Power Automate bridge",
+          "packaging/power_automate/dist/Cerebro-Bridge.zip" in workflow
+          and "name: Cerebro-Bridge" in workflow)
 
     popup = (ROOT / "browser-extension" / "src" / "popup.html").read_text(encoding="utf-8")
     manifest_text = (ROOT / "browser-extension" / "src" / "manifest.json").read_text(encoding="utf-8")
@@ -1989,6 +1992,83 @@ def test_setup_and_package_contract():
           '"activeTab"' in manifest_text and '"scripting"' in manifest_text)
     check("Excluded domains also block explicit capture",
           "excludedDomains" in background and "CAPTURE_ACTIVE" in background)
+
+
+def test_power_automate_package():
+    """The generated ZIP must match Power Automate's exported package layout."""
+    print("\nPower Automate package")
+    import runpy
+    import zipfile
+
+    builder = runpy.run_path(
+        str(ROOT / "packaging" / "build_power_automate_package.py"),
+        run_name="cerebro_power_automate_builder",
+    )
+    package = builder["build"]()
+
+    with zipfile.ZipFile(package) as archive:
+        names = set(archive.namelist())
+        manifest = json.loads(archive.read("manifest.json"))
+        flow_manifest_path = "Microsoft.Flow/flows/manifest.json"
+        check("Package contains the Microsoft.Flow flow manifest",
+              flow_manifest_path in names)
+        flow_manifest = json.loads(archive.read(flow_manifest_path))
+        flow_ids = flow_manifest["flowAssets"]["assetPaths"]
+
+        root_flow_ids = {
+            resource_id for resource_id, resource in manifest["resources"].items()
+            if resource["type"] == "Microsoft.Flow/flows"
+        }
+        check("Flow manifest lists every packaged flow",
+              set(flow_ids) == root_flow_ids and len(flow_ids) == 4)
+
+        all_maps_resolve = True
+        connector_auth_complete = True
+
+        def connector_nodes(value):
+            if isinstance(value, dict):
+                if str(value.get("type") or "").startswith("OpenApiConnection"):
+                    yield value
+                for child in value.values():
+                    yield from connector_nodes(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from connector_nodes(child)
+
+        for flow_id in flow_ids:
+            base = f"Microsoft.Flow/flows/{flow_id}"
+            required = {
+                f"{base}/definition.json",
+                f"{base}/apisMap.json",
+                f"{base}/connectionsMap.json",
+            }
+            check(f"{flow_id[:8]} has definition and connector maps",
+                  required.issubset(names))
+
+            wrapped = json.loads(archive.read(f"{base}/definition.json"))
+            apis_map = json.loads(archive.read(f"{base}/apisMap.json"))
+            connections_map = json.loads(
+                archive.read(f"{base}/connectionsMap.json"))
+            references = wrapped["properties"]["connectionReferences"]
+            all_maps_resolve = all_maps_resolve and (
+                set(apis_map) == set(connections_map) == set(references)
+                and all(asset in manifest["resources"]
+                        for asset in (*apis_map.values(), *connections_map.values()))
+            )
+            definition = wrapped["properties"]["definition"]
+            connector_auth_complete = connector_auth_complete and all(
+                node.get("inputs", {}).get("authentication")
+                == "@parameters('$authentication')"
+                for node in connector_nodes(definition)
+            )
+
+        check("Connector maps resolve to declared package resources",
+              all_maps_resolve)
+        check("Every connector action receives import-time authentication",
+              connector_auth_complete)
+        check("Nonstandard placeholder package files are gone",
+              "connections.json" not in names
+              and not any(name.endswith("/flow.json") for name in names))
 
 
 def test_screenpipe_current_api():
@@ -2091,6 +2171,60 @@ def test_chat_service():
     db.close()
 
 
+def test_chat_reference_images():
+    """Reference images must be relevant, requested and not recently repeated."""
+    print("\nChat — relevant reference images")
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+
+    from app.models.tracked_document import TrackedDocument
+    from app.services.chat_service import ChatService
+
+    db = session()
+    now = datetime.utcnow()
+    db.add_all([
+        TrackedDocument(
+            path=str(Path(_TEMP_DIR) / "printer-guide.pdf"),
+            name="Printer troubleshooting guide.pdf", kind="pdf",
+            text_preview="Printer spooler, fuser and paper path troubleshooting diagram.",
+            last_seen=now - timedelta(minutes=2),
+        ),
+        TrackedDocument(
+            path=str(Path(_TEMP_DIR) / "vacation-guide.pdf"),
+            name="Vacation guide.pdf", kind="pdf",
+            text_preview="Beach resort map, restaurant list and airport transfers.",
+            last_seen=now,
+        ),
+    ])
+    db.commit()
+    chat = ChatService(db)
+
+    def fake_extract(path, kind, limit=2):
+        name = "printer-reference.png" if "printer" in str(path) else "vacation-map.png"
+        return [{"image": name, "caption": Path(path).name}]
+
+    with patch("app.services.chat_images.extract_document_images",
+               side_effect=fake_extract) as extract:
+        ordinary = chat._document_images_for_answer(
+            "Why is the printer spooler stuck?", {})
+        check("Ordinary answers do not receive unsolicited images",
+              ordinary == [] and extract.call_count == 0)
+
+        relevant = chat._document_images_for_answer(
+            "Show me the printer diagram", {})
+        check("A visual request chooses the relevant document",
+              [item["image"] for item in relevant] == ["printer-reference.png"])
+
+        chat._store("assistant", "Here it is.", kind="answer",
+                    meta={"images": relevant})
+        repeated = chat._document_images_for_answer(
+            "Show me the printer diagram again", {})
+        check("A recently shown reference image is not duplicated",
+              repeated == [])
+
+    db.close()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -2122,7 +2256,9 @@ def main() -> int:
                   test_copilot_bridge, test_copilot_guide,
                   test_copilot_approval_flow, test_copilot_memory_redaction,
                   test_settings_store, test_setup_and_package_contract,
-                  test_screenpipe_current_api, test_chat_service):
+                  test_power_automate_package,
+                  test_screenpipe_current_api, test_chat_service,
+                  test_chat_reference_images):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
