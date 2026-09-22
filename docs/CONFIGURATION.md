@@ -35,6 +35,11 @@ everything.
 Changing the database needs a restart. Install the driver first:
 the PostgreSQL driver, which setup already installed.
 
+**Test connection** creates a temporary table, writes and reads a value, and
+reports the exact credential-free location and number of Cerebro tables. This
+tests the value currently shown in Settings, including the built-in database,
+rather than merely checking an engine opened before the setting changed.
+
 ## AI Provider
 
 Optional. With `LLM_PROVIDER=none` Cerebro still tracks context, events and
@@ -95,6 +100,21 @@ binary; the installed Cerebro widget detects and launches an official Screenpipe
 installation when available. Cerebro's own widget, desktop agent, and optional
 privacy-controlled activity capture are included in the Windows installer.
 
+## Documents and SharePoint
+
+| Setting | Default | Notes |
+|---|---|---|
+| `DOCUMENTS_ENABLED` | `true` | Read supported documents explicitly opened or found in watched folders |
+| `DOCUMENT_WATCH_DIRS` | — | One allowed folder per line |
+| `SHAREPOINT_SYNC_ROOTS` | — | Local OneDrive/SharePoint library roots |
+| `SHAREPOINT_GRAPH_ENABLED` | `false` | Add direct, read-only Graph search for remote-only files |
+| `MICROSOFT_TENANT_ID` | `common` | Tenant domain/ID, or `common` for a multi-tenant registration |
+| `MICROSOFT_CLIENT_ID` | — | Administrator-approved public-client application ID |
+
+Direct SharePoint uses delegated sign-in and asks only for `Sites.Read.All`,
+`Files.Read.All`, and `User.Read`. The connection is initiated from Sources;
+there is no client secret to paste into Cerebro.
+
 ## Logging
 
 | Setting | Default | Notes |
@@ -115,7 +135,10 @@ the file to start fresh.
 ## Extension settings
 
 The browser extension stores its API URL and per-CRM toggles in Chrome's synced
-storage. Open them from the extension's options page.
+storage. Open them from the extension's options page. **Read this page** is an
+explicit one-tab capture: it uses Chrome's temporary `activeTab` permission,
+checks the excluded-domain list, and reports whether readable text was actually
+accepted. Ambient all-tab text capture remains off by default.
 
 ---
 

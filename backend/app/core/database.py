@@ -1,6 +1,8 @@
 """SQLAlchemy engine/session wiring, tuned for the default SQLite setup."""
 
-from sqlalchemy import create_engine
+from pathlib import Path
+
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import settings
@@ -95,9 +97,58 @@ def _add_missing_columns() -> None:
                 })
 
 
+def _display_database(url: str, dialect: str) -> str:
+    """A useful, credential-free description of the database being tested."""
+    if dialect == "sqlite":
+        path = str(url).split("///", 1)[-1]
+        return str(Path(path).resolve())
+    from app.core.settings_store import mask_url_password
+
+    return mask_url_password(str(url))
+
+
+def probe_database(url: str, initialize: bool = False) -> dict:
+    """Test the configured URL itself, including a write/read transaction.
+
+    The application's global engine is created at process start.  Setup can
+    change ``DATABASE_URL`` in the same process, so testing that global engine
+    would prove the *old* database and give a false green result.  A short-lived
+    engine makes the button authoritative for the value currently on screen.
+    """
+    candidate = None
+    try:
+        candidate = _engine_for(url)
+        if initialize:
+            import app.models  # noqa: F401
+
+            Base.metadata.create_all(bind=candidate)
+        with candidate.begin() as connection:
+            connection.execute(text("CREATE TEMPORARY TABLE cerebro_setup_probe (value INTEGER)"))
+            connection.execute(text("INSERT INTO cerebro_setup_probe (value) VALUES (1)"))
+            value = connection.execute(text("SELECT value FROM cerebro_setup_probe")).scalar_one()
+            if value != 1:
+                raise RuntimeError("The database did not return the value Cerebro wrote.")
+        table_count = len(inspect(candidate).get_table_names())
+        location = _display_database(url, candidate.dialect.name)
+        label = "Built-in SQLite" if candidate.dialect.name == "sqlite" else candidate.dialect.name
+        return {
+            "ok": True,
+            "detail": (f"{label} is configured and writable at {location}. "
+                       f"Cerebro found {table_count} application tables."),
+            "dialect": candidate.dialect.name,
+            "location": location,
+            "tables": table_count,
+            "writable": True,
+        }
+    except Exception as exc:  # noqa: BLE001 - returned to the setup UI
+        return {"ok": False, "detail": _explain(str(exc)), "writable": False}
+    finally:
+        if candidate is not None:
+            candidate.dispose()
+
+
 def check_database() -> dict:
-    """Connectivity probe used by diagnostics, the settings page and setup."""
-    from sqlalchemy import text
+    """Connectivity probe for the database used by this running process."""
 
     if ENGINE_ERROR:
         return {"ok": False, "detail": _explain(ENGINE_ERROR), "fell_back": True}

@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core import check_database, logger, settings, settings_store
+from app.core.database import probe_database
 from app.core.paths import BUNDLE_ROOT, ENV_FILE, EXTENSION_DIR, FROZEN, PROJECT_ROOT, default_database_url
 from app.core.database import get_db
 from app.services import document_service, enterprise_service
@@ -259,7 +260,7 @@ async def complete_setup() -> Dict[str, Any]:
 def test_connection(target: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Verify one integration on demand, from the Settings screen."""
     if target == "database":
-        return check_database()
+        return probe_database(settings.DATABASE_URL, initialize=True)
     if target == "ai":
         return LLMService().test_connection()
     if target == "knowledge":

@@ -153,6 +153,23 @@ async function renderPage(config) {
     window.location.reload();
   };
   $('dashboard').onclick = () => chrome.tabs.create({ url: config.apiUrl });
+  $('capture-page').onclick = async () => {
+    const button = $('capture-page');
+    const result = $('capture-result');
+    button.disabled = true;
+    button.textContent = 'Reading…';
+    try {
+      const reply = await chrome.runtime.sendMessage({ type: 'CAPTURE_ACTIVE' });
+      if (!reply || !reply.ok) throw new Error((reply && reply.error) || 'Page could not be read');
+      button.textContent = 'Page attached ✓';
+      result.textContent = `${reply.characters.toLocaleString()} characters are now available in Ask.`;
+      renderContext(config, { online: true });
+    } catch (error) {
+      button.textContent = 'Try again';
+      result.textContent = error.message;
+      button.disabled = false;
+    }
+  };
   $('options').onclick = (event) => {
     event.preventDefault();
     chrome.runtime.openOptionsPage();

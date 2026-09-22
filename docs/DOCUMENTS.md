@@ -10,7 +10,7 @@ so you can ask about them, search them, and have it make edits for you.
 | Word `.docx` | ✅ text, headings, tables | ✅ |
 | Excel `.xlsx` | ✅ every sheet, values and headers | ✅ |
 | PowerPoint `.pptx` | ✅ slide text | — |
-| PDF | ✅ text (not scans) | — |
+| PDF | ✅ text and local OCR for scanned pages | — |
 | CSV / TSV | ✅ | — |
 | Text / Markdown | ✅ | — |
 
@@ -19,7 +19,8 @@ modern format and Cerebro reads them.
 
 ## How documents reach Cerebro
 
-**The desktop watcher** notices what you have open:
+**The desktop watcher** notices what you have open. It starts with the widget;
+the command below is only useful for running it by itself while developing:
 
 ```
 python cerebro.py watch
@@ -29,8 +30,9 @@ It looks for the `~$name.docx` lock files Word and Excel create while a document
 is open, and reads the active window title. Nothing is installed into Office.
 
 **The browser extension** catches documents you open from SharePoint, OneDrive or
-Office online. Cerebro finds the locally synced copy, so it can read and edit the
-real file rather than a web view.
+Office online. Cerebro first looks for a locally synced copy. If direct
+SharePoint access is configured, it can instead download a read-only working
+copy through Microsoft Graph.
 
 **Or point it at one directly:**
 
@@ -42,9 +44,8 @@ curl -X POST http://localhost:8000/api/documents/observe \
 
 ## SharePoint links
 
-Cerebro does not call the Graph API. In a managed environment your libraries are
-synced by OneDrive, so the file is already on disk — Cerebro takes the filename
-out of the SharePoint URL and finds it in your sync roots.
+The zero-configuration path uses files already synced by OneDrive: Cerebro takes
+the filename out of a SharePoint URL and finds it in your sync roots.
 
 Set those roots in **Settings → Documents → SharePoint / OneDrive sync roots**,
 one per line:
@@ -56,6 +57,25 @@ C:\Users\you\OneDrive - Contoso Ltd
 
 If a link cannot be matched, Cerebro says which file it was looking for rather
 than failing silently. Usually it means that library is not synced locally.
+
+For libraries that are not synced, enable **Connect directly to SharePoint** in
+Settings → Documents and enter an administrator-approved public-client app ID.
+Then open **Sources → Connect**. Sign-in uses Microsoft's device-code flow and
+delegated `Sites.Read.All`, `Files.Read.All`, and `User.Read` permissions. Search
+results can be opened directly into Ask; tokens and downloaded working copies
+stay in Cerebro's local data directory.
+
+## Sources and citations
+
+Every readable browser page, local document, SharePoint file, approved activity
+capture, Screenpipe OCR result, and ingested Outlook/Teams message appears in
+**Sources**. Include/exclude controls decide what Ask may use. Current sources
+are preferred; recent passive sources remain available for eight hours.
+
+Indexed documents are split at pages, slides, sheets, and headings. Ask receives
+the most relevant sections and returns citations such as `[K1] Page 4`; browser
+and live sources use `[S1]`. This avoids silently grounding an answer in the
+beginning of a long document when the relevant text is later in the file.
 
 ## Asking about a document
 
@@ -144,8 +164,8 @@ them. A value starting with `=` is written as a formula.
 ## Limits
 
 - Documents over 25 MB are skipped (raise it in Settings → Documents).
-- Scanned PDFs have no extractable text; Cerebro says so rather than returning
-  an empty document. There is no OCR yet.
+- Scanned or image-only PDF pages are OCRed locally. Handwriting, low-resolution
+  scans, and unusual layouts can still need verification against the original.
 - Excel reads the first 400 rows per sheet for context. Edits are not limited.
 - Word editing preserves paragraph formatting but rewrites the runs inside a
   changed paragraph, so mixed formatting *within* one paragraph is flattened.

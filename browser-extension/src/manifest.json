@@ -6,7 +6,9 @@
   "permissions": [
     "storage",
     "tabs",
-    "alarms"
+    "alarms",
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
     "http://localhost/*",

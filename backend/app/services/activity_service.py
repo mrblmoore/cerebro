@@ -89,6 +89,28 @@ class ActivityService:
         self.db.commit()
         self.db.refresh(snapshot)
 
+        source_text = redacted_text
+        if screenshot_path and not source_text:
+            from app.services import ocr_service
+
+            recognised = ocr_service.image_text(ACTIVITY_DIR / screenshot_path)
+            if recognised:
+                source_text, extra_fired = redaction.redact(
+                    recognised, redact_pii=settings.ACTIVITY_REDACT_PII)
+                fired.extend(rule for rule in extra_fired if rule not in fired)
+                snapshot.text = source_text
+                snapshot.redacted = ",".join(fired) or None
+                self.db.commit()
+
+        from app.services.source_service import SourceService
+
+        SourceService(self.db).observe(
+            "activity", str(snapshot.id), window_title or application or "Desktop activity",
+            uri=url, content=source_text, readable=bool(source_text), active=False,
+            metadata={"snapshot_id": snapshot.id, "application": application,
+                      "kind": kind, "case_id": case_id},
+            error=None if source_text else "No readable text captured")
+
         if fired:
             logger.info("activity", "Captured with redaction",
                         {"kind": kind, "removed": fired})

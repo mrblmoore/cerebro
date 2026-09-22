@@ -234,20 +234,39 @@ def read_pdf(path: Path) -> Dict[str, Any]:
     lines: List[str] = []
     pages: List[Dict[str, Any]] = []
 
+    missing_pages = []
+    page_text = {}
     for number, page in enumerate(reader.pages, start=1):
         try:
             text = (page.extract_text() or "").strip()
         except Exception:
             text = ""
+        page_text[number] = text
+        if len(text) < 20:
+            missing_pages.append(number)
         pages.append({"number": number, "characters": len(text)})
+
+    # Text extraction and OCR complement each other.  OCR only the pages that
+    # appear blank, rather than rasterising a healthy 200-page manual.
+    if missing_pages:
+        from app.services import ocr_service
+
+        for number, text in ocr_service.pdf_pages(path, missing_pages).items():
+            page_text[number] = text
+            pages[number - 1]["characters"] = len(text)
+            pages[number - 1]["ocr"] = True
+
+    for number in range(1, len(reader.pages) + 1):
+        text = page_text.get(number, "")
         if text:
-            lines.append(f"\n## Page {number}\n{text}")
+            suffix = " (OCR)" if pages[number - 1].get("ocr") else ""
+            lines.append(f"\n## Page {number}{suffix}\n{text}")
 
     body = "\n".join(lines)
     if not body.strip():
         raise DocumentError(
-            f"{path.name} has no extractable text — it is probably a scan. "
-            "Cerebro cannot OCR it yet."
+            f"{path.name} has no extractable text. Local OCR is unavailable or "
+            "could not recognise the scan."
         )
 
     return {

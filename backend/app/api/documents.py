@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.api.system import require_local_origin
 from app.models.tracked_document import TrackedDocument
 from app.services import document_editors, document_readers, document_service
 from app.services.document_readers import DocumentError
@@ -80,12 +81,21 @@ def observe(request: ObserveRequest, db: Session = Depends(get_db)) -> Dict[str,
     if not path and request.web_url:
         resolved = document_service.resolve_sharepoint(request.web_url)
         if resolved is None:
+            if settings.SHAREPOINT_GRAPH_ENABLED:
+                from app.services.sharepoint_service import SharePointService
+
+                try:
+                    return SharePointService().open_url(request.web_url, db)
+                except Exception:
+                    # The actionable local/Graph explanation below is more
+                    # useful than leaking an HTTP or token exception here.
+                    pass
             filename = document_service.filename_from_url(request.web_url)
             raise HTTPException(
                 status_code=404,
                 detail=(f"Could not find {filename or 'that document'} in any synced folder. "
-                        "Add the OneDrive sync root in Settings → Documents, or sync the "
-                        "library locally."),
+                        "Add the OneDrive sync root, sync the library locally, or connect "
+                        "direct SharePoint access in Sources."),
             )
         path = str(resolved)
 
@@ -152,6 +162,29 @@ def index_document(document_id: int, db: Session = Depends(get_db)) -> Dict[str,
         return DocumentService(db).index_into_knowledge(record)
     except DocumentError as exc:
         raise _document_error(exc) from exc
+
+
+@router.post("/{document_id}/open", dependencies=[Depends(require_local_origin)])
+def open_original(document_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Open the real local file in its associated desktop application."""
+    record = _get(db, document_id)
+    path = Path(record.path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        import os
+        import subprocess
+        import sys
+
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "path": str(path)}
 
 
 @router.post("/{document_id}/edit")

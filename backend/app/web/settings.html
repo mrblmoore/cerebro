@@ -86,7 +86,7 @@ function fieldControl(field) {
             </option>`).join('')}
           <option value="__custom__"${custom ? ' selected' : ''}>Custom model ID…</option>
         </select>
-        <button class="btn-sm" data-model-refresh="${esc(field.model_provider)}"
+        <button type="button" class="btn-sm" data-model-refresh="${esc(field.model_provider)}"
                 title="Ask the provider which models this account can use">Refresh</button>
       </div>
       ${custom ? `<input type="text" data-key="${esc(field.key)}" value="${esc(value)}"
@@ -152,7 +152,7 @@ function renderPanel() {
       <header>
         <span class="gicon">${groupIcon(group)}</span>
         <h2>${esc(group.title)}</h2>
-        ${testTarget ? `<button class="btn-sm" id="test">Test connection</button>` : ''}
+        ${testTarget ? `<button type="button" class="btn-sm" id="test">Test connection</button>` : ''}
       </header>
       <div class="body">
         <p style="margin-top:-4px">${esc(group.description)}</p>
@@ -168,7 +168,7 @@ function renderPanel() {
         <div class="body">
           <p>Re-embed every indexed document. Run this after switching embedding provider,
              otherwise older documents stay in the previous embedding space.</p>
-          <div class="actions"><button id="reindex">Reindex all documents</button></div>
+          <div class="actions"><button type="button" id="reindex">Reindex all documents</button></div>
         </div>
       </div>` : ''}`;
 

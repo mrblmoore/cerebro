@@ -82,6 +82,12 @@ class DocumentService:
         except DocumentError as exc:
             record.read_error = str(exc)
             record.text_preview = None
+            from app.services.source_service import SourceService
+
+            SourceService(self.db).observe(
+                "sharepoint" if record.web_url else "document", str(path), record.name,
+                uri=record.web_url, local_path=str(path), readable=False,
+                error=str(exc), metadata={"tracked_document_id": record.id}, commit=False)
             logger.info("documents", "Could not read document",
                         {"path": str(path), "reason": str(exc)})
             return
@@ -98,6 +104,15 @@ class DocumentService:
         record.content_mtime = content.get("mtime")
         record.size_bytes = content.get("size_bytes")
         record.case_id = record.case_id or detect_case(record.name, content["text"][:4000])
+        from app.services.source_service import SourceService
+
+        SourceService(self.db).observe(
+            "sharepoint" if record.web_url else "document", str(path), record.name,
+            uri=record.web_url, local_path=str(path), content=content["text"],
+            readable=True, metadata={
+                "tracked_document_id": record.id, "kind": content["kind"],
+                "outline": content["outline"], "case_id": record.case_id,
+            }, commit=False)
 
     def content(self, record: TrackedDocument, full: bool = False) -> Dict[str, Any]:
         """Current content, re-read from disk so it is never stale."""
@@ -109,6 +124,14 @@ class DocumentService:
         record.outline = content["outline_json"]
         record.content_mtime = content.get("mtime")
         record.read_error = None
+        from app.services.source_service import SourceService
+
+        SourceService(self.db).observe(
+            "sharepoint" if record.web_url else "document", str(path), record.name,
+            uri=record.web_url, local_path=str(path), content=content["text"],
+            readable=True, metadata={"tracked_document_id": record.id,
+                                     "kind": content["kind"],
+                                     "outline": content["outline"]}, commit=False)
         self.db.commit()
 
         return {
@@ -130,6 +153,14 @@ class DocumentService:
 
     def forget(self, record: TrackedDocument) -> None:
         """Stop tracking a document. The file itself is never touched."""
+        from app.models.source import Source
+        from app.services.source_service import stable_key
+
+        for kind in ("document", "sharepoint"):
+            source = self.db.query(Source).filter(
+                Source.stable_key == stable_key(kind, record.path)).first()
+            if source:
+                self.db.delete(source)
         self.db.delete(record)
         self.db.commit()
 

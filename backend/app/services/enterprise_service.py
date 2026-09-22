@@ -293,6 +293,17 @@ class EnterpriseService:
         self.db.commit()
         self.db.refresh(message)
 
+        from app.services.source_service import SourceService
+
+        SourceService(self.db).observe(
+            "message", message.external_id,
+            message.subject or message.sender_name or message.sender or "Message",
+            content="\n\n".join(part for part in [message.subject, message.body] if part),
+            readable=bool(message.body or message.subject), active=False,
+            metadata={"message_id": message.id, "source": message.source,
+                      "sender": message.sender, "case_id": message.case_id,
+                      "urgency": message.urgency})
+
         logger.info("enterprise", "Ingested message", {
             "source": message.source, "urgency": message.urgency,
             "case_id": message.case_id, "file": source_file,

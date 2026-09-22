@@ -210,15 +210,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     checkConnection().then(sendResponse);
     return true;   // keep the channel open for the async reply
   }
+  if (message.type === 'CAPTURE_ACTIVE') {
+    captureActivePage().then(sendResponse).catch((error) =>
+      sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
   return false;
 });
 
-async function handlePageText(message, tab) {
+async function handlePageText(message, tab, force = false) {
   const config = await getConfig();
-  if (!config.enabled || !config.capturePageText) return;
+  if (!config.enabled || (!config.capturePageText && !force)) return;
   if (isExcluded(tab.url, config.excludedDomains)) return;
   if (!message.text || message.text.length < 200) return;
-  if (!shouldSend(`text:${tab.url.split('#')[0]}`)) return;
+  if (!force && !shouldSend(`text:${tab.url.split('#')[0]}`)) return;
 
   await sendEvent({
     event_type: 'PAGE_CAPTURED',
@@ -229,6 +234,46 @@ async function handlePageText(message, tab) {
       characters: message.text.length,
     },
   });
+}
+
+/**
+ * Read exactly the page the user clicked the extension on. `activeTab` grants
+ * temporary access to that tab only, so Cerebro gains arbitrary-web support
+ * without asking to read the user's entire browsing history at install time.
+ */
+async function captureActivePage() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id || !tab.url || isInternalUrl(tab.url)) {
+    return { ok: false, error: 'This browser page cannot be read.' };
+  }
+  const config = await getConfig();
+  if (!config.enabled) return { ok: false, error: 'Cerebro is paused.' };
+  if (isExcluded(tab.url, config.excludedDomains)) {
+    return { ok: false, error: 'This site is on the excluded list.' };
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => {
+      const container = document.querySelector('main, article, [role="main"]') || document.body;
+      if (!container) return { text: '', title: document.title, url: location.href };
+      const clone = container.cloneNode(true);
+      clone.querySelectorAll(
+        'script, style, noscript, svg, nav, header, footer, aside, [aria-hidden="true"]'
+      ).forEach((node) => node.remove());
+      const text = (clone.innerText || clone.textContent || '')
+        .replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+      return { text, title: document.title, url: location.href };
+    },
+  });
+  const page = results && results[0] && results[0].result;
+  if (!page || page.text.length < 40) {
+    return { ok: false, error: 'No readable text was found on this page.' };
+  }
+  await handlePageText({ text: page.text, url: page.url },
+                       { ...tab, title: page.title, url: page.url }, true);
+  return { ok: true, characters: Math.min(page.text.length, 20000),
+           title: page.title, url: page.url };
 }
 
 async function checkConnection() {

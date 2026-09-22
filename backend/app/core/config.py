@@ -123,6 +123,11 @@ class Settings(BaseSettings):
     #: Local roots where OneDrive/SharePoint libraries are synced, used to turn
     #: a SharePoint URL into a file Cerebro can actually open.
     SHAREPOINT_SYNC_ROOTS: str = ""
+    #: Optional direct SharePoint access. The local-sync resolver above remains
+    #: available; Graph adds remote-only files, site search and exact item IDs.
+    SHAREPOINT_GRAPH_ENABLED: bool = False
+    MICROSOFT_TENANT_ID: str = "common"
+    MICROSOFT_CLIENT_ID: Optional[str] = None
     #: Largest document Cerebro will read into memory, in megabytes.
     DOCUMENT_MAX_MB: float = 25.0
     #: Keep a timestamped copy beside any document before editing it.

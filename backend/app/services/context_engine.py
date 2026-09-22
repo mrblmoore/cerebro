@@ -195,6 +195,16 @@ class ContextEngine:
             context.active_url = data["url"]
         if data.get("title"):
             context.window_title = data["title"]
+        if text:
+            from app.services.source_service import SourceService
+
+            SourceService(self.db).observe(
+                "browser", data.get("url") or data.get("title") or f"event:{event.id}",
+                data.get("title") or data.get("url") or "Captured webpage",
+                uri=data.get("url"), content=text[:20_000], readable=True,
+                exclusive=True, metadata={"event_id": event.id,
+                                           "captured_by": event_data.source},
+                commit=False)
 
     def _on_transcript(self, context, event_data, event) -> None:
         data = event_data.data or {}

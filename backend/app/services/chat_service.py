@@ -49,14 +49,24 @@ QUESTION_STARTERS = (
 #: Verbs that mark a message as something to *do*, not something to *answer*.
 INSTRUCTION_MARKERS = (
     "remind me", "keep ", "update ", "add to", "maintain", "log ",
-    "reply", "respond", "draft", "summar", "every day", "daily", "each day",
+    "reply", "respond", "draft", "every day", "daily", "each day",
     "weekly", "hourly", "schedule",
+)
+
+IMMEDIATE_REQUESTS = (
+    "summarize", "summarise", "explain", "analyze", "analyse", "compare",
+    "read this", "look at", "find in", "tell me about",
 )
 
 
 def _looks_like_instruction(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in INSTRUCTION_MARKERS)
+
+
+def _looks_like_immediate_request(text: str) -> bool:
+    lowered = text.strip().lower()
+    return any(marker in lowered for marker in IMMEDIATE_REQUESTS)
 
 
 def _looks_like_question(text: str) -> bool:
@@ -153,7 +163,12 @@ class ChatService:
             return self._create_or_clarify(text, combined, context,
                                           allow_clarify=False, extra_spec=extra_spec)
 
-        if _looks_like_instruction(text) or not _looks_like_question(text):
+        # Ordinary statements are conversation, not latent scheduled work.
+        # The old default treated every non-question ("Outlook is broken") as
+        # a task, then often confirmed it would run "when you ask" even though
+        # the user had just asked.  Only explicit task language enters the task
+        # engine; everything else receives a direct conversational answer.
+        if _looks_like_instruction(text) and not _looks_like_immediate_request(text):
             return self._create_or_clarify(text, text, context, allow_clarify=True)
 
         return self._answer_question(text, context)
@@ -285,6 +300,7 @@ class ChatService:
     def _answer_question(self, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
         from app.services.llm_service import LLMService
         from app.services.rag_service import RAGService
+        from app.services.source_service import SourceService
 
         self._store("user", text, kind="question")
 
@@ -295,45 +311,75 @@ class ChatService:
             logger.warn("chat", "Knowledge search failed", {"error": str(exc)})
             hits = []
 
-        ambient = self._ambient_snippets()
+        sources = SourceService(self.db).context_for_query(text, limit=6)
         images = self._document_images_for_answer()
+        indexed_sources = [{
+            "ref": hit.get("citation") or f"K{index}",
+            "title": hit.get("title"), "kind": "knowledge",
+            "uri": hit.get("url"), "locator": hit.get("locator"),
+            "excerpt": hit.get("excerpt", ""),
+        } for index, hit in enumerate(hits, start=1)]
+        citations = indexed_sources + sources
 
         llm = LLMService()
         if not llm.enabled:
             reply = ("AI generation is off, so I can't answer that directly — "
                      "open Settings → AI Provider to connect one. ")
-            related = [f"- {hit['title']}" for hit in hits] + \
-                [f"- {item['label']}" for item in ambient]
+            related = [f"- [{item['ref']}] {item['title']} · {item.get('locator') or 'source'}"
+                       for item in citations]
             if related:
                 reply += "These looked related:\n" + "\n".join(related)
             else:
                 reply += "I didn't find anything indexed or recently seen about it either."
-            self._store("assistant", reply, kind="answer",
-                       meta={"images": images} if images else None)
-            return {"reply": reply, "kind": "answer", "images": images}
+            meta = {"images": images, "sources": citations}
+            self._store("assistant", reply, kind="answer", meta=meta)
+            return {"reply": reply, "kind": "answer", "images": images,
+                    "sources": citations}
 
         doc_block = "\n".join(
-            f"- {hit['title']}: {hit.get('excerpt', hit.get('content', ''))[:200]}"
-            for hit in hits) or "(none found)"
-        ambient_block = "\n".join(
-            f"- {item['label']}: {item['excerpt']}" for item in ambient) or "(none)"
-        prompt = f"""Answer the user's question. Use the documents and recently-seen
-material below if they are relevant; otherwise answer from what you know. Be
-concise and direct.
+            f"- [{hit.get('citation') or f'K{index}'}] {hit['title']} "
+            f"({hit.get('locator') or 'section'}): "
+            f"{hit.get('excerpt', hit.get('content', ''))[:1000]}"
+            for index, hit in enumerate(hits, start=1)) or "(none found)"
+        source_block = "\n".join(
+            f"- [{item['ref']}] {item['title']} ({item.get('locator') or 'source'}): "
+            f"{item['excerpt']}" for item in sources) or "(none)"
+        conversation = self._conversation_context(exclude_latest=True)
+        prompt = f"""Continue the conversation and answer the latest user message.
+Use the supplied sources when relevant. When a factual claim comes from a
+source, cite its bracketed ID exactly, such as [K1] or [S2]. Never invent a
+citation. If the sources do not support an answer, say that plainly or answer
+from general knowledge without a citation. Be concise and direct.
 
-Question: {text}
+Conversation so far:
+{conversation or '(new conversation)'}
+
+Latest message: {text}
 
 Open case: {context.get('crm_case') or 'none'}
 Customer: {context.get('customer') or 'none'}
-Relevant indexed documents:
+Indexed knowledge sections:
 {doc_block}
 
-Recently seen (open documents / captured pages — not indexed, but current):
-{ambient_block}"""
+Current and recently approved sources:
+{source_block}"""
 
         prompt = llm.with_memory(prompt, query=text, db=self.db,
                                  case_id=context.get("crm_case"))
         answer = llm._call_llm(prompt)
-        self._store("assistant", answer, kind="answer",
-                   meta={"images": images} if images else None)
-        return {"reply": answer, "kind": "answer", "images": images}
+        meta = {"images": images, "sources": citations}
+        self._store("assistant", answer, kind="answer", meta=meta)
+        return {"reply": answer, "kind": "answer", "images": images,
+                "sources": citations}
+
+    def _conversation_context(self, limit: int = 12,
+                              exclude_latest: bool = False) -> str:
+        """Compact real chat history for follow-ups, not merely UI history."""
+        rows = (self.db.query(ChatMessage)
+                .order_by(ChatMessage.id.desc()).limit(limit + 1).all())
+        rows = list(reversed(rows))
+        if exclude_latest and rows:
+            rows = rows[:-1]
+        return "\n".join(
+            f"{row.role.title()}: {(row.content or '')[:1200]}" for row in rows
+            if row.content)

@@ -95,6 +95,9 @@ jobs:
           PYTHONUTF8: "1"
         run: python test_mvp.py
 
+      - name: Build the Power Automate import package
+        run: python packaging/build_power_automate_package.py
+
       - name: Build the executables
         env:
           PYTHONUTF8: "1"

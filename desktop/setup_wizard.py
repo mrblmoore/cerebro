@@ -49,7 +49,10 @@ def _bundled_root() -> Path:
     """Where shipped extras (docs, the Power Automate package) live: next to
     the frozen exe, or the repo root in a source checkout."""
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        # PyInstaller's onedir build stores data under ``_internal`` and exposes
+        # that directory as _MEIPASS.  The executable's parent contains only the
+        # launchers, so looking there made every bundled doc/package appear absent.
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
     return _HERE.parent
 
 
@@ -608,16 +611,19 @@ class Wizard(tk.Tk):
             # Switching back must actually clear a Postgres URL, or "built-in"
             # would be a lie the next test exposes.
             if not self._is_sqlite():
-                self.pending["DATABASE_URL"] = ""
+                from app.core.paths import default_database_url
+
+                self.pending["DATABASE_URL"] = default_database_url()
 
     def _test_database(self):
         if not self._save():
             return
 
         def work():
-            from app.core import check_database, init_db
-            init_db()          # create the file and tables if this is a first run
-            return check_database()
+            from app.core.config import settings
+            from app.core.database import probe_database
+
+            return probe_database(settings.DATABASE_URL, initialize=True)
 
         def done(result, error):
             if error:
@@ -625,8 +631,8 @@ class Wizard(tk.Tk):
                 return
             if result.get("ok"):
                 self.passed.add("database")
-                self._set_status(result.get("detail") or "Database is ready.", "ok")
                 self._render()
+                self._set_status(result.get("detail") or "Database is ready.", "ok")
             else:
                 self._set_status(
                     (result.get("detail") or "The database did not answer.") +
@@ -837,8 +843,8 @@ class Wizard(tk.Tk):
                 return
             if result.get("ok"):
                 self.passed.add("ai")
-                self._set_status(result.get("detail") or "The model answered.", "ok")
                 self._render()
+                self._set_status(result.get("detail") or "The model answered.", "ok")
             else:
                 self._set_status(result.get("detail") or "The model did not answer.", "err")
 
@@ -1016,9 +1022,10 @@ class Wizard(tk.Tk):
                 self._set_status(f"{name}: {result.get('detail') or 'did not work'}", "err")
             else:
                 self.passed.add("microsoft")
-                self._set_status(" · ".join(
-                    f"{name}: {r.get('detail') or 'OK'}" for name, r in results), "ok")
+                detail = " · ".join(
+                    f"{name}: {r.get('detail') or 'OK'}" for name, r in results)
                 self._render()
+                self._set_status(detail, "ok")
 
         self._run_async(work, done, "Writing and reading the folders…")
 

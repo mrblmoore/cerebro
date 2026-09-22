@@ -82,4 +82,13 @@
 
   if (document.readyState === 'complete') scheduleTextCapture();
   else window.addEventListener('load', scheduleTextCapture, { once: true });
+
+  // Modern CRM and Office pages often fill their main panel well after load.
+  // Debouncing a DOM observer captures the settled state instead of the empty
+  // shell, while the background worker still enforces consent and de-duplication.
+  const contentRoot = document.querySelector('main, article, [role="main"]') || document.body;
+  if (contentRoot) {
+    new MutationObserver(scheduleTextCapture).observe(
+      contentRoot, { childList: true, subtree: true, characterData: true });
+  }
 })();

@@ -14,6 +14,7 @@ Built on Tkinter, which ships with Python, so there is nothing extra to install.
 
 import argparse
 import json
+import os
 import queue
 import sys
 import threading
@@ -50,8 +51,7 @@ THEMES = {
     },
 }
 
-TABS = [("ask", "Ask"), ("context", "Context"), ("inbox", "Inbox"),
-        ("docs", "Docs"), ("search", "Search")]
+TABS = [("ask", "Ask"), ("sources", "Sources"), ("activity", "Activity")]
 
 PRIORITY_ICON = {"high": "●", "medium": "●", "low": "○"}
 
@@ -123,6 +123,9 @@ class ApiClient:
             ("bridge", "/api/enterprise/status"),
             ("documents", "/api/documents?limit=8"),
             ("nudges", "/api/tasks/nudges?limit=8"),
+            ("sources", "/api/sources?limit=12"),
+            ("source_status", "/api/sources/status"),
+            ("tasks", "/api/tasks?limit=12"),
         ):
             try:
                 snapshot[key] = self.request(path, timeout=4)
@@ -179,7 +182,8 @@ class CerebroWidget:
         self.previous_context = {}
         self.online = False
         self.status_message = "connecting…"
-        self.active_tab = config.get("active_tab", "context")
+        requested_tab = config.get("active_tab", "ask")
+        self.active_tab = requested_tab if requested_tab in dict(TABS) else "ask"
         self.search_results = None
         self.search_query = ""
         self.searching = False
@@ -251,7 +255,7 @@ class CerebroWidget:
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.root.bind("<Escape>", lambda _event: self.toggle_compact())
         self.root.bind("<Control-r>", lambda _event: self.refresh_now())
-        self.root.bind("<Control-f>", lambda _event: self.show_tab("search"))
+        self.root.bind("<Control-f>", lambda _event: self.show_tab("sources"))
         self.root.bind("<Control-q>", lambda _event: self.quit())
 
         # Applied after the window is mapped, when a handle exists.
@@ -492,11 +496,13 @@ class CerebroWidget:
 
         renderer = {
             "ask": self._render_ask,
-            "context": self._render_context,
-            "inbox": self._render_inbox,
-            "docs": self._render_docs,
-            "search": self._render_search,
+            "sources": self._render_sources,
+            "activity": self._render_activity,
         }[self.active_tab]
+        if self.active_tab == "ask":
+            composer = tk.Frame(self.content, bg=theme["bg"])
+            composer.pack(side="bottom", fill="x")
+            self._render_ask_composer(composer)
         scroll = ScrollArea(self.content, self)
         renderer(scroll)
 
@@ -601,8 +607,40 @@ class CerebroWidget:
         something it asked you — and see the running thread plus open nudges."""
         theme = self.theme
 
-        box = tk.Frame(area.inner, bg=theme["bg"])
-        box.pack(fill="x", padx=10, pady=(2, 4))
+        history = getattr(self, "chat_history", None) or []
+        for message in history[-12:]:
+            self._chat_bubble(area.inner, message)
+        if self.ask_reply == "Working on it…" and (
+                not history or history[-1].get("role") != "assistant"):
+            tk.Label(area.inner, text="Cerebro is typing…", bg=theme["bg"],
+                     fg=theme["faint"], font=self.font(8, "italic"), anchor="w").pack(
+                fill="x", padx=12, pady=(0, 8))
+
+        nudges = (self.snapshot.get("nudges") or {}).get("nudges") or []
+        if nudges:
+            self._heading(area.inner, "Nudges")
+            for nudge in nudges:
+                self._nudge_card(area.inner, nudge)
+        elif not history:
+            self._empty(area.inner, "💬",
+                        "Ask me anything, tell me what to do,\nor I'll raise things "
+                        "here\nwhen they need you.")
+
+    def _render_ask_composer(self, parent):
+        """Fixed composer below the scrolling transcript."""
+        theme = self.theme
+        box = tk.Frame(parent, bg=theme["bg"])
+        box.pack(fill="x", padx=10, pady=(4, 8))
+        active_sources = [source for source in
+                          ((self.snapshot.get("sources") or {}).get("sources") or [])
+                          if source.get("active")]
+        if active_sources:
+            chips = tk.Frame(box, bg=theme["bg"])
+            chips.pack(fill="x", pady=(0, 4))
+            for source in active_sources[:3]:
+                label = _shorten(source.get("title") or source.get("kind") or "source", 22)
+                self._badge(chips, f"✓ {label}", theme["ok"] if source.get("readable")
+                            else theme["warn"]).pack(side="left", padx=(0, 4))
         entry_row = tk.Frame(box, bg=theme["bg"])
         entry_row.pack(fill="x")
         self.ask_entry = tk.Entry(
@@ -630,28 +668,9 @@ class CerebroWidget:
 
         placeholder = ("Ask me anything, tell me what to do, attach an image, or "
                        "answer what I just asked you…")
-        tk.Label(area.inner, text=placeholder, bg=theme["bg"], fg=theme["faint"],
+        tk.Label(box, text=placeholder, bg=theme["bg"], fg=theme["faint"],
                  font=self.font(8), anchor="w", justify="left",
-                 wraplength=self.root.winfo_width() - 30).pack(fill="x", padx=12, pady=(4, 8))
-
-        history = getattr(self, "chat_history", None) or []
-        for message in history[-12:]:
-            self._chat_bubble(area.inner, message)
-        if self.ask_reply == "Working on it…" and (
-                not history or history[-1].get("role") != "assistant"):
-            tk.Label(area.inner, text="Cerebro is typing…", bg=theme["bg"],
-                     fg=theme["faint"], font=self.font(8, "italic"), anchor="w").pack(
-                fill="x", padx=12, pady=(0, 8))
-
-        nudges = (self.snapshot.get("nudges") or {}).get("nudges") or []
-        if nudges:
-            self._heading(area.inner, "Nudges")
-            for nudge in nudges:
-                self._nudge_card(area.inner, nudge)
-        elif not history:
-            self._empty(area.inner, "💬",
-                        "Ask me anything, tell me what to do,\nor I'll raise things "
-                        "here\nwhen they need you.")
+                 wraplength=self.root.winfo_width() - 30).pack(fill="x", padx=2, pady=(4, 0))
 
     #: role -> (avatar glyph, display name), used in the bubble header.
     _CHAT_AVATARS = {"user": ("🧑", "You"), "assistant": ("🧠", "Cerebro")}
@@ -705,6 +724,109 @@ class CerebroWidget:
         meta = message.get("meta") or {}
         for item in (meta.get("images") or []):
             self._render_chat_image(card, item.get("image"), bg, caption=item.get("caption"))
+        sources = meta.get("sources") or []
+        if sources:
+            source_box = tk.Frame(card, bg=bg)
+            source_box.pack(fill="x", padx=10, pady=(0, 8))
+            for item in sources[:5]:
+                label = f"[{item.get('ref', 'source')}] {_shorten(item.get('title') or 'Source', 28)}"
+                uri = item.get("uri")
+                widget = tk.Label(source_box, text=label, bg=bg, fg=muted,
+                                  font=self.font(7), cursor="hand2" if uri else "",
+                                  anchor="w")
+                widget.pack(fill="x")
+                if uri:
+                    widget.bind("<Button-1>", lambda _event, u=uri: webbrowser.open(u))
+
+    def _render_sources(self, area):
+        """Everything Ask can use, plus one honest readiness view."""
+        if not self.online:
+            self._render_offline(area)
+            return
+        theme = self.theme
+        status = self.snapshot.get("source_status") or {}
+        self._heading(area.inner, "Connections")
+        for check in status.get("checks", []):
+            card = tk.Frame(area.inner, bg=theme["surface"])
+            card.pack(fill="x", padx=10, pady=(0, 6))
+            tk.Label(card, text="✓" if check.get("ok") else "!",
+                     bg=theme["surface"], fg=theme["ok"] if check.get("ok") else theme["warn"],
+                     font=self.font(9, "bold")).pack(side="left", padx=(10, 7), pady=8)
+            text = tk.Frame(card, bg=theme["surface"])
+            text.pack(side="left", fill="x", expand=True, pady=6)
+            tk.Label(text, text=check.get("label", "Source"), bg=theme["surface"],
+                     fg=theme["text"], font=self.font(8, "bold"), anchor="w").pack(fill="x")
+            tk.Label(text, text=_shorten(check.get("detail", ""), 78), bg=theme["surface"],
+                     fg=theme["dim"], font=self.font(7), anchor="w",
+                     wraplength=self.root.winfo_width() - 75).pack(fill="x")
+
+        sources = (self.snapshot.get("sources") or {}).get("sources") or []
+        self._heading(area.inner, "Available to Ask")
+        if not sources:
+            self._empty(area.inner, "📎", "No readable sources yet.\nUse Read this page in the browser\nor open a document.")
+        for source in sources:
+            card = tk.Frame(area.inner, bg=theme["surface"])
+            card.pack(fill="x", padx=10, pady=(0, 6))
+            tk.Label(card, text="●", bg=theme["surface"],
+                     fg=theme["ok"] if source.get("active") and source.get("readable")
+                     else theme["faint"], font=self.font(8)).pack(side="left", padx=(10, 7))
+            tk.Label(card, text=_shorten(source.get("title") or "Source", 34),
+                     bg=theme["surface"], fg=theme["text"], font=self.font(8, "bold"),
+                     anchor="w").pack(fill="x", padx=(0, 8), pady=(7, 0))
+            detail = f"{source.get('kind', '')} · {source.get('characters', 0):,} characters"
+            if source.get("error"):
+                detail += f" · {source['error']}"
+            tk.Label(card, text=_shorten(detail, 66), bg=theme["surface"],
+                     fg=theme["dim"], font=self.font(7), anchor="w").pack(
+                fill="x", padx=(27, 8), pady=(1, 3))
+            controls = tk.Frame(card, bg=theme["surface"])
+            controls.pack(fill="x", padx=(27, 8), pady=(0, 7))
+            excluded = bool(source.get("excluded"))
+            self._link(
+                controls, "Include" if excluded else "Exclude",
+                lambda item=source, active=excluded:
+                    self._set_source_active(item.get("id"), active),
+            ).pack(side="left")
+            if source.get("uri"):
+                self._link(controls, "Open", lambda uri=source["uri"]:
+                           webbrowser.open(uri)).pack(side="left", padx=(12, 0))
+
+        self._heading(area.inner, "Knowledge search")
+        self._render_search(area)
+
+    def _render_activity(self, area):
+        """Tasks, nudges, messages and events in one operational feed."""
+        if not self.online:
+            self._render_offline(area)
+            return
+        theme = self.theme
+        nudges = (self.snapshot.get("nudges") or {}).get("nudges") or []
+        tasks = (self.snapshot.get("tasks") or {}).get("tasks") or []
+        messages = (self.snapshot.get("inbox") or {}).get("messages") or []
+        events = self.snapshot.get("events") or []
+        if nudges:
+            self._heading(area.inner, "Needs your attention")
+            for nudge in nudges:
+                self._nudge_card(area.inner, nudge)
+        if tasks:
+            self._heading(area.inner, "Tasks")
+            for task in tasks[:6]:
+                self._line(area.inner, task.get("title") or "Task",
+                           task.get("status") or task.get("schedule") or "")
+        if messages:
+            self._heading(area.inner, "Outlook & Teams")
+            for message in messages[:6]:
+                self._line(area.inner, message.get("sender_name") or message.get("sender") or "Message",
+                           _shorten(message.get("subject") or message.get("preview") or "", 34))
+        if events:
+            self._heading(area.inner, "Recent context")
+            for event in events[:8]:
+                data = event.get("data") or {}
+                self._line(area.inner, event.get("event_type", "").replace("_", " ").title(),
+                           _shorten(data.get("title") or data.get("application") or
+                                    event.get("source") or "", 30))
+        if not (nudges or tasks or messages or events):
+            self._empty(area.inner, "✓", "Nothing needs attention.")
 
     def _render_chat_image(self, parent, name, bg, caption: str = None):
         if not name:
@@ -822,11 +944,28 @@ class CerebroWidget:
                     payload["image"] = image
                 result = self.api.request("/api/chat/message", method="POST",
                                           payload=payload)
-                self.results.put(("ask", result.get("reply", "Done.")))
+                self.results.put(("ask", result))
             except Exception as exc:
-                self.results.put(("ask", f"Couldn't do that: {_friendly_error(exc)}"))
+                self.results.put(("ask", {
+                    "reply": f"Couldn't do that: {_friendly_error(exc)}",
+                    "kind": "answer",
+                }))
             finally:
                 self._load_chat_history()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_source_active(self, source_id, active: bool):
+        if not source_id:
+            return
+
+        def worker():
+            try:
+                self.api.request(f"/api/sources/{source_id}/active", method="POST",
+                                 payload={"active": active})
+                self.results.put(("poll", self.api.poll()))
+            except Exception as exc:
+                self.results.put(("status", f"Couldn't update source: {_friendly_error(exc)}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1298,7 +1437,7 @@ class CerebroWidget:
 
     def _search_for(self, query: str):
         self.search_query = query
-        self.show_tab("search")
+        self.show_tab("sources")
         self._run_search()
 
     def _run_search(self):
@@ -1476,12 +1615,25 @@ class CerebroWidget:
                 elif kind == "search":
                     self.searching = False
                     self.search_results = payload
-                    if self.active_tab == "search":
+                    if self.active_tab == "sources":
                         self.render()
                 elif kind == "ask":
-                    self.ask_reply = payload
+                    reply = payload.get("reply", "Done.") if isinstance(payload, dict) else str(payload)
+                    self.ask_reply = reply
+                    # Do not make the user wait for the history refresh to see
+                    # the answer. The following history load reconciles this
+                    # optimistic entry with the stored conversation.
+                    if not self.chat_history or self.chat_history[-1].get("role") != "assistant":
+                        self.chat_history = (self.chat_history or []) + [{
+                            "role": "assistant", "content": reply,
+                            "kind": payload.get("kind", "answer") if isinstance(payload, dict) else "answer",
+                            "meta": {
+                                "sources": payload.get("sources", []),
+                                "images": payload.get("images", []),
+                            } if isinstance(payload, dict) else {},
+                        }]
                     # A substantial reply is worth more room; a short "on it" is not.
-                    if len(payload) > 160:
+                    if len(reply) > 160:
                         self.expand_for(180)
                     if self.active_tab == "ask":
                         self.render()
@@ -1534,6 +1686,7 @@ class CerebroWidget:
 
     def _apply_snapshot(self, snapshot: dict):
         was_online = self.online
+        previous_snapshot = self.snapshot
         self.online = snapshot.get("online", False)
         previous = self.snapshot.get("context") or {}
         self.snapshot = snapshot
@@ -1550,8 +1703,15 @@ class CerebroWidget:
 
         if self.config.get("compact"):
             self.title_label.configure(text=self._compact_title())
-        elif self.active_tab in ("ask", "context", "inbox", "docs"):
+        elif self.active_tab in ("sources", "activity"):
             self.render()
+        elif self.active_tab == "ask":
+            # Polling is frequent, but Ask only consumes connectivity and nudges.
+            # Rebuilding it for identical background snapshots caused the whole
+            # widget to flash and repeatedly destroyed/recreated the composer.
+            if (was_online != self.online
+                    or previous_snapshot.get("nudges") != snapshot.get("nudges")):
+                self.render()
 
     @staticmethod
     def _describe(context: dict) -> str:
@@ -1770,6 +1930,9 @@ def main() -> int:
     if arguments.api:
         config["api_url"] = arguments.api.rstrip("/")
 
+    if os.environ.get("CEREBRO_HELPERS_STARTED") != "1":
+        _start_desktop_helpers(config["api_url"])
+
     try:
         widget = CerebroWidget(config)
     except tk.TclError as exc:
@@ -1781,6 +1944,25 @@ def main() -> int:
 
     widget.run()
     return 0
+
+
+def _start_desktop_helpers(api_url: str) -> None:
+    """Give source installs the same zero-extra-command behaviour as the exe."""
+    try:
+        from activity_recorder import ActivityRecorder
+        from agent import DesktopAgent
+        from document_watcher import DocumentWatcher, configured_folders, default_folders
+
+        folders = configured_folders(api_url) or default_folders()
+        targets = [DesktopAgent(api_url).run, ActivityRecorder(api_url).run]
+        if folders:
+            targets.append(DocumentWatcher(api_url, folders, 4.0).run)
+        for target in targets:
+            threading.Thread(target=target, daemon=True).start()
+    except Exception:
+        # The widget remains useful against a remote API even when local helper
+        # modules or optional capture dependencies are unavailable.
+        pass
 
 
 if __name__ == "__main__":
