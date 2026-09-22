@@ -1,10 +1,9 @@
 # Outlook and Teams, via Power Automate
 
-**Faster path:** `docs/POWER_AUTOMATE_QUICKSTART.md` has an importable flow
-package for Outlook, so you don't need to build the flows below by hand. This
-page is the full reference — read it if you want to see exactly what a flow
-does, change a field, or build the Teams inbound flow (which is manual by
-design; the quickstart explains why).
+**Faster path:** `docs/POWER_AUTOMATE_QUICKSTART.md` has an importable package
+for Outlook, Teams, and Dynamics 365, so you don't need to build these flows by
+hand. This page is the full reference — use it when you want to inspect or
+customize the flow fields.
 
 Cerebro never talks to Microsoft 365 directly. Power Automate owns the
 connectors and the authentication, and hands work over as JSON files in a
@@ -124,8 +123,11 @@ Cerebro writes a reply as JSON; this flow sends it.
 3. **Action:** *Condition* on `action`:
    - `reply_email` or `send_email` → *Send an email (V2)*, with `to`, `subject`
      and `body` from the payload.
-   - `reply_teams_message` or `send_teams_message` → *Post message in a chat or
-     channel*, using `chat_or_channel` and `body`.
+   - `reply_teams_message` or `send_teams_message` → *Post a message (V3)*,
+     using the Team and Channel selected in the action and `body` from the
+     payload. The importable package uses this fixed-schema connector action
+     because the modern dynamic action can fail authorization while a legacy
+     package is still being imported.
 4. **Action:** *Delete file*, so the same reply is never sent twice.
 
 Cerebro writes each file to a temporary name and renames it into place, so this

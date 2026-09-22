@@ -6,7 +6,7 @@ Three connections people usually want, three very different amounts of work:
 |---|---|
 | **Dynamics 365 CRM** | None for viewing cases (browser extension). One import, for case-update notifications even when the case isn't open. |
 | **Outlook** | Import one file, pick your account, done. |
-| **Teams** | Import the same file, then pick your team and channel (2 dropdowns) — that part is per-tenant, so it can't be pre-filled. |
+| **Teams** | Import the same file, then pick your team and channel in the inbound trigger and outbound action — those IDs are per-tenant, so they can't be pre-filled. |
 
 This page is the short version. `docs/POWER_AUTOMATE.md` has the full field-by-field
 reference if you ever want to change what a flow does.
@@ -56,10 +56,12 @@ inside your synced OneDrive.
      ones **Off** (see step 4).
 5. **Import**.
 6. Open each flow you want and turn it **On** — imported flows start stopped.
-   For **Cerebro - Teams inbound**, before turning it on: open it, click the
-   trigger step, and pick your **Team** and **Channel** from its dropdowns —
-   the one thing that can't be pre-filled because it's different for every
-   organization.
+   Before turning on either Teams path, replace the visible setup markers:
+   - In **Cerebro - Teams inbound**, open the trigger and pick your **Team** and
+     **Channel**.
+   - In **Cerebro - Microsoft 365 outbound**, open the Teams action in the
+     **If no** branch and pick its **Team** and **Channel**. This becomes the
+     destination for approved Teams posts from Ask.
 
 ## 3. Point Cerebro at the inbox folder
 
@@ -79,20 +81,20 @@ see *Troubleshooting* in `docs/POWER_AUTOMATE.md`.
 | Flow | Trigger | Needs editing after import? |
 |---|---|---|
 | Cerebro - Outlook inbound | New email arrives | No |
-| Cerebro - Outlook outbound | A file appears in the outbox | No |
+| Cerebro - Microsoft 365 outbound | A file appears in the outbox | For Teams only — pick the destination |
 | Cerebro - Teams inbound | New channel message | Yes — pick team/channel |
 | Cerebro - Dynamics 365 case updates | A Case is created or changed | No |
 
-**Why Teams alone needs a manual step.** Outlook's and Dynamics' triggers
-take no tenant-specific identifiers — an inbox is an inbox, and every
-Dynamics environment calls the Case table `incidents`. Teams' trigger needs
-the exact team and channel you want watched, which is unique to your
-organization and cannot be guessed or pre-filled; the flow is fully built
-otherwise, so this is genuinely the only thing left to do.
+**Why Teams needs a manual selection.** Outlook's triggers take no
+tenant-specific identifiers, and the Dataverse Case table uses the logical
+name `incident`. Teams requires the exact Team and Channel IDs for both
+watching and posting; those are unique to your organization and cannot be
+guessed safely.
 
-**About the outbound flow's Teams step.** The same outbound flow that sends
-email replies also posts Teams replies, using a best-effort action name. If
-that one step shows as unrecognized in the designer after import, delete just
-that step and re-add "Post message in a chat or channel" from the action
-picker — the designer fills in your team/channel visually there too. The
-Outlook side of that flow is unaffected either way.
+**Why the outbound Teams step says V3.** The package uses the Teams
+connector's fixed-schema channel action for import compatibility. The newer
+"Post message in a chat or channel" action asks Microsoft for a dynamic
+tenant-specific schema while the legacy package is still importing, which can
+fail with `GetUnifiedActionSchema` / `Unauthorized` before the selected
+connection is available. The packaged action avoids that import-time lookup;
+after import, the only setup is selecting the destination Team and Channel.
