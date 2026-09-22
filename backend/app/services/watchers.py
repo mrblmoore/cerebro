@@ -27,6 +27,7 @@ _stop = threading.Event()
 _last_nudge_scan = 0.0
 _last_retention = 0.0
 _last_copilot_sync = 0.0
+_last_screenpipe_sync = 0.0
 
 
 def _sweep_once() -> None:
@@ -72,7 +73,7 @@ def _scheduler_loop() -> None:
     from app.services.activity_service import apply_retention
 
     logger.info("scheduler", "Task scheduler started")
-    global _last_nudge_scan, _last_retention, _last_copilot_sync
+    global _last_nudge_scan, _last_retention, _last_copilot_sync, _last_screenpipe_sync
 
     while not _stop.is_set():
         now = time.time()
@@ -93,6 +94,14 @@ def _scheduler_loop() -> None:
                     and now - _last_copilot_sync > max(15, settings.COPILOT_SYNC_SECONDS)):
                 copilot_bridge.sync(db)
                 _last_copilot_sync = now
+
+            # Screenpipe is useful only when its OCR reaches Ask. Polling here
+            # turns it from a health-check-only integration into a real source.
+            if settings.SCREENPIPE_ENABLED and now - _last_screenpipe_sync > 60:
+                from app.services.screenpipe_client import ScreenpipeClient
+
+                ScreenpipeClient().sync_sources(db)
+                _last_screenpipe_sync = now
 
             # Retention sweep every ~6 hours.
             if now - _last_retention > 6 * 3600:

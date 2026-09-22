@@ -237,6 +237,43 @@ def test_knowledge_search():
     db.close()
 
 
+def test_chunked_citations_and_sources():
+    print("\nUnified sources and cited retrieval")
+    from app.models.knowledge_chunk import KnowledgeChunk
+    from app.services.source_service import SourceService
+
+    db = session()
+    indexed = RAGService(db).index_document({
+        "title": "Machine Manual",
+        "source": "test",
+        "url": "https://example.test/manual",
+        "content": "## Page 1\nOrdinary setup notes.\n\n## Page 2\n"
+                   "The flux capacitor reset code is ALPHA-77.\n\n"
+                   "## Page 3\nWarranty information.",
+    })
+    chunks = db.query(KnowledgeChunk).filter(
+        KnowledgeChunk.document_id == indexed.id).all()
+    check("Indexed documents are split into attributable sections", len(chunks) >= 3)
+
+    hits = RAGService(db).search("flux capacitor reset code", limit=3)
+    check("Search returns a section citation", bool(hits and hits[0].get("citation")))
+    check("Citation identifies the matching page", hits and "Page 2" in hits[0].get("locator", ""))
+    check("Search returns the relevant passage, not the document beginning",
+          hits and "ALPHA-77" in hits[0].get("excerpt", ""))
+
+    source = SourceService(db).observe(
+        "browser", "https://example.test/live", "Live troubleshooting page",
+        uri="https://example.test/live",
+        content="The current incident workaround is to recycle service Delta.",
+        readable=True, exclusive=True)
+    context = SourceService(db).context_for_query("incident workaround Delta")
+    check("Captured pages become queryable Ask sources",
+          any(item.get("source_id") == source.id for item in context))
+    check("Transient sources carry a stable citation ID",
+          any(item.get("ref", "").startswith("S") for item in context))
+    db.close()
+
+
 # --------------------------------------------------------------------- llm
 def test_llm_disabled():
     print("\nAI provider (disabled)")
@@ -359,11 +396,19 @@ def test_database_resilience():
     """A bad database setting must never stop Cerebro from starting."""
     print("\nDatabase resilience")
 
-    from app.core.database import _explain, check_database
+    from app.core.database import _explain, check_database, probe_database
 
     result = check_database()
     check("The working database reports ok", result["ok"] is True)
     check("It names the dialect", "sqlite" in result["detail"].lower())
+
+    configured = probe_database(os.environ["DATABASE_URL"], initialize=True)
+    check("The setup probe verifies the configured database", configured["ok"] is True)
+    check("The setup probe proves writes and reports the location",
+          configured.get("writable") is True
+          and str(Path(_TEMP_DIR).resolve()) in configured.get("location", ""))
+    check("The setup probe reports whether Cerebro's schema exists",
+          configured.get("tables", 0) > 0)
 
     # create_engine imports the driver eagerly, so this class of failure lands
     # at import time. If it were fatal, one wrong setting would leave no way
@@ -401,7 +446,8 @@ def test_database_round_trip():
 
     tables = set(inspect(engine).get_table_names())
     for required in ("events", "context_state", "memories", "tasks",
-                     "tracked_documents", "enterprise_messages"):
+                     "tracked_documents", "enterprise_messages", "sources",
+                     "knowledge_chunks"):
         check(f"Table {required} exists", required in tables)
 
     from app.models.event import Event
@@ -647,6 +693,16 @@ def test_motion_and_icons():
     check("The widget shows the logo in its title bar", "branding.logo_image" in widget)
     check("The widget fades in on launch", "_fade_in" in widget)
     check("The widget can pulse a status dot", "_pulse_dot" in widget)
+    check("Ask keeps its composer below the scrolling transcript",
+          'composer.pack(side="bottom", fill="x")' in widget
+          and "def _render_ask_composer" in widget)
+    check("The widget presents one Ask, Sources, Activity workflow",
+          'TABS = [("ask", "Ask"), ("sources", "Sources"), ("activity", "Activity")]' in widget)
+    check("Starting the widget also starts its capture helpers",
+          "_start_desktop_helpers" in widget and "DocumentWatcher" in widget)
+    apply_snapshot = widget.split("def _apply_snapshot", 1)[1].split("@staticmethod", 1)[0]
+    check("Unchanged Ask polls do not rebuild the widget",
+          'previous_snapshot.get("nudges") != snapshot.get("nudges")' in apply_snapshot)
 
 
 def test_branding_module():
@@ -735,6 +791,16 @@ def test_setup_wizard():
     check("Slow checks run off the UI thread", "_run_async" in source)
     check("Finishing marks setup complete", "mark_setup_complete" in source)
     check("Missing dependencies can be repaired in place", "_repair" in source)
+    check("Successful tests keep their result visible after re-rendering",
+          source.index('self._render()\n                self._set_status(result.get("detail")')
+          > source.index("def _test_database"))
+    check("Switching to the built-in database saves its real URL",
+          'self.pending["DATABASE_URL"] = default_database_url()' in source)
+    check("Frozen setup resolves bundled files through PyInstaller",
+          'getattr(sys, "_MEIPASS"' in source)
+    check("The flow package and quickstart resolve from the bundled root",
+          'root / "power_automate" / "Cerebro-Bridge.zip"' in source
+          and 'root / "docs" / "POWER_AUTOMATE_QUICKSTART.md"' in source)
 
     spec = (ROOT / "packaging" / "cerebro.spec").read_text(encoding="utf-8")
     check("The wizard is built as its own executable", "CerebroSetupWizard" in spec)
@@ -1884,6 +1950,10 @@ def test_setup_and_package_contract():
 
     check("Continue collects visible values before saving",
           "collectVisibleInputs();" in setup and "Save & continue" in setup)
+    check("The built-in database can be tested without changing modes",
+          'id="test-db"' in setup
+          and setup.index('id="test-db"') > setup.index('id="db-url"')
+          and "if (await saveStaged()) runTest('database', test)" in setup)
     check("Skip explicitly saves before advancing",
           "document.getElementById('skip').onclick = async" in setup
           and "const saved = await saveStaged();" in setup)
@@ -1907,6 +1977,18 @@ def test_setup_and_package_contract():
           "Browser extension version" in workflow
           and "does not match VERSION" in workflow)
     check("Screenpipe integration defaults on", Settings().SCREENPIPE_ENABLED is True)
+    check("CI builds the importable flow before PyInstaller collects assets",
+          workflow.index("Build the Power Automate import package")
+          < workflow.index("Build the executables"))
+
+    popup = (ROOT / "browser-extension" / "src" / "popup.html").read_text(encoding="utf-8")
+    manifest_text = (ROOT / "browser-extension" / "src" / "manifest.json").read_text(encoding="utf-8")
+    background = (ROOT / "browser-extension" / "src" / "background.js").read_text(encoding="utf-8")
+    check("The extension offers explicit current-page reading", "Read this page" in popup)
+    check("Explicit capture uses a temporary tab grant",
+          '"activeTab"' in manifest_text and '"scripting"' in manifest_text)
+    check("Excluded domains also block explicit capture",
+          "excludedDomains" in background and "CAPTURE_ACTIVE" in background)
 
 
 def test_screenpipe_current_api():
@@ -1933,6 +2015,7 @@ def test_chat_service():
     """Questions get answered, instructions become tasks, gaps get asked about."""
     print("\nChat — questions, instructions and clarification")
     from app.services.chat_service import ChatService
+    from app.services.task_service import TaskService
     from app.models.task import Task
 
     db = session()
@@ -1943,6 +2026,14 @@ def test_chat_service():
     result = chat.handle_message("What does error 0x80040115 mean?")
     check("A question is answered, not turned into a task", result["kind"] == "answer")
     check("With no AI provider it says so", "Settings" in result["reply"])
+
+    # A plain conversational statement used to become a dormant task.  It is
+    # context for a back-and-forth, so it must receive an answer instead.
+    before = db.query(Task).count()
+    result = chat.handle_message("Outlook is broken again")
+    check("A conversational statement receives an answer", result["kind"] == "answer")
+    check("A conversational statement does not create a task",
+          db.query(Task).count() == before)
 
     # An instruction missing what it needs to run is met with a clarifying
     # question instead of a task that would fail silently later.
@@ -1963,6 +2054,19 @@ def test_chat_service():
     result = chat.handle_message("Remind me to call the customer back tomorrow")
     check("A complete instruction creates the task immediately",
           result["kind"] == "confirmation")
+
+    # Provider intent parsing may call an immediate chat request "manual".
+    # Chat itself is already the trigger, so it must become runnable now.
+    from unittest.mock import patch
+    with patch("app.services.task_service.parse_instruction", return_value={
+        "title": "Prepare the case summary", "kind": "summarise",
+        "schedule": "manual", "at_time": None, "autonomous": False,
+        "attribution": None, "spec": {},
+    }):
+        immediate = TaskService(db).create_from_instruction(
+            "Prepare the case summary", source="chat")
+    check("A manual intent asked in chat is scheduled once now",
+          immediate.schedule == "once" and immediate.next_run is not None)
 
     history = chat.history(limit=50)
     check("Every turn is recorded", len(history) >= 8)
@@ -1993,7 +2097,8 @@ def main() -> int:
     init_db()
 
     for suite in (test_version_source, test_event_detector, test_context_engine, test_event_flow,
-                  test_embeddings, test_knowledge_search, test_llm_disabled,
+                  test_embeddings, test_knowledge_search, test_chunked_citations_and_sources,
+                  test_llm_disabled,
                   test_bedrock_provider, test_model_catalog_and_discovery,
                   test_setup_checks_and_repair, test_setup_wizard,
                   test_database_resilience, test_database_round_trip,

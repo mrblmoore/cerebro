@@ -63,13 +63,15 @@ Prefer a menu? Run `cerebro.bat` (or `./cerebro.sh`) with no arguments.
 Live context, recent events, knowledge search, system status and the activity log.
 
 **Desktop widget**
-A small always-on-top panel with your current case, the suggested next action and
-instant knowledge search. Drag it anywhere, snap it to an edge, collapse it to a
-single strip while you work, or set it to start with Windows.
+A small always-on-top panel with a source-aware Ask transcript, connection
+readiness, citations and one Activity feed for tasks, approvals and events. Drag
+it anywhere, snap it to an edge, collapse it while you work, or set it to start
+with Windows.
 
 **Browser extension**
-Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases, and the SharePoint documents
-you open, keeping Cerebro in sync with the tab you are on. The Windows installer
+Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases and the SharePoint
+documents you open. **Read this page** explicitly captures the current tab and
+confirms whether it became a readable source. The Windows installer
 includes its complete folder and an **Install Browser Extension** Start-menu
 shortcut; source users load `browser-extension/src`. See [docs/INSTALL.md](docs/INSTALL.md).
 
@@ -80,9 +82,10 @@ back out through a second flow. No Microsoft credentials live in Cerebro.
 See [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md).
 
 **Documents**
-Reads the Word, Excel, PowerPoint and PDF files you have open — including
-SharePoint files, via the locally synced copy — so you can ask about them. It
-can edit Word and Excel too, with a dry run first and a backup every time.
+Reads Word, Excel, PowerPoint and PDF files you have open, with local OCR for
+scanned PDF pages. SharePoint works through either a locally synced copy or an
+optional delegated, read-only Graph connection. It can edit local Word and Excel
+files too, with a dry run first and a backup every time.
 See [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
 
 **Microsoft Copilot (optional)**
@@ -186,11 +189,13 @@ you configure a cloud AI provider, and choosing Ollama keeps even that local.
 
 The pieces that touch other systems stay deliberately narrow:
 
-- **Outlook and Teams** reach Cerebro only through a folder of JSON files that
-  Power Automate writes. Cerebro holds no Microsoft credentials and makes no
-  calls to Microsoft 365. Replies wait for your approval before they leave.
+- **Outlook and Teams** use a folder of JSON files written by Power Automate.
+  Replies wait for your approval before they leave. Optional direct SharePoint
+  reading is separate: it uses a delegated read-only token stored locally and
+  never grants mail or Teams permissions.
 - **The browser extension** reports recognised case and document pages. Tracking
   every tab is off by default, capturing page text is off by default, and any
-  domain on your exclusion list is never read at all.
+  domain on your exclusion list is never read. Clicking **Read this page** grants
+  access only to the selected tab and shows a success or failure result.
 - **Documents** are read from disk when you open them. Edits are explicit,
   backed up, and refused while the file is open in Office.

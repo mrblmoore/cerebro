@@ -132,7 +132,7 @@ async function renderWelcome() {
     'Cerebro runs entirely on this machine. This wizard takes about a minute — every ' +
     'answer can be changed later in <a href="/settings">Settings</a>.') +
     `<div class="card"><header><h2>System check</h2>
-       <button class="btn-sm ghost" id="recheck">Re-run</button></header>
+       <button type="button" class="btn-sm ghost" id="recheck">Re-run</button></header>
      <div id="checks"><div class="empty">Running checks…</div></div></div>`;
 
   document.getElementById('recheck').onclick = loadChecks;
@@ -177,8 +177,8 @@ function renderDatabase() {
       <div class="callout warn"><span class="icon">⚠️</span>
         <span>PostgreSQL also needs its driver:
           <code class="inline">pip install -r backend/requirements-postgres.txt</code></span></div>
-      <div class="actions"><button id="test-db" class="btn-sm">Test connection</button></div>
-    </div>`;
+    </div>
+    <div class="actions"><button type="button" id="test-db" class="btn-sm">Test this database</button></div>`;
 
   // Pre-select the radio matching the saved URL.
   const target = isSqlite ? 'sqlite' : 'external';
@@ -198,7 +198,10 @@ function renderDatabase() {
   };
 
   const test = document.getElementById('test-db');
-  if (test) test.onclick = () => runTest('database', test);
+  if (test) test.onclick = async () => {
+    // Probe the selection currently shown, not the URL Cerebro started with.
+    if (await saveStaged()) runTest('database', test);
+  };
 }
 
 function renderAI() {
@@ -244,7 +247,7 @@ function renderAIFields(fallback) {
 
   host.innerHTML = groups[provider] || '';
   if (provider !== 'none') {
-    host.innerHTML += `<div class="actions"><button id="test-ai" class="btn-sm">Save & test</button></div>`;
+    host.innerHTML += `<div class="actions"><button type="button" id="test-ai" class="btn-sm">Save & test</button></div>`;
     document.getElementById('test-ai').onclick = async (event) => {
       await saveStaged();
       runTest('ai', event.target);

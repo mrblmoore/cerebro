@@ -21,7 +21,9 @@ from sqlalchemy.orm import Session
 from app.core import logger
 from app.core.config import settings
 from app.models.document import Document
+from app.models.knowledge_chunk import KnowledgeChunk
 from app.services import embeddings
+from app.services import text_chunks
 
 COLLECTION_PREFIX = "cerebro_documents"
 
@@ -113,14 +115,16 @@ class RAGService:
     # ------------------------------------------------------------ status
     def status(self) -> Dict[str, Any]:
         count = self.db.query(Document).count()
+        chunks = self.db.query(KnowledgeChunk).count()
         return {
             "ok": True,
             "backend": self._backend,
             "embeddings": embeddings.signature(),
             "documents": count,
+            "chunks": chunks,
             "detail": (
                 f"{'Qdrant' if self._backend == 'qdrant' else 'Built-in store'} · "
-                f"{count} document{'s' if count != 1 else ''} indexed"
+                f"{count} document{'s' if count != 1 else ''}, {chunks} cited section(s) indexed"
             ),
         }
 
@@ -151,6 +155,7 @@ class RAGService:
         self.db.add(db_document)
         self.db.commit()
         self.db.refresh(db_document)
+        self._index_chunks(db_document)
 
         if self._backend == "qdrant" and not self._upsert_qdrant(db_document, vector):
             # The row is already saved; keep the vector locally so it stays findable.
@@ -158,6 +163,28 @@ class RAGService:
             self.db.commit()
 
         return db_document
+
+    def _index_chunks(self, document: Document) -> int:
+        """Replace a document's section index with locally searchable chunks."""
+        self.db.query(KnowledgeChunk).filter(
+            KnowledgeChunk.document_id == document.id).delete(synchronize_session=False)
+        pieces = text_chunks.split(document.content or "")
+        signature = embeddings.local_signature()
+        for position, piece in enumerate(pieces):
+            vector = embeddings.local_embedding(piece["content"])
+            self.db.add(KnowledgeChunk(
+                document_id=document.id, position=position,
+                locator=piece.get("locator"), content=piece["content"],
+                embedding=json.dumps(vector), embedding_signature=signature,
+            ))
+        self.db.commit()
+        return len(pieces)
+
+    def _ensure_chunks(self) -> None:
+        present = {row[0] for row in self.db.query(KnowledgeChunk.document_id).distinct().all()}
+        for document in self.db.query(Document).all():
+            if document.id not in present:
+                self._index_chunks(document)
 
     def _upsert_qdrant(self, document: Document, vector: List[float]) -> bool:
         """Push one document's vector to Qdrant. False means it did not land."""
@@ -199,6 +226,8 @@ class RAGService:
                 except Exception as exc:
                     logger.warn("rag_service", "Qdrant delete failed",
                                 {"error": str(exc), "document": document.id})
+        self.db.query(KnowledgeChunk).filter(
+            KnowledgeChunk.document_id == document.id).delete(synchronize_session=False)
         self.db.delete(document)
         self.db.commit()
 
@@ -220,6 +249,9 @@ class RAGService:
             up_to_date = document.embedding_signature == target and (
                 document.embedding or self._backend == "qdrant")
             if up_to_date and not force:
+                if not self.db.query(KnowledgeChunk).filter(
+                        KnowledgeChunk.document_id == document.id).first():
+                    self._index_chunks(document)
                 continue
 
             vector, signature = embeddings.embed_with_signature(
@@ -229,6 +261,9 @@ class RAGService:
             pushed = self._backend == "qdrant" and self._upsert_qdrant(document, vector)
             # Keep a local copy unless Qdrant accepted it, so search always works.
             document.embedding = None if pushed else json.dumps(vector)
+            if force or not self.db.query(KnowledgeChunk).filter(
+                    KnowledgeChunk.document_id == document.id).first():
+                self._index_chunks(document)
             updated += 1
 
         self.db.commit()
@@ -243,6 +278,10 @@ class RAGService:
             return []
 
         try:
+            self._ensure_chunks()
+            chunks = self._search_chunks(query, limit)
+            if chunks:
+                return chunks
             if self._backend == "qdrant":
                 results = self._search_qdrant(query, limit)
                 if results:
@@ -251,6 +290,39 @@ class RAGService:
         except Exception as exc:
             logger.error("rag_service", "Search failed", {"error": str(exc)})
             return []
+
+    def _search_chunks(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        query_vector = embeddings.local_embedding(query)
+        signature = embeddings.local_signature()
+        documents = {document.id: document for document in self.db.query(Document).all()}
+        scored = []
+        for chunk in self.db.query(KnowledgeChunk).all():
+            try:
+                vector = json.loads(chunk.embedding or "[]")
+            except (TypeError, ValueError):
+                vector = []
+            if chunk.embedding_signature != signature or not vector:
+                vector = embeddings.local_embedding(chunk.content or "")
+                chunk.embedding = json.dumps(vector)
+                chunk.embedding_signature = signature
+            score = embeddings.cosine(query_vector, vector)
+            if score > 0 and chunk.document_id in documents:
+                scored.append((score, chunk, documents[chunk.document_id]))
+        self.db.commit()
+        scored.sort(key=lambda item: item[0], reverse=True)
+        results = []
+        for index, (score, chunk, document) in enumerate(scored[:limit], start=1):
+            results.append({
+                "id": document.id, "document_id": document.id,
+                "chunk_id": chunk.id, "title": document.title,
+                "source": document.source, "url": document.url,
+                "score": round(float(score), 4),
+                "excerpt": (chunk.content or "")[:1_000],
+                "locator": chunk.locator or f"Section {chunk.position + 1}",
+                "citation": f"K{index}",
+                "tags": [tag for tag in (document.tags or "").split(",") if tag],
+            })
+        return results
 
     def _search_qdrant(self, query: str, limit: int) -> List[Dict[str, Any]]:
         client = self._connect_qdrant()

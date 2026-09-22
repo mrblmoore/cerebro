@@ -155,6 +155,8 @@ def compute_next_run(schedule: str, at_time: str = None,
 
     if schedule in ("manual",):
         return None
+    if schedule == "once" and not at_time:
+        return now + timedelta(seconds=2)
     if schedule == "hourly":
         return now + timedelta(hours=1)
 
@@ -221,6 +223,12 @@ class TaskService:
         without needing an AI provider to have understood it.
         """
         parsed = parse_instruction(instruction, context)
+        # A manual task created *from chat* is a contradiction: the user is
+        # asking now.  Run it once instead of confirming "when you ask" and
+        # leaving it with no next_run forever.  Explicitly scheduled tasks keep
+        # their requested cadence.
+        if source == "chat" and parsed.get("schedule") == "manual":
+            parsed["schedule"] = "once"
         spec = parsed.get("spec") or {}
         if extra_spec:
             spec = {**spec, **{k: v for k, v in extra_spec.items() if v}}

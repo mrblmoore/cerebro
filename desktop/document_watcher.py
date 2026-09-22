@@ -276,6 +276,18 @@ class DocumentWatcher:
         self.session = requests.Session()
         #: path -> mtime last reported, so an unchanged file is reported once.
         self.reported: Dict[str, float] = {}
+        self._last_heartbeat = 0.0
+
+    def heartbeat(self) -> None:
+        if time.time() - self._last_heartbeat < 10:
+            return
+        try:
+            self.session.post(
+                f"{self.api_url}/api/sources/heartbeat",
+                json={"component": "document_watcher"}, timeout=4).raise_for_status()
+            self._last_heartbeat = time.time()
+        except requests.RequestException:
+            pass
 
     def report(self, path: Path) -> None:
         key = str(path)
@@ -320,6 +332,7 @@ class DocumentWatcher:
                 time.sleep(3)
 
     def tick(self) -> None:
+        self.heartbeat()
         seen: Set[Path] = set(open_documents(self.folders))
 
         active = foreground_document(self.folders)

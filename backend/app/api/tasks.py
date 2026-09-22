@@ -32,16 +32,23 @@ class RunNow(BaseModel):
 
 def _context(db: Session) -> Dict[str, Any]:
     context = ContextEngine(db).get_current_context()
-    if context is None:
-        return {}
-    payload = context.to_dict()
+    payload = context.to_dict() if context is not None else {}
     # "this document" resolves to whatever is in view.
-    if context.active_application == "Document" and context.window_title:
+    if context is not None and context.active_application == "Document" and context.window_title:
         from app.models.tracked_document import TrackedDocument
 
         record = (db.query(TrackedDocument)
                   .filter(TrackedDocument.name == context.window_title).first())
         payload["active_document"] = record.path if record else context.window_title
+    if not payload.get("active_document"):
+        from app.models.source import Source
+
+        source = (db.query(Source)
+                  .filter(Source.kind.in_(("document", "sharepoint")),
+                          Source.active.is_(True), Source.local_path.isnot(None))
+                  .order_by(Source.last_seen.desc()).first())
+        if source:
+            payload["active_document"] = source.local_path
     return payload
 
 

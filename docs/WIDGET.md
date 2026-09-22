@@ -1,7 +1,7 @@
 # The Cerebro desktop widget
 
-A small always-on-top panel that keeps your case, your next action and your
-knowledge base in view while you work in Salesforce, Teams and everything else.
+A small always-on-top panel for grounded conversation, readable sources and the
+work Cerebro is carrying out while you use Salesforce, Teams and everything else.
 
 ```
 Windows          double-click widget.bat
@@ -15,16 +15,19 @@ install.
 
 ## The three tabs
 
-**Context** — the case you are on, the customer, whether a call or remote
-session is live, the application in focus, and a short activity trail.
+**Ask** — a real back-and-forth transcript. The composer stays at the bottom;
+active-source chips show what is in scope, and cited source links are attached
+to answers. Questions and immediate requests are answered now. Only genuine
+scheduled or action-oriented instructions become tasks.
 
-**Assist** — what to do next, ranked by priority. Suggestions are live: they
-change when a call starts, when a remote session connects, or when a case opens.
-Where an action makes sense, the card offers it — “Search *Contoso Ltd*” runs
-the search for you.
+**Sources** — connection readiness, current browser/document context, and
+knowledge search in one place. Include or exclude items from Ask and open a
+source from its citation. This is also where browser, document, OCR,
+Screenpipe, SharePoint and knowledge status is explained.
 
-**Search** — your indexed knowledge base. Type, press Enter, click a result to
-open it. Ctrl+F jumps here from anywhere in the widget.
+**Activity** — suggestions, pending approvals, tasks, mail/Teams items and
+recent events. It replaces the separate context and inbox surfaces so work does
+not disappear between tabs.
 
 ---
 
@@ -64,7 +67,7 @@ Position, size, tab and every preference are remembered between sessions.
 |---|---|
 | `Esc` | Collapse / expand |
 | `Ctrl+R` | Refresh now |
-| `Ctrl+F` | Jump to Search |
+| `Ctrl+F` | Jump to Sources / search |
 | `Ctrl+Q` | Quit |
 
 ---
@@ -94,6 +97,10 @@ The status strip under the title bar always tells you where you stand: green
 when Cerebro is answering, red with the reason when it is not. The widget keeps
 retrying on its own, so you can start it before Cerebro and it will connect as
 soon as the API comes up.
+
+Starting the widget also starts the desktop agent, activity recorder (when
+enabled), and document watcher. The UI only rebuilds when data changes, so a
+normal poll no longer makes the panel visibly refresh every few seconds.
 
 Pointing the widget at a different Cerebro — a shared instance, or a different
 port — is one field in **☰ → Widget preferences**, or:

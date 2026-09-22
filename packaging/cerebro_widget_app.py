@@ -7,6 +7,7 @@ starts the packaged Cerebro server and bundled desktop helpers when needed.
 """
 
 import subprocess
+import os
 import sys
 import threading
 import time
@@ -69,8 +70,13 @@ def _setting(api_url: str, key: str, default=None):
 def _run_desktop_helpers(api_url: str) -> None:
     from activity_recorder import ActivityRecorder
     from agent import DesktopAgent
+    from document_watcher import DocumentWatcher, configured_folders, default_folders
 
-    for target in (DesktopAgent(api_url).run, ActivityRecorder(api_url).run):
+    folders = configured_folders(api_url) or default_folders()
+    helpers = [DesktopAgent(api_url).run, ActivityRecorder(api_url).run]
+    if folders:
+        helpers.append(DocumentWatcher(api_url, folders, 4.0).run)
+    for target in helpers:
         threading.Thread(target=target, daemon=True).start()
 
     enabled = _setting(api_url, "SCREENPIPE_ENABLED", default=True) in (True, "true", "1", 1)
@@ -86,4 +92,5 @@ if __name__ == "__main__":
     api_url = _api_url()
     _ensure_server(api_url)
     _run_desktop_helpers(api_url)
+    os.environ["CEREBRO_HELPERS_STARTED"] = "1"
     sys.exit(widget.main())

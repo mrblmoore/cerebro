@@ -7,6 +7,8 @@ from app.models.document import Document
 from app.models.enterprise import EnterpriseAction, EnterpriseMessage
 from app.models.event import Event
 from app.models.memory import Memory
+from app.models.knowledge_chunk import KnowledgeChunk
+from app.models.source import Source
 from app.models.style import StyleProfile
 from app.models.nudge import Nudge
 from app.models.task import Task
@@ -18,6 +20,8 @@ __all__ = [
     "ContextState",
     "Document",
     "Memory",
+    "KnowledgeChunk",
+    "Source",
     "AudioRecording",
     "Transcription",
     "ActivitySnapshot",

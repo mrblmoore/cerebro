@@ -72,6 +72,33 @@ Knowledge base documents.
 - updated_at (datetime)
 ```
 
+### knowledge_chunks
+Attributable page/slide/sheet/heading sections used for cited retrieval.
+
+```sql
+- id (integer, PK)
+- document_id (integer, FK → documents.id)
+- position (integer)
+- locator (string) - e.g. Page 4, Slide 2, Sheet: Cases
+- content (text)
+- embedding (text) - JSON local vector
+- embedding_signature (string)
+```
+
+### sources
+Readable, query-time context observed from the user's current work.
+
+```sql
+- id (integer, PK)
+- kind (string) - browser, document, sharepoint, activity, screenpipe, message
+- stable_key (string, unique)
+- title, uri, local_path, mime_type
+- content, content_hash, metadata_json
+- readable, active, excluded (boolean)
+- error (string)
+- captured_at, last_seen (datetime)
+```
+
 ### memories
 Personal memories and learned patterns.
 
@@ -92,10 +119,10 @@ Personal memories and learned patterns.
 
 Collections for semantic search:
 
-### cerebrus_documents
-- Stores embeddings of knowledge base documents
-- 1536-dimensional vectors (OpenAI embeddings)
-- Payload includes title, source, and content preview
+### cerebro_documents_&lt;embedding-signature&gt;
+- Optional Qdrant collection for whole-document retrieval
+- Dimensions follow the configured embedding provider
+- Chunk-level citations remain available from the built-in database
 
 ## Initialization
 

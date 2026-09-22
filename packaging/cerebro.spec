@@ -12,6 +12,7 @@
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).parent
 BACKEND = ROOT / "backend"
@@ -30,6 +31,7 @@ datas = [
     (str(BACKEND / ".env.example"), "."),
     (str(ROOT / "VERSION"), "."),
 ]
+datas += collect_data_files("rapidocr_onnxruntime")
 for name in ("README.md", "GETTING_STARTED.md"):
     if (ROOT / name).exists():
         datas.append((str(ROOT / name), "."))
@@ -65,7 +67,7 @@ hiddenimports = [
     "mss", "pynput", "pynput.keyboard", "PIL", "PIL.Image",
     "multipart", "python_multipart",
     "app.main", "app.models", "app.api",
-    "docx", "openpyxl", "pptx", "pypdf",
+    "docx", "openpyxl", "pptx", "pypdf", "fitz", "rapidocr_onnxruntime", "msal",
     # Every service is pinned here rather than left to static discovery: many are
     # imported lazily inside functions (to keep optional deps optional), which is
     # exactly the pattern PyInstaller's analysis can miss in a frozen build.
@@ -78,9 +80,12 @@ hiddenimports = [
     "app.services.llm_service", "app.services.memory_service",
     "app.services.nudge_service", "app.services.rag_service",
     "app.services.redaction", "app.services.screenpipe_client",
+    "app.services.ocr_service", "app.services.sharepoint_service",
+    "app.services.source_service", "app.services.text_chunks",
     "app.services.style_service", "app.services.task_executors",
     "app.services.task_service", "app.services.watchers",
 ]
+hiddenimports += collect_submodules("rapidocr_onnxruntime")
 
 excludes = ["tkinter"]   # the server build has no interface
 
@@ -103,7 +108,7 @@ widget = Analysis(
     datas=[],
     hiddenimports=[
         "widget", "widget_config", "win_integration", "agent", "branding",
-        "activity_recorder", "screenpipe_launcher", "mss", "PIL",
+        "activity_recorder", "document_watcher", "screenpipe_launcher", "mss", "PIL",
         "PIL.Image", "pynput", "pynput.keyboard",
     ],
     hookspath=[],

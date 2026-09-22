@@ -14,6 +14,7 @@ from app.api.memory import router as memory_router
 from app.api.style import router as style_router
 from app.api.tasks import router as tasks_router
 from app.api.system import router as system_router
+from app.api.sources import router as sources_router
 
 ROUTERS = [
     system_router,
@@ -30,6 +31,7 @@ ROUTERS = [
     chat_router,
     copilot_router,
     audio_router,
+    sources_router,
 ]
 
 __all__ = [
@@ -48,4 +50,5 @@ __all__ = [
     "copilot_router",
     "audio_router",
     "system_router",
+    "sources_router",
 ]

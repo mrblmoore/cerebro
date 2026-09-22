@@ -77,3 +77,31 @@ class ScreenpipeClient:
                 seen.add(name)
                 applications.append({"name": name})
         return applications
+
+    def sync_sources(self, db, limit: int = 8) -> Dict[str, Any]:
+        """Bring recent Screenpipe OCR into Cerebro's shared source registry."""
+        from app.services.source_service import SourceService
+
+        records = self.get_screenshots(limit=limit)
+        created = 0
+        service = SourceService(db)
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            content = record.get("content") if isinstance(record.get("content"), dict) else record
+            text = content.get("text") or content.get("ocr_text") or ""
+            if len(str(text).strip()) < 20:
+                continue
+            title = (content.get("window_name") or content.get("window_title") or
+                     content.get("app_name") or "Screen capture")
+            timestamp = (content.get("timestamp") or record.get("timestamp") or
+                         record.get("id") or f"{title}:{str(text)[:80]}")
+            service.observe(
+                "screenpipe", str(timestamp), str(title), uri=content.get("url"),
+                content=str(text), readable=True, active=False,
+                metadata={"application": content.get("app_name"),
+                          "screenpipe_type": record.get("type")}, commit=False)
+            created += 1
+        if created:
+            db.commit()
+        return {"ok": True, "ingested": created}
