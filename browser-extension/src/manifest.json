@@ -6,24 +6,44 @@
   "permissions": [
     "storage",
     "tabs",
+    "alarms",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
-    "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
+  "action": {
+    "default_title": "Cerebro",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.force.com/*",
+        "https://*.crm.dynamics.com/*",
+        "https://*.dynamics.com/*",
+        "https://*.service-now.com/*",
+        "https://*.zendesk.com/*",
+        "https://*.sharepoint.com/*",
+        "https://*.onedrive.live.com/*",
+        "https://*.officeapps.live.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
-  ],
-  "action": {
-    "default_popup": "popup.html"
-  }
+  ]
 }
