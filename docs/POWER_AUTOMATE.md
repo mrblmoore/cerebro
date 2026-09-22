@@ -227,6 +227,12 @@ curl -X POST http://localhost:8000/api/enterprise/actions \
 the outbox *is* sending, because your flow is watching that folder. Turn on
 *Send replies without approval* in Settings only if you mean it.
 
+The same bridge is available conversationally in the desktop widget. Ask can
+prepare email replies, new emails and Teams posts, then show the exact recipient,
+subject and body in a draft card. Approving the card queues the JSON file for
+Power Automate; the completion card says **queued**, not **sent**, because the
+outbox handoff cannot by itself prove that Microsoft accepted the message.
+
 ---
 
 ## Running the importer by hand

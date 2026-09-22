@@ -20,6 +20,22 @@ active-source chips show what is in scope, and cited source links are attached
 to answers. Questions and immediate requests are answered now. Only genuine
 scheduled or action-oriented instructions become tasks.
 
+Ask can also use Cerebro's services directly. It shows progress and completion
+cards while it searches sources, reads the current document, builds an inbox
+briefing, searches SharePoint, or prepares a Power Automate action. Email and
+Teams actions appear as full draft previews with **Approve and send** and
+**Discard** controls. They never enter the Power Automate outbox before an
+explicit approval.
+
+Examples:
+
+* `Summarize my inbox today`
+* `Draft a reply to the latest email from Alex`
+* `Email alex@example.com: The deployment is complete.`
+* `Post to Teams channel Support Escalations: The issue is resolved.`
+* `Search SharePoint for the rollout plan`
+* `Summarize this document`
+
 **Sources** — connection readiness, current browser/document context, and
 knowledge search in one place. Include or exclude items from Ask and open a
 source from its citation. This is also where browser, document, OCR,

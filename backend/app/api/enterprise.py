@@ -12,13 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core import logger
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.enterprise import EnterpriseAction, EnterpriseMessage
 from app.services import enterprise_service
 from app.services.enterprise_service import EnterpriseService
-from app.services.llm_service import LLMService
 
 router = APIRouter(prefix="/api/enterprise", tags=["enterprise"])
 
@@ -126,55 +124,12 @@ def draft_reply(message_id: int, request: DraftRequest = None,
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    llm = LLMService()
-    if not llm.enabled:
-        raise HTTPException(
-            status_code=409,
-            detail="No AI provider configured. Set one up in Settings → AI Provider.",
-        )
-
     request = request or DraftRequest()
-    from app.services.style_service import StyleService
-
-    style = StyleService(db).drafting_directive()
-    channel = "email" if message.source == "outlook" else "Teams message"
-    thread = EnterpriseService(db).thread(message.thread_id) if message.thread_id else []
-    history = "\n\n".join(
-        f"{m.sender or 'unknown'}: {(m.body or m.preview or '')[:800]}"
-        for m in thread[-4:]
-    ) or f"{message.sender or 'unknown'}: {(message.body or '')[:1500]}"
-
-    prompt = f"""Draft a reply to this {channel}.
-
-From: {message.sender_name or message.sender or 'unknown'}
-Subject: {message.subject or '(none)'}
-{f'Case: {message.case_id}' if message.case_id else ''}
-
-Conversation:
-{history}
-
-{f'Additional instruction: {request.instruction}' if request.instruction else ''}
-Tone: {request.tone or 'professional, warm, direct'}
-
-Write only the reply body — no subject line, no signature, no preamble.
-Keep it short. If a concrete answer is not possible, say what you are doing
-about it and when you will follow up.
-
-{style}"""
-
-    prompt = llm.with_memory(
-        prompt, query=f"{message.subject or ''} {message.body or ''}",
-        db=db, case_id=message.case_id, customer=message.customer)
-    draft = llm._call_llm(prompt)
-    logger.info("enterprise", "Drafted reply", {"message_id": message_id})
-    return {
-        "message_id": message_id,
-        "source": message.source,
-        "subject": (message.subject if (message.subject or "").lower().startswith("re:")
-                    else f"Re: {message.subject}" if message.subject else None),
-        "to": [message.sender] if message.sender else [],
-        "draft": draft,
-    }
+    try:
+        return EnterpriseService(db).draft_reply(
+            message, instruction=request.instruction, tone=request.tone)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # --------------------------------------------------------------- outbound
