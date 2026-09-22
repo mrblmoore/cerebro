@@ -148,6 +148,13 @@ def _shorten(text: str, limit: int) -> str:
 
 def _friendly_error(exc: Exception) -> str:
     if isinstance(exc, urllib.error.HTTPError):
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            detail = payload.get("detail")
+            if detail:
+                return str(detail)[:240]
+        except Exception:
+            pass
         return f"API returned {exc.code}"
     if isinstance(exc, urllib.error.URLError):
         return "Cerebro is not running"
@@ -612,9 +619,11 @@ class CerebroWidget:
             self._chat_bubble(area.inner, message)
         if self.ask_reply == "Working on it…" and (
                 not history or history[-1].get("role") != "assistant"):
-            tk.Label(area.inner, text="Cerebro is typing…", bg=theme["bg"],
-                     fg=theme["faint"], font=self.font(8, "italic"), anchor="w").pack(
-                fill="x", padx=12, pady=(0, 8))
+            self._render_tool_card(area.inner, {
+                "type": "progress", "status": "running",
+                "title": "Working on your request",
+                "detail": "Choosing the right Cerebro service…",
+            }, theme["bg"])
 
         nudges = (self.snapshot.get("nudges") or {}).get("nudges") or []
         if nudges:
@@ -677,6 +686,9 @@ class CerebroWidget:
     _KIND_TAGS = {
         "clarification": "asking",
         "confirmation": "task created",
+        "tool_result": "tool complete",
+        "draft": "review needed",
+        "completion": "complete",
         "instruction": None,
         "question": None,
         "answer": None,
@@ -722,6 +734,8 @@ class CerebroWidget:
             self._render_chat_image(card, message["image_path"], bg)
 
         meta = message.get("meta") or {}
+        for item in (meta.get("cards") or []):
+            self._render_tool_card(card, item, bg)
         for item in (meta.get("images") or []):
             self._render_chat_image(card, item.get("image"), bg, caption=item.get("caption"))
         sources = meta.get("sources") or []
@@ -737,6 +751,85 @@ class CerebroWidget:
                 widget.pack(fill="x")
                 if uri:
                     widget.bind("<Button-1>", lambda _event, u=uri: webbrowser.open(u))
+
+    def _render_tool_card(self, parent, item, parent_bg):
+        """Structured Ask progress, preview and completion state."""
+        theme = self.theme
+        card_type = item.get("type", "progress")
+        status = item.get("status", "complete")
+        colours = {
+            "running": theme["accent"], "complete": theme["ok"],
+            "awaiting_approval": theme["warn"], "warning": theme["warn"],
+            "error": theme["err"],
+        }
+        colour = colours.get(status, theme["dim"])
+        glyph = {"draft": "✎", "completion": "✓"}.get(
+            card_type, "…" if status == "running" else "✓")
+        shell = tk.Frame(parent, bg=theme["surface2"],
+                         highlightbackground=theme["border"], highlightthickness=1)
+        shell.pack(fill="x", padx=10, pady=(0, 7))
+        header = tk.Frame(shell, bg=theme["surface2"])
+        header.pack(fill="x", padx=8, pady=(6, 0))
+        tk.Label(header, text=glyph, bg=theme["surface2"], fg=colour,
+                 font=self.font(8, "bold")).pack(side="left", padx=(0, 6))
+        tk.Label(header, text=item.get("title") or "Cerebro action",
+                 bg=theme["surface2"], fg=theme["text"],
+                 font=self.font(8, "bold"), anchor="w").pack(side="left", fill="x")
+        detail = item.get("detail")
+        if detail:
+            tk.Label(shell, text=_shorten(str(detail), 160), bg=theme["surface2"],
+                     fg=theme["dim"], font=self.font(7), justify="left", anchor="w",
+                     wraplength=min(390, self.root.winfo_width() - 90)).pack(
+                fill="x", padx=8, pady=(2, 5))
+
+        if card_type == "draft":
+            if item.get("subject"):
+                tk.Label(shell, text=f"Subject: {item['subject']}", bg=theme["surface2"],
+                         fg=theme["dim"], font=self.font(7, "bold"), anchor="w",
+                         wraplength=min(390, self.root.winfo_width() - 90)).pack(
+                    fill="x", padx=8, pady=(2, 2))
+            tk.Label(shell, text=item.get("body") or "", bg=theme["surface2"],
+                     fg=theme["text"], font=self.font(8), justify="left", anchor="w",
+                     wraplength=min(390, self.root.winfo_width() - 90)).pack(
+                fill="x", padx=8, pady=(3, 7))
+            action_id = item.get("action_id")
+            if action_id and not self._action_is_resolved(action_id):
+                buttons = tk.Frame(shell, bg=theme["surface2"])
+                buttons.pack(fill="x", padx=8, pady=(0, 7))
+                self._link(buttons, item.get("approve_label") or "Approve",
+                           lambda aid=action_id: self._chat_action(aid, "approve")).pack(
+                    side="left", padx=(0, 12))
+                self._link(buttons, item.get("discard_label") or "Discard",
+                           lambda aid=action_id: self._chat_action(aid, "discard")).pack(side="left")
+
+    def _action_is_resolved(self, action_id):
+        for message in reversed(self.chat_history or []):
+            action = (message.get("meta") or {}).get("action") or {}
+            if action.get("id") == action_id and action.get("status") != "draft":
+                return True
+        return False
+
+    def _chat_action(self, action_id, decision):
+        self.ask_reply = "Working on it…"
+        self.render()
+
+        def worker():
+            try:
+                result = self.api.request(
+                    f"/api/chat/actions/{action_id}/{decision}", method="POST", payload={})
+                self.results.put(("ask", result))
+            except Exception as exc:
+                detail = _friendly_error(exc)
+                self.results.put(("ask", {
+                    "reply": f"Couldn't {decision} that draft: {detail}",
+                    "kind": "completion",
+                    "cards": [{"type": "completion", "status": "error",
+                               "title": "Action failed", "detail": detail}],
+                }))
+            finally:
+                self._load_chat_history()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _render_sources(self, area):
         """Everything Ask can use, plus one honest readiness view."""
@@ -1628,10 +1721,14 @@ class CerebroWidget:
                             "role": "assistant", "content": reply,
                             "kind": payload.get("kind", "answer") if isinstance(payload, dict) else "answer",
                             "meta": {
-                                "sources": payload.get("sources", []),
-                                "images": payload.get("images", []),
+                                key: payload.get(key) for key in
+                                ("sources", "images", "cards", "action", "tool", "notify")
+                                if payload.get(key) not in (None, [], {})
                             } if isinstance(payload, dict) else {},
                         }]
+                    if isinstance(payload, dict) and payload.get("notify"):
+                        win.flash(self.root)
+                        self._flash_status("Cerebro queued the approved Power Automate action.")
                     # A substantial reply is worth more room; a short "on it" is not.
                     if len(reply) > 160:
                         self.expand_for(180)

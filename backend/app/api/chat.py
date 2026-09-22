@@ -24,6 +24,7 @@ from app.core.database import get_db
 from app.services import chat_images
 from app.services.chat_images import ImageError
 from app.services.chat_service import ChatService
+from app.services.ask_tools import AskToolService
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -47,6 +48,23 @@ def history(limit: int = Query(50, ge=1, le=200),
            db: Session = Depends(get_db)) -> Dict[str, Any]:
     messages = ChatService(db).history(limit=limit)
     return {"count": len(messages), "messages": messages}
+
+
+@router.get("/tools", dependencies=[Depends(require_local_origin)])
+def tools() -> Dict[str, Any]:
+    """Tools Ask can use and the safety mode applied to each one."""
+    items = AskToolService.catalog()
+    return {"count": len(items), "tools": items}
+
+
+@router.post("/actions/{action_id}/approve", dependencies=[Depends(require_local_origin)])
+def approve_action(action_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    return ChatService(db).handle_action(action_id, "approve")
+
+
+@router.post("/actions/{action_id}/discard", dependencies=[Depends(require_local_origin)])
+def discard_action(action_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    return ChatService(db).handle_action(action_id, "discard")
 
 
 @router.post("/upload-image", dependencies=[Depends(require_local_origin)])

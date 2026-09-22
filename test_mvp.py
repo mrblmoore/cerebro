@@ -2225,6 +2225,81 @@ def test_chat_reference_images():
     db.close()
 
 
+def test_ask_tools_and_action_cards():
+    """Ask reads services immediately and gates Power Automate writes."""
+    print("\nChat — tools, previews and Power Automate approvals")
+    from unittest.mock import patch
+
+    from app.models.enterprise import EnterpriseAction
+    from app.services.ask_tools import AskToolService
+    from app.services.chat_service import ChatService
+    from app.services.enterprise_service import EnterpriseService
+
+    db = session()
+    enterprise = EnterpriseService(db)
+    ingested = enterprise.ingest_payload({
+        "source": "outlook", "external_id": "ask-tools-message",
+        "sender": "alex@example.com", "sender_name": "Alex",
+        "subject": "Ask tools test deployment", "body": "Can you confirm the deployment?",
+        "timestamp": "2026-09-22T12:00:00Z", "thread_id": "ask-tools-thread",
+    }, source_file="ask-tools.json")
+    message_id = ingested["id"]
+    chat = ChatService(db)
+
+    briefing = chat.handle_message("Summarize my inbox today")
+    check("Ask routes inbox briefing to a read tool",
+          briefing.get("tool") == "get_inbox_briefing")
+    check("Tool results include visible progress and completion cards",
+          {card.get("type") for card in briefing.get("cards", [])} ==
+          {"progress", "completion"})
+
+    fake_draft = {
+        "message_id": message_id, "source": "outlook",
+        "subject": "Re: Ask tools test deployment", "to": ["alex@example.com"],
+        "chat_or_channel": None, "thread_id": "ask-tools-thread",
+        "draft": "The deployment is complete.",
+    }
+    with patch("app.services.enterprise_service.EnterpriseService.draft_reply",
+               return_value=fake_draft):
+        drafted = chat.handle_message(f"Draft a reply to message {message_id}")
+    action_id = drafted.get("action", {}).get("id")
+    check("Ask creates a previewable outbound draft",
+          drafted.get("kind") == "draft" and bool(action_id))
+    check("Draft card carries approval controls",
+          any(card.get("type") == "draft" and card.get("action_id") == action_id
+              for card in drafted.get("cards", [])))
+    check("Draft remains in the database before approval",
+          db.query(EnterpriseAction).get(action_id).status == "draft")
+
+    outbox = Path(_TEMP_DIR) / "outbox"
+    before = len(list(outbox.glob("*.json"))) if outbox.exists() else 0
+    approved = chat.handle_action(action_id, "approve")
+    after = len(list(outbox.glob("*.json"))) if outbox.exists() else 0
+    check("Explicit approval queues the Power Automate action",
+          approved.get("action", {}).get("status") == "queued" and after == before + 1)
+    check("Approved actions request a completion notification", approved.get("notify") is True)
+
+    teams = chat.handle_message(
+        "Post to Teams channel Support Escalations: Deployment is complete")
+    teams_id = teams.get("action", {}).get("id")
+    check("Ask exposes Teams as a previewed Power Automate action",
+          teams.get("tool") == "send_teams_message" and bool(teams_id))
+    discarded = chat.handle_action(teams_id, "discard")
+    check("A preview can be discarded without entering the outbox",
+          "Nothing was sent" in discarded.get("reply", ""))
+
+    modes = {item["name"]: item["mode"] for item in AskToolService.catalog()}
+    check("Tool catalogue distinguishes reads from approval-gated writes",
+          modes.get("search_sources") == "read" and modes.get("send_email") == "approval")
+
+    widget = (ROOT / "desktop" / "widget.py").read_text(encoding="utf-8")
+    check("Widget renders structured Ask cards",
+          "def _render_tool_card" in widget and "def _chat_action" in widget)
+    check("Widget displays completion notifications",
+          "Cerebro queued the approved Power Automate action" in widget)
+    db.close()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -2258,7 +2333,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images):
+                  test_chat_reference_images, test_ask_tools_and_action_cards):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

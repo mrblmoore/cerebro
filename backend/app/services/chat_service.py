@@ -191,6 +191,23 @@ class ChatService:
             return {"reply": "Say something and I'll take it from there.",
                     "kind": "answer"}
 
+        # Immediate Ask tools sit between conversation and scheduled tasks.
+        # Reads execute now; external writes only create a previewable draft.
+        from app.services.ask_tools import AskToolService
+
+        tool_result = AskToolService(self.db).try_execute(text, context)
+        if tool_result is not None:
+            self._store("user", text, kind="instruction")
+            meta = {
+                key: tool_result[key] for key in
+                ("tool", "cards", "sources", "images", "action", "notify")
+                if tool_result.get(key) not in (None, [], {})
+            }
+            self._store("assistant", tool_result.get("reply") or "Done.",
+                        kind=tool_result.get("kind") or "tool_result", meta=meta,
+                        case_id=context.get("crm_case"))
+            return tool_result
+
         pending = self._pending_clarification()
         if pending:
             prior, missing = pending
@@ -437,10 +454,16 @@ class ChatService:
                 reply += "These looked related:\n" + "\n".join(related)
             else:
                 reply += "I didn't find anything indexed or recently seen about it either."
-            meta = {"images": images, "sources": citations}
+            cards = [{
+                "type": "progress", "status": "complete",
+                "title": "Searched connected sources",
+                "detail": f"{len(citations)} relevant source(s)",
+            }]
+            meta = {"images": images, "sources": citations, "cards": cards,
+                    "tool": "search_sources"}
             self._store("assistant", reply, kind="answer", meta=meta)
             return {"reply": reply, "kind": "answer", "images": images,
-                    "sources": citations}
+                    "sources": citations, "cards": cards, "tool": "search_sources"}
 
         doc_block = "\n".join(
             f"- [{hit.get('citation') or f'K{index}'}] {hit['title']} "
@@ -473,10 +496,37 @@ Current and recently approved sources:
         prompt = llm.with_memory(prompt, query=text, db=self.db,
                                  case_id=context.get("crm_case"))
         answer = llm._call_llm(prompt)
-        meta = {"images": images, "sources": citations}
+        cards = [{
+            "type": "progress", "status": "complete",
+            "title": "Searched connected sources",
+            "detail": f"{len(citations)} relevant source(s)",
+        }, {
+            "type": "completion", "status": "complete",
+            "title": "Answer ready",
+            "detail": "Based on connected context" if citations else "No matching source required",
+        }]
+        meta = {"images": images, "sources": citations, "cards": cards,
+                "tool": "search_sources"}
         self._store("assistant", answer, kind="answer", meta=meta)
         return {"reply": answer, "kind": "answer", "images": images,
-                "sources": citations}
+                "sources": citations, "cards": cards, "tool": "search_sources"}
+
+    def handle_action(self, action_id: int, decision: str) -> Dict[str, Any]:
+        """Approve or discard a preview shown in Ask and record the outcome."""
+        from app.services.ask_tools import AskToolService
+
+        service = AskToolService(self.db)
+        result = (service.approve(action_id) if decision == "approve"
+                  else service.discard(action_id))
+        self._store("user", "Approve and send" if decision == "approve" else "Discard draft",
+                    kind="instruction")
+        meta = {
+            key: result[key] for key in ("tool", "cards", "action", "notify")
+            if result.get(key) not in (None, [], {})
+        }
+        self._store("assistant", result.get("reply") or "Done.",
+                    kind=result.get("kind") or "completion", meta=meta)
+        return result
 
     def _conversation_context(self, limit: int = 12,
                               exclude_latest: bool = False) -> str:

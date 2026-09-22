@@ -402,6 +402,64 @@ class EnterpriseService:
                                                           key=lambda kv: -kv[1])[:10]],
         }
 
+    def draft_reply(self, message: EnterpriseMessage, instruction: str = None,
+                    tone: str = None) -> Dict[str, Any]:
+        """Create reply text from a message thread without sending anything.
+
+        This lives in the service rather than only in the HTTP route so Ask,
+        scheduled work and the REST API all use the same drafting behaviour.
+        """
+        from app.services.llm_service import LLMService
+        from app.services.style_service import StyleService
+
+        llm = LLMService()
+        if not llm.enabled:
+            raise RuntimeError(
+                "No AI provider configured. Set one up in Settings → AI Provider."
+            )
+
+        style = StyleService(self.db).drafting_directive()
+        channel = "email" if message.source == "outlook" else "Teams message"
+        thread = self.thread(message.thread_id) if message.thread_id else []
+        history = "\n\n".join(
+            f"{item.sender or 'unknown'}: {(item.body or item.preview or '')[:800]}"
+            for item in thread[-4:]
+        ) or f"{message.sender or 'unknown'}: {(message.body or '')[:1500]}"
+
+        prompt = f"""Draft a reply to this {channel}.
+
+From: {message.sender_name or message.sender or 'unknown'}
+Subject: {message.subject or '(none)'}
+{f'Case: {message.case_id}' if message.case_id else ''}
+
+Conversation:
+{history}
+
+{f'Additional instruction: {instruction}' if instruction else ''}
+Tone: {tone or 'professional, warm, direct'}
+
+Write only the reply body — no subject line, no signature, no preamble.
+Keep it short. If a concrete answer is not possible, say what you are doing
+about it and when you will follow up.
+
+{style}"""
+
+        prompt = llm.with_memory(
+            prompt, query=f"{message.subject or ''} {message.body or ''}",
+            db=self.db, case_id=message.case_id, customer=message.customer)
+        draft = llm._call_llm(prompt)
+        logger.info("enterprise", "Drafted reply", {"message_id": message.id})
+        return {
+            "message_id": message.id,
+            "source": message.source,
+            "subject": (message.subject if (message.subject or "").lower().startswith("re:")
+                        else f"Re: {message.subject}" if message.subject else None),
+            "to": [message.sender] if message.sender else [],
+            "chat_or_channel": message.chat_or_channel,
+            "thread_id": message.thread_id,
+            "draft": draft,
+        }
+
     # --------------------------------------------------------- outbound
     def create_action(self, action: str, body: str, source: str = None,
                       in_reply_to: int = None, to: List[str] = None,
