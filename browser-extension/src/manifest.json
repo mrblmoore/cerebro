@@ -1,49 +1,29 @@
 {
   "manifest_version": 3,
   "name": "Cerebro",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Detects CRM cases in your browser and keeps Cerebro's context in sync.",
   "permissions": [
     "storage",
     "tabs",
-    "alarms",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
-    "http://localhost/*",
-    "http://127.0.0.1/*"
-  ],
-  "optional_host_permissions": [
-    "https://*/*",
-    "http://*/*"
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
   ],
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
-  "action": {
-    "default_title": "Cerebro",
-    "default_popup": "popup.html"
-  },
-  "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": [
-        "https://*.salesforce.com/*",
-        "https://*.force.com/*",
-        "https://*.crm.dynamics.com/*",
-        "https://*.dynamics.com/*",
-        "https://*.service-now.com/*",
-        "https://*.zendesk.com/*",
-        "https://*.sharepoint.com/*",
-        "https://*.onedrive.live.com/*",
-        "https://*.officeapps.live.com/*"
-      ],
-      "js": [
-        "content.js"
-      ],
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
 }
