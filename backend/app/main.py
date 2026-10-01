@@ -20,7 +20,7 @@ from app.api import ROUTERS
 from app.api.system import VERSION
 from app.core import init_db, logger, settings
 from app.services import watchers
-from app.core.paths import WEB_DIR
+from app.core.paths import WEB_DIR, bundled
 
 STARTUP_BANNER = r"""
    ___                _
@@ -88,6 +88,11 @@ for router in ROUTERS:
 
 if (WEB_DIR / "static").exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+
+# The pixel mascot's animation strips, shared with the tray and desktop buddy.
+_MASCOT_DIR = bundled("assets", "mascot")
+if _MASCOT_DIR.exists():
+    app.mount("/mascot", StaticFiles(directory=str(_MASCOT_DIR)), name="mascot")
 
 
 @app.exception_handler(Exception)

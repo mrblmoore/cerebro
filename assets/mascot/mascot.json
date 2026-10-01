@@ -1,0 +1,38 @@
+{
+  "frame": {
+    "width": 148,
+    "height": 128
+  },
+  "states": {
+    "working": {
+      "frames": 8,
+      "ms": 110,
+      "file": "working.png"
+    },
+    "studying": {
+      "frames": 8,
+      "ms": 150,
+      "file": "studying.png"
+    },
+    "dozing": {
+      "frames": 12,
+      "ms": 200,
+      "file": "dozing.png"
+    },
+    "alert": {
+      "frames": 8,
+      "ms": 95,
+      "file": "alert.png"
+    },
+    "dizzy": {
+      "frames": 8,
+      "ms": 90,
+      "file": "dizzy.png"
+    },
+    "asleep": {
+      "frames": 12,
+      "ms": 260,
+      "file": "asleep.png"
+    }
+  }
+}

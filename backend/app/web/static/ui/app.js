@@ -1,5 +1,5 @@
 // Cerebro app: Ask, Activity, Sources and Connect, for the desktop shell and /app.
-import { brainSVG, setBrainState, stateLabel } from './brain.js';
+import { mascot, setBrainState, setPose, stateLabel } from './brain.js';
 import { escapeHTML as esc, renderMarkdown } from './markdown.js';
 
 // ------------------------------------------------------------------ helpers
@@ -73,7 +73,7 @@ const state = {
 };
 
 // ------------------------------------------------------------------- brains
-$('#brand-brain').innerHTML = brainSVG(38);
+$('#brand-brain').innerHTML = mascot(46);
 
 // --------------------------------------------------------------------- tabs
 function selectTab(name) {
@@ -250,7 +250,7 @@ const SUGGESTIONS = [
 function renderEmpty() {
   thread.innerHTML = `
     <div class="hero">
-      <div class="brain-host">${brainSVG(112)}</div>
+      <div class="brain-host">${mascot(168)}</div>
       <h2>How can I help?</h2>
       <p>Ask a question, look something up across your sources, or tell me what to do. I'll ask before changing anything.</p>
       <div class="suggestions">
@@ -285,7 +285,7 @@ function messageNode(message) {
   const short = (message.content || '').length < 60 && !(meta.cards || []).some(c => c.type !== 'progress' && c.type !== 'completion');
   if (short) node.classList.add('short');
   node.innerHTML = `
-    <div class="avatar">${brainSVG(28)}</div>
+    <div class="avatar">${mascot(34, 'thinking').replace('class="mascot"', 'class="mascot still"')}</div>
     <div class="bubble glass">
       ${message.steps ? stepsHTML(message.steps) : ''}
       <div class="md">${renderMarkdown(message.content || '')}</div>
@@ -550,9 +550,9 @@ async function send() {
   clearImage();
   const pending = document.createElement('div');
   pending.className = 'msg assistant short';
-  pending.innerHTML = `<div class="avatar">${brainSVG(28)}</div>
-    <div class="bubble glass"><div class="steps"></div><div class="thinking"><i></i><i></i><i></i></div></div>`;
-  setBrainState(pending, 'thinking');
+  pending.innerHTML = `<div class="avatar"></div>
+    <div class="bubble glass"><div class="steps"></div>
+      <div class="pending-mascot">${mascot(96, 'thinking')}<span class="pending-caption">Thinking…</span></div></div>`;
   thread.append(pending);
   scrollToEnd();
 
@@ -570,6 +570,11 @@ async function send() {
       if (running && card.status !== 'running') Object.assign(running, card);
       else steps.push({ ...card });
       paintSteps();
+      // Research reads, work types: the pose follows what Cerebro is doing now.
+      const researching = /search|read|recall|open|check|look|find/i.test(card.title || '');
+      setPose(pending, card.status === 'running' && researching ? 'studying' : 'working');
+      const caption = $('.pending-caption', pending);
+      if (caption) caption.textContent = card.status === 'running' ? `${card.title}…` : 'Thinking…';
     });
     pending.remove();
     const message = {
@@ -642,7 +647,7 @@ async function loadActivity() {
   const body = $('#activity-body');
   if (!$('#now-card')) {
     body.innerHTML = `
-      <div class="now glass" id="now-card"><div class="brain-host">${brainSVG(64)}</div>
+      <div class="now glass" id="now-card"><div class="brain-host">${mascot(84)}</div>
         <div style="min-width:0;flex:1"><h3 class="now-title"></h3><div class="now-detail detail"></div><div class="now-list"></div></div></div>
       <div id="activity-lists"></div>`;
   }

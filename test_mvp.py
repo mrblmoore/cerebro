@@ -3119,12 +3119,22 @@ def test_tray_brain():
           all(count >= 8 and size == (32, 32) for count, size in sizes.values()), sizes)
     idle = brain_frames.frames("idle", 32)
     check("The idle animation actually moves", idle[0].tobytes() != idle[len(idle) // 4].tobytes())
-    offline = brain_frames.frames("offline", 32)[0].convert("RGB")
-    r, g, b = offline.getpixel((16, 16))
-    check("Offline is drawn in grey", abs(r - g) < 12 and abs(g - b) < 12, (r, g, b))
-    error = brain_frames.frames("error", 32)[0].convert("RGB").getpixel((10, 16))
-    check("Errors turn the brain red", error[0] > error[2], error)
+    def average(image):
+        pixels = [p for p in image.getdata() if p[3] > 200]
+        return tuple(sum(p[i] for p in pixels) / len(pixels) for i in range(3))
+
+    r, g, b = average(brain_frames.frames("offline", 64)[0])
+    check("Offline is drawn in grey", abs(r - g) < 8 and abs(g - b) < 8, (r, g, b))
+    red = average(brain_frames.frames("error", 64)[0])
+    calm = average(brain_frames.frames("thinking", 64)[0])
+    check("Errors flush the brain red", red[0] - red[2] > calm[0] - calm[2], (red, calm))
     check("Unknown states fall back to idle", len(brain_frames.frames("bogus", 32)) == len(idle))
+    check("Working states show the laptop brain, research the studying one",
+          brain_frames.sprite_for("browsing") == "working"
+          and brain_frames.sprite_for("searching") == "studying")
+    first = brain_frames.raw_frames("working")[0]
+    check("The pixel art keeps its transparent background",
+          first.getpixel((0, 0))[3] == 0 and first.getchannel("A").getextrema() == (0, 255))
 
     class FakeIcon:
         def __init__(self):
