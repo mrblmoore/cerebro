@@ -292,3 +292,73 @@ def reindex(db: Session = Depends(get_db)) -> Dict[str, Any]:
 async def read_logs(lines: int = 200) -> Dict[str, Any]:
     """Tail of the log file, shown in the dashboard's Activity panel."""
     return {"path": settings.log_path, "lines": logger.tail(min(max(lines, 1), 1000))}
+
+
+# ------------------------------------------------------------------ activity
+def _pending_approvals() -> int:
+    """Drafts waiting on the user — counted fresh, never cached."""
+    from app.core.database import SessionLocal
+    from app.models.enterprise import EnterpriseAction
+
+    db = SessionLocal()
+    try:
+        count = db.query(EnterpriseAction).filter(EnterpriseAction.status == "draft").count()
+        try:
+            from app.models.agent_action import AgentAction
+
+            count += db.query(AgentAction).filter(AgentAction.status == "draft").count()
+        except ImportError:
+            pass
+        return count
+    except Exception:  # noqa: BLE001 - live status must never fail
+        return 0
+    finally:
+        db.close()
+
+
+@router.get("/activity")
+def current_activity() -> Dict[str, Any]:
+    """What Cerebro is doing right now — read by the tray brain and app header."""
+    from app.core import activity_state
+
+    return activity_state.snapshot(pending_approvals=_pending_approvals())
+
+
+@router.get("/activity/stream")
+async def activity_stream(request: Request):
+    """The same snapshot as Server-Sent Events, pushed whenever it changes.
+
+    A heartbeat goes out every 15 seconds so proxies and the tray client can
+    tell a quiet Cerebro from a dead connection.
+    """
+    import asyncio
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    from app.core import activity_state
+
+    async def events():
+        last_payload = None
+        last_sent = 0.0
+        loop = asyncio.get_running_loop()
+        while not await request.is_disconnected():
+            version = activity_state.version()
+            payload = activity_state.snapshot(
+                pending_approvals=await loop.run_in_executor(None, _pending_approvals))
+            # ``elapsed_s`` changes every tick; compare without it.
+            comparable = json.dumps({**payload, "active": [
+                {k: v for k, v in item.items() if k != "elapsed_s"}
+                for item in payload["active"]]}, sort_keys=True)
+            now = loop.time()
+            if comparable != last_payload:
+                last_payload, last_sent = comparable, now
+                yield f"data: {json.dumps(payload)}\n\n"
+            elif now - last_sent > 15:
+                last_sent = now
+                yield ": heartbeat\n\n"
+            await loop.run_in_executor(
+                None, activity_state.wait_for_change, version, 2.0)
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache"})

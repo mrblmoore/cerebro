@@ -2336,6 +2336,102 @@ def test_ask_tools_and_action_cards():
     db.close()
 
 
+def test_activity_state():
+    """The tray and app header can always tell what Cerebro is doing."""
+    print("\nActivity state")
+    from app.core import activity_state
+
+    activity_state.reset()
+    check("Nothing running reads as idle", activity_state.snapshot()["state"] == "idle")
+
+    with activity_state.activity("searching", "Searching sources"):
+        with activity_state.activity("thinking", "Answering"):
+            snap = activity_state.snapshot()
+            check("The most important running state wins", snap["state"] == "thinking")
+            check("Every running item is listed", len(snap["active"]) == 2)
+        check("Finished work disappears",
+              activity_state.snapshot()["state"] == "searching")
+
+    try:
+        with activity_state.activity("browsing", "Opening a case"):
+            raise RuntimeError("page timed out")
+    except RuntimeError:
+        pass
+    snap = activity_state.snapshot()
+    check("A failure is shown briefly as an error",
+          snap["state"] == "error" and "page timed out" in snap["detail"])
+    activity_state.reset()
+    check("Pending drafts show as awaiting approval",
+          activity_state.snapshot(pending_approvals=2)["state"] == "awaiting_approval")
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as client:
+        body = client.get("/api/system/activity").json()
+        check("Activity is served over the API", body.get("state") in activity_state.STATES)
+
+
+def test_llm_chat_protocol():
+    """Real conversation turns and tool calls work on every provider shape."""
+    print("\nAI chat interface")
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import llm_service
+
+    tools = [{"name": "search_knowledge", "description": "Search the KB",
+              "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}]
+    history = [
+        {"role": "user", "content": "What fixes 0x80040115?"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "name": "search_knowledge", "arguments": {"query": "0x80040115"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "name": "search_knowledge",
+         "content": "[K1] Outlook profile repair"},
+    ]
+
+    openai_shaped = llm_service._openai_messages(history, "system")
+    check("OpenAI shape keeps the system prompt first", openai_shaped[0]["role"] == "system")
+    check("Tool calls carry JSON-encoded arguments",
+          openai_shaped[2]["tool_calls"][0]["function"]["arguments"] == '{"query": "0x80040115"}')
+    check("Tool results reference their call", openai_shaped[3]["tool_call_id"] == "call_1")
+
+    protocol = llm_service._to_json_protocol(history)
+    check("The JSON protocol has no tool roles",
+          all(m["role"] in ("user", "assistant") for m in protocol))
+    check("The JSON protocol shows tool results as text", "[K1]" in protocol[-1]["content"])
+
+    call = llm_service._extract_json_tool_call(
+        '{"tool": "search_knowledge", "arguments": {"query": "vpn"}}', {"search_knowledge"})
+    check("A JSON tool request is recognised", call and call["arguments"] == {"query": "vpn"})
+    check("An ordinary answer is not mistaken for a tool call",
+          llm_service._extract_json_tool_call("Restart the VPN client.", {"search_knowledge"}) is None)
+    check("Unknown tools are ignored",
+          llm_service._extract_json_tool_call('{"tool": "rm_rf"}', {"search_knowledge"}) is None)
+
+    llm = LLMService()
+    with mock.patch.object(settings, "LLM_PROVIDER", "ollama"), \
+            mock.patch.object(type(settings), "llm_configured", new=property(lambda self: True)):
+        unsupported = RuntimeError("Ollama returned 400: model does not support tools")
+        replies = iter([unsupported, {"content": '{"tool": "search_knowledge", '
+                                                 '"arguments": {"query": "vpn"}}', "tool_calls": []}])
+
+        def fake_backend(messages, tool_list, system, max_tokens, temperature):
+            value = next(replies)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with mock.patch.dict(llm_service._CHAT_BACKENDS, {"ollama": fake_backend}):
+            llm_service._NO_NATIVE_TOOLS.clear()
+            result = llm.chat([{"role": "user", "content": "vpn?"}], tools=tools)
+        check("A model without tool support falls back to the JSON protocol",
+              result["mode"] == "json" and result["tool_calls"][0]["name"] == "search_knowledge")
+        check("The fallback is remembered for the session",
+              ("ollama", settings.OLLAMA_MODEL) in llm_service._NO_NATIVE_TOOLS)
+        llm_service._NO_NATIVE_TOOLS.clear()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -2369,7 +2465,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

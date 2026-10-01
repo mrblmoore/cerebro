@@ -260,6 +260,27 @@ FIELDS: List[Field] = [
           show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
     Field("LLM_TIMEOUT", "Request timeout (s)", "ai", type="number", advanced=True,
           show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("LLM_TOOL_MODE", "Tool use in Ask", "ai",
+          "How Ask lets the model search, read and draft on its own. Automatic uses the "
+          "provider's tool calling and falls back for models without it.",
+          type="select", advanced=True, options=[
+              {"value": "auto", "label": "Automatic (recommended)"},
+              {"value": "native", "label": "Native tool calling only"},
+              {"value": "json", "label": "JSON protocol (older local models)"},
+              {"value": "off", "label": "Off — answer in one step"},
+          ], show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_MAX_TOKENS", "Ask answer length", "ai",
+          "The longest answer Ask may write, in tokens.", type="number", advanced=True,
+          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_MAX_STEPS", "Ask tool steps", "ai",
+          "How many searches or reads Ask may make for one message.", type="number",
+          advanced=True, show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_MIN_SOURCE_SCORE", "Source relevance floor", "ai",
+          "Excerpts scoring below this are treated as unrelated and never cited. "
+          "Raise it if answers drag in unrelated documents.", type="number", advanced=True),
+    Field("ASK_ACTIVE_DOCUMENT_MINUTES", "Active document window (minutes)", "ai",
+          "How long an opened document stays 'what you are looking at' after it was last seen.",
+          type="number", advanced=True),
 
     # Knowledge
     Field("VECTOR_BACKEND", "Vector backend", "knowledge",

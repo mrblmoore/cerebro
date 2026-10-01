@@ -348,6 +348,63 @@ Answer in 1-2 sentences."""
         data = response.json()
         return (data.get("message", {}).get("content") or "").strip()
 
+    # --------------------------------------------------------------- chat
+    def chat(self, messages: list, tools: list = None, system: str = None,
+             max_tokens: int = None, temperature: float = None) -> dict:
+        """
+        One model turn over a real conversation, optionally offering tools.
+
+        Raises on failure (unlike ``_call_llm``) so the caller can decide how to
+        explain it; ``LLMNotConfigured`` when no provider is usable.
+        """
+        from app.core.activity_state import activity
+
+        if not self.enabled:
+            raise LLMNotConfigured(NOT_CONFIGURED)
+        backend = _CHAT_BACKENDS.get(self.provider)
+        if backend is None:
+            raise LLMNotConfigured(f"Unknown LLM provider: {self.provider}")
+
+        system = system or SYSTEM_PROMPT
+        max_tokens = max_tokens or settings.LLM_MAX_TOKENS
+        temperature = settings.LLM_TEMPERATURE if temperature is None else temperature
+        tools = tools or []
+        mode = (settings.LLM_TOOL_MODE or "auto").lower()
+        key = (self.provider, self.model)
+        if not tools or mode == "off":
+            tools, mode = [], "none"
+        elif mode == "auto" and key in _NO_NATIVE_TOOLS:
+            mode = "json"
+
+        with activity("thinking", f"Thinking with {self.model or self.provider}"):
+            if mode in ("auto", "native"):
+                try:
+                    result = backend(messages, tools, system, max_tokens, temperature)
+                    return {**result, "mode": "native"}
+                except LLMNotConfigured:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - maybe just no tool support
+                    lowered = str(exc).lower()
+                    if mode == "native" or not any(h in lowered for h in _TOOL_UNSUPPORTED_HINTS):
+                        raise
+                    logger.warn("llm_service", "Native tools unsupported; using JSON protocol",
+                                {"provider": self.provider, "model": self.model, "error": str(exc)[:200]})
+                    _NO_NATIVE_TOOLS.add(key)
+                    mode = "json"
+
+            if mode == "json":
+                protocol_system = f"{system}\n\n{_json_protocol_instructions(tools)}"
+                result = backend(_to_json_protocol(messages), [], protocol_system,
+                                 max_tokens, temperature)
+                call = _extract_json_tool_call(result["content"], {t["name"] for t in tools})
+                if call:
+                    return {"content": "", "tool_calls": [call], "mode": "json"}
+                return {"content": result["content"], "tool_calls": [], "mode": "json"}
+
+            result = backend(_merge_same_role(messages), [], system, max_tokens, temperature)
+            return {"content": result["content"], "tool_calls": [], "mode": "none"}
+
+
     # -------------------------------------------------------------- core
     def _call_llm(self, prompt: str) -> str:
         """Generation entry point. Degrades to a message, never raises."""
@@ -376,6 +433,12 @@ Answer in 1-2 sentences."""
             return f"(AI unavailable: {exc})"
 
     def _dispatch(self, prompt: str) -> str:
+        from app.core.activity_state import activity
+
+        with activity("thinking", f"Asking {self.provider}"):
+            return self._dispatch_now(prompt)
+
+    def _dispatch_now(self, prompt: str) -> str:
         provider = self.provider
         if provider == "openai":
             return self._call_openai(prompt)
@@ -510,3 +573,302 @@ Answer in 1-2 sentences."""
         if not text:
             raise RuntimeError("Amazon Bedrock returned no text content.")
         return text
+
+
+# =================================================================== chat API
+#
+# ``_call_llm`` above is one prompt in, one string out — fine for a case note,
+# wrong for a conversation. Ask needs real turns (so the model can tell its own
+# earlier answer from the new question) and tool calls (so it can go and look
+# things up instead of being handed a fixed bundle of context).
+#
+# Messages use one neutral shape regardless of provider:
+#
+#   {"role": "user" | "assistant", "content": str,
+#    "tool_calls": [{"id", "name", "arguments": dict}]}      (assistant only)
+#   {"role": "tool", "tool_call_id": str, "name": str, "content": str}
+#
+# Tools are ``{"name", "description", "parameters": <JSON schema>}``.
+# ``chat`` returns ``{"content": str, "tool_calls": [...], "mode": str}``.
+
+import json as _json
+import re as _re
+import uuid as _uuid
+
+#: Provider/model pairs that rejected native tools this session, so the JSON
+#: protocol is used straight away instead of failing once per message.
+_NO_NATIVE_TOOLS: set = set()
+
+_TOOL_UNSUPPORTED_HINTS = (
+    "does not support tools", "tool use is not supported", "tools is not supported",
+    "unsupported parameter", "unknown field", "extra inputs are not permitted",
+    "unrecognized request argument", "tool_choice", "function calling",
+    "doesn't support tool", "not support tool",
+)
+
+
+def _new_call_id() -> str:
+    return "call_" + _uuid.uuid4().hex[:12]
+
+
+def _parse_arguments(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        value = _json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _json_protocol_instructions(tools: list) -> str:
+    listing = "\n".join(
+        f"- {tool['name']}: {tool.get('description', '')}\n"
+        f"  arguments: {_json.dumps(tool.get('parameters', {}).get('properties', {}))}"
+        for tool in tools)
+    return (
+        "You can use these tools to look things up or prepare actions:\n"
+        f"{listing}\n\n"
+        "To use a tool, reply with ONLY a JSON object on its own, for example:\n"
+        '{"tool": "search_knowledge", "arguments": {"query": "error 0x80040115"}}\n'
+        "You will then receive the result and can call another tool or answer. "
+        "When you have enough to answer, reply normally in plain text "
+        "(no JSON)."
+    )
+
+
+def _extract_json_tool_call(text: str, tool_names: set):
+    """Recognise a JSON-protocol tool call in a plain-text reply."""
+    candidate = (text or "").strip()
+    fenced = _re.match(r"^```(?:json)?\s*(\{.*\})\s*```$", candidate, _re.DOTALL)
+    if fenced:
+        candidate = fenced.group(1)
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+    try:
+        data = _json.loads(candidate)
+    except ValueError:
+        return None
+    name = data.get("tool") or data.get("name")
+    if name not in tool_names:
+        return None
+    return {"id": _new_call_id(), "name": name,
+            "arguments": _parse_arguments(data.get("arguments") or data.get("args"))}
+
+
+def _to_json_protocol(messages: list) -> list:
+    """Rewrite tool turns as plain text for models without tool support."""
+    converted = []
+    for message in messages:
+        role = message["role"]
+        if role == "tool":
+            converted.append({
+                "role": "user",
+                "content": f"[Result of {message.get('name') or 'tool'}]\n{message.get('content') or ''}",
+            })
+        elif role == "assistant" and message.get("tool_calls"):
+            call = message["tool_calls"][0]
+            converted.append({"role": "assistant", "content": _json.dumps(
+                {"tool": call["name"], "arguments": call.get("arguments") or {}})})
+        else:
+            converted.append({"role": role, "content": message.get("content") or ""})
+    return _merge_same_role(converted)
+
+
+def _merge_same_role(messages: list) -> list:
+    """Several providers require strictly alternating user/assistant turns."""
+    merged = []
+    for message in messages:
+        if merged and merged[-1]["role"] == message["role"] \
+                and message["role"] in ("user", "assistant") \
+                and not merged[-1].get("tool_calls") and not message.get("tool_calls"):
+            merged[-1] = {**merged[-1], "content":
+                          f"{merged[-1].get('content') or ''}\n\n{message.get('content') or ''}".strip()}
+        else:
+            merged.append(dict(message))
+    return merged
+
+
+def _openai_messages(messages: list, system: str) -> list:
+    out = [{"role": "system", "content": system}]
+    for message in messages:
+        role = message["role"]
+        if role == "assistant" and message.get("tool_calls"):
+            out.append({
+                "role": "assistant", "content": message.get("content") or None,
+                "tool_calls": [{
+                    "id": call["id"], "type": "function",
+                    "function": {"name": call["name"],
+                                 "arguments": _json.dumps(call.get("arguments") or {})},
+                } for call in message["tool_calls"]],
+            })
+        elif role == "tool":
+            out.append({"role": "tool", "tool_call_id": message["tool_call_id"],
+                        "content": message.get("content") or ""})
+        else:
+            out.append({"role": role, "content": message.get("content") or ""})
+    return out
+
+
+def _openai_tools(tools: list) -> list:
+    return [{"type": "function", "function": {
+        "name": tool["name"], "description": tool.get("description", ""),
+        "parameters": tool.get("parameters") or {"type": "object", "properties": {}},
+    }} for tool in tools]
+
+
+def _openai_style_result(message: dict) -> dict:
+    calls = []
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        calls.append({"id": call.get("id") or _new_call_id(),
+                      "name": function.get("name"),
+                      "arguments": _parse_arguments(function.get("arguments"))})
+    return {"content": (message.get("content") or "").strip(), "tool_calls": calls}
+
+
+def _chat_openai(messages, tools, system, max_tokens, temperature) -> dict:
+    if not settings.OPENAI_API_KEY:
+        raise LLMNotConfigured("No OpenAI API key set (Settings → AI Provider).")
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise LLMNotConfigured(
+            "The openai package is not installed. Run: pip install -r "
+            "backend/requirements-ai.txt") from exc
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY,
+                    organization=settings.OPENAI_ORG_ID or None,
+                    base_url=settings.OPENAI_BASE_URL or None,
+                    timeout=settings.LLM_TIMEOUT)
+    kwargs = {"model": settings.OPENAI_MODEL,
+              "messages": _openai_messages(messages, system),
+              "temperature": temperature, "max_tokens": max_tokens}
+    if tools:
+        kwargs["tools"] = _openai_tools(tools)
+    response = client.chat.completions.create(**kwargs)
+    message = response.choices[0].message
+    return _openai_style_result({
+        "content": message.content,
+        "tool_calls": [{"id": call.id, "function": {
+            "name": call.function.name, "arguments": call.function.arguments}}
+            for call in (message.tool_calls or [])],
+    })
+
+
+def _chat_qwen(messages, tools, system, max_tokens, temperature) -> dict:
+    if not settings.QWEN_API_URL or not settings.QWEN_API_KEY:
+        raise LLMNotConfigured("Qwen URL and API key are both required.")
+    body = {"model": settings.QWEN_MODEL,
+            "messages": _openai_messages(messages, system),
+            "temperature": temperature, "max_tokens": max_tokens}
+    if tools:
+        body["tools"] = _openai_tools(tools)
+    response = requests.post(
+        settings.QWEN_API_URL,
+        headers={"Authorization": f"Bearer {settings.QWEN_API_KEY}",
+                 "Content-Type": "application/json"},
+        json=body, timeout=settings.LLM_TIMEOUT)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Qwen returned {response.status_code}: {response.text[:300]}")
+    data = response.json()
+    choices = data.get("choices") or []
+    if choices:
+        choice = choices[0]
+        message = choice.get("message") or {"content": choice.get("text")}
+        return _openai_style_result(message)
+    return {"content": (data.get("answer") or response.text).strip(), "tool_calls": []}
+
+
+def _chat_ollama(messages, tools, system, max_tokens, temperature) -> dict:
+    converted = [{"role": "system", "content": system}]
+    for message in messages:
+        if message["role"] == "assistant" and message.get("tool_calls"):
+            converted.append({"role": "assistant", "content": message.get("content") or "",
+                              "tool_calls": [{"function": {
+                                  "name": call["name"],
+                                  "arguments": call.get("arguments") or {}}}
+                                  for call in message["tool_calls"]]})
+        elif message["role"] == "tool":
+            converted.append({"role": "tool", "content": message.get("content") or "",
+                              "tool_name": message.get("name")})
+        else:
+            converted.append({"role": message["role"], "content": message.get("content") or ""})
+    body = {"model": settings.OLLAMA_MODEL, "stream": False, "messages": converted,
+            "options": {"temperature": temperature, "num_predict": max_tokens}}
+    if tools:
+        body["tools"] = _openai_tools(tools)
+    response = requests.post(f"{settings.OLLAMA_URL.rstrip('/')}/api/chat",
+                             json=body, timeout=settings.LLM_TIMEOUT)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Ollama returned {response.status_code}: {response.text[:300]}")
+    message = (response.json() or {}).get("message") or {}
+    calls = [{"id": _new_call_id(), "name": (call.get("function") or {}).get("name"),
+              "arguments": _parse_arguments((call.get("function") or {}).get("arguments"))}
+             for call in message.get("tool_calls") or []]
+    return {"content": (message.get("content") or "").strip(), "tool_calls": calls}
+
+
+def _chat_bedrock(messages, tools, system, max_tokens, temperature) -> dict:
+    if not settings.BEDROCK_REGION or not settings.BEDROCK_MODEL_ID:
+        raise LLMNotConfigured("Amazon Bedrock Region and model ID are required.")
+    from botocore.config import Config
+
+    converted = []
+    for message in messages:
+        role = message["role"]
+        if role == "tool":
+            block = {"toolResult": {"toolUseId": message["tool_call_id"],
+                                    "content": [{"text": message.get("content") or "(empty)"}]}}
+            if converted and converted[-1]["role"] == "user" and \
+                    all("toolResult" in item for item in converted[-1]["content"]):
+                converted[-1]["content"].append(block)
+            else:
+                converted.append({"role": "user", "content": [block]})
+            continue
+        content = []
+        if message.get("content"):
+            content.append({"text": message["content"]})
+        for call in message.get("tool_calls") or []:
+            content.append({"toolUse": {"toolUseId": call["id"], "name": call["name"],
+                                        "input": call.get("arguments") or {}}})
+        if not content:
+            content.append({"text": "(empty)"})
+        if converted and converted[-1]["role"] == role and role == "user" and \
+                not any("toolResult" in item for item in converted[-1]["content"]):
+            converted[-1]["content"].extend(content)
+        else:
+            converted.append({"role": role, "content": content})
+
+    kwargs = {"modelId": settings.BEDROCK_MODEL_ID, "system": [{"text": system}],
+              "messages": converted,
+              "inferenceConfig": {"temperature": temperature, "maxTokens": max_tokens}}
+    if tools:
+        kwargs["toolConfig"] = {"tools": [{"toolSpec": {
+            "name": tool["name"], "description": tool.get("description", "") or tool["name"],
+            "inputSchema": {"json": tool.get("parameters") or {"type": "object", "properties": {}}},
+        }} for tool in tools]}
+
+    client = bedrock_session().client(
+        "bedrock-runtime", endpoint_url=settings.BEDROCK_ENDPOINT_URL or None,
+        config=Config(connect_timeout=settings.LLM_TIMEOUT, read_timeout=settings.LLM_TIMEOUT,
+                      retries={"mode": "standard", "max_attempts": 3}))
+    try:
+        response = client.converse(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - re-raised as guidance
+        raise _bedrock_error(exc) from exc
+    blocks = response.get("output", {}).get("message", {}).get("content", [])
+    text = "\n".join(block["text"] for block in blocks if block.get("text")).strip()
+    calls = [{"id": block["toolUse"].get("toolUseId") or _new_call_id(),
+              "name": block["toolUse"].get("name"),
+              "arguments": _parse_arguments(block["toolUse"].get("input"))}
+             for block in blocks if block.get("toolUse")]
+    return {"content": text, "tool_calls": calls}
+
+
+_CHAT_BACKENDS = {
+    "openai": _chat_openai, "qwen": _chat_qwen,
+    "ollama": _chat_ollama, "bedrock": _chat_bedrock,
+}

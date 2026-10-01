@@ -74,6 +74,21 @@ class Settings(BaseSettings):
     LLM_TIMEOUT: int = 60
     LLM_MAX_TOKENS: int = 500
     LLM_TEMPERATURE: float = 0.7
+    #: How Ask lets the model call tools (search, read, draft). ``auto`` uses the
+    #: provider's native tool calling and falls back to a JSON protocol for
+    #: models that do not support it; ``json`` forces the fallback; ``off``
+    #: answers in a single step with whatever context is already in view.
+    LLM_TOOL_MODE: str = "auto"  # auto | native | json | off
+    #: Ask writes longer answers than a case note; this is its own cap.
+    ASK_MAX_TOKENS: int = 1200
+    #: Most tool calls Ask may make while answering one message.
+    ASK_MAX_STEPS: int = 6
+    #: Minimum similarity for a source excerpt to be offered as evidence.
+    #: Below it, an excerpt is treated as unrelated and left out of the answer.
+    ASK_MIN_SOURCE_SCORE: float = 0.12
+    #: An opened document counts as "what you are looking at" for this long
+    #: after it was last seen, then stops being pulled into unrelated answers.
+    ASK_ACTIVE_DOCUMENT_MINUTES: int = 20
 
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
