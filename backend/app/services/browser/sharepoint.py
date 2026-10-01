@@ -20,6 +20,7 @@ only do what the user's own permissions allow.
 import base64
 import hashlib
 import html as html_lib
+import json
 import re
 import time
 from pathlib import Path
@@ -32,6 +33,10 @@ from app.services.browser import register
 from app.services.browser.connector import BrowserConnector, SignInRequired
 
 CACHE_DIR = DATA_DIR / "sharepoint_browser"
+#: What a change replaced, kept so it can be undone: the file as it was, or
+#: the page's content. Kept for UNDO_DAYS.
+UNDO_DIR = DATA_DIR / "sharepoint_undo"
+UNDO_DAYS = 30
 JSON_HEADERS = {"Accept": "application/json;odata=nometadata"}
 GUID_RE = re.compile(r"\{?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\}?")
 SITE_RE = re.compile(r"^(/(?:sites|teams|personal)/[^/]+)", re.IGNORECASE)
@@ -75,6 +80,11 @@ def find_links(text: str) -> List[str]:
     return links
 
 
+def _text_hash(markup: str) -> str:
+    return hashlib.sha256(re.sub(r"\s+", " ", _html_to_text(markup)).strip()
+                          .encode("utf-8")).hexdigest()
+
+
 def _html_to_text(markup: str) -> str:
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", markup or "", flags=re.S | re.I)
     text = re.sub(r"<(br|/p|/div|/h\d|/li|/tr)[^>]*>", "\n", text, flags=re.I)
@@ -107,6 +117,7 @@ class SharePointConnector(BrowserConnector):
     label = "SharePoint"
     enabled_setting = "SHAREPOINT_BROWSER_ENABLED"
     url_setting = "SHAREPOINT_SITE_URL"
+    auto_apply_setting = "SHAREPOINT_AUTO_APPLY"
     default_selectors: Dict[str, Any] = {}
 
     def __init__(self):
@@ -321,7 +332,37 @@ class SharePointConnector(BrowserConnector):
 
     # ----------------------------------------------------------- writes
     # Proposals (preview) run immediately; the changes themselves run only
-    # from approved AgentActions (see app.services.agent).
+    # from approved AgentActions (see app.services.agent). Every change keeps
+    # what it replaced, so it can be undone.
+    @staticmethod
+    def _keep_for_undo(name: str, data: bytes) -> Path:
+        UNDO_DIR.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - UNDO_DAYS * 86400
+        for old in UNDO_DIR.iterdir():
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+        safe = re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:120]
+        target = UNDO_DIR / f"{int(time.time() * 1000)}-{safe}"
+        target.write_bytes(data)
+        return target
+
+    @staticmethod
+    def _undo_file(path: str) -> Path:
+        target = Path(path or "")
+        if not path or target.resolve().parent != UNDO_DIR.resolve() or not target.is_file():
+            raise SharePointError("The copy needed to undo this is gone (undo is kept for "
+                                  f"{UNDO_DAYS} days). Use the file's Version history in "
+                                  "SharePoint instead.")
+        return target
+
+    def _etag(self, page, item: Dict[str, Any]) -> Optional[str]:
+        info = self._json(page, f"{item['site']}/_api/web/GetFileByServerRelativePath(decodedurl='"
+                                f"{self._path_arg(item['path'])}')?$select=ETag")
+        return info.get("ETag")
+
     def preview_document_edit(self, link: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply the edits to a scratch copy and return the text before and after."""
         import shutil
@@ -353,14 +394,34 @@ class SharePointConnector(BrowserConnector):
                 raise SharePointError(f"{item['name']} changed in SharePoint after the preview. "
                                       "Ask again so the change is based on the current version.")
             local = self._download(page, item)
+            original = self._keep_for_undo(item["name"], local.read_bytes())
             try:
                 document_editors.apply(local, operations, keep_backup=False)
             except document_readers.DocumentError as exc:
+                original.unlink(missing_ok=True)
                 raise SharePointError(str(exc))
             self._upload(page, item, local.read_bytes())
-            return {"detail": f"{item['name']} updated in SharePoint", "url": item["url"]}
+            undo = {"link": link, "original": str(original), "etag": self._etag(page, item)}
+            return {"detail": f"{item['name']} updated in SharePoint", "url": item["url"],
+                    "undo": undo}
 
         return self.run(work, "Updating a SharePoint document")
+
+    def restore_document(self, undo: Dict[str, Any]) -> Dict[str, Any]:
+        """Put a file back as it was before Cerebro changed it."""
+        original = self._undo_file(undo.get("original"))
+
+        def work(page):
+            item = self._resolve(page, undo["link"])
+            if undo.get("etag") and item.get("etag") and item["etag"] != undo["etag"]:
+                raise SharePointError(f"{item['name']} has been edited since Cerebro changed it, "
+                                      "so undoing would lose that edit. Use the file's Version "
+                                      "history in SharePoint instead.")
+            self._upload(page, item, original.read_bytes())
+            original.unlink(missing_ok=True)
+            return {"detail": f"{item['name']} is back as it was", "url": item["url"]}
+
+        return self.run(work, "Undoing a SharePoint document change")
 
     def _upload(self, page, item: Dict[str, Any], data: bytes) -> None:
         file_api = (f"{item['site']}/_api/web/GetFileByServerRelativePath(decodedurl='"
@@ -413,15 +474,42 @@ class SharePointConnector(BrowserConnector):
                                                      change.get("replace", ""))
                 if not count:
                     raise SharePointError(f"“{change.get('find')}” is no longer on that page.")
-            pages_api = f"{item['site']}/_api/sitepages/pages({fields.get('Id')})"
-            self._json(page, f"{pages_api}/checkoutpage", "POST", site=item["site"])
-            self._json(page, f"{pages_api}/savepage", "POST", {"CanvasContent1": canvas},
-                       site=item["site"])
-            self._json(page, f"{pages_api}/publish", "POST", site=item["site"])
+            original = self._keep_for_undo(
+                f"{item['name']}.json",
+                json.dumps({"canvas": fields.get("CanvasContent1") or ""}).encode("utf-8"))
+            self._publish_page(page, item, fields.get("Id"), canvas)
+            undo = {"link": link, "original": str(original),
+                    "text": _text_hash(canvas)}
             return {"detail": f"Page “{fields.get('Title') or item['name']}” updated and published",
-                    "url": item["url"]}
+                    "url": item["url"], "undo": undo}
 
         return self.run(work, "Updating a SharePoint page")
+
+    def _publish_page(self, page, item: Dict[str, Any], page_id, canvas: str) -> None:
+        pages_api = f"{item['site']}/_api/sitepages/pages({page_id})"
+        self._json(page, f"{pages_api}/checkoutpage", "POST", site=item["site"])
+        self._json(page, f"{pages_api}/savepage", "POST", {"CanvasContent1": canvas},
+                   site=item["site"])
+        self._json(page, f"{pages_api}/publish", "POST", site=item["site"])
+
+    def restore_page(self, undo: Dict[str, Any]) -> Dict[str, Any]:
+        """Republish a page with the content it had before Cerebro changed it."""
+        saved = json.loads(self._undo_file(undo.get("original")).read_text(encoding="utf-8"))
+
+        def work(page):
+            item = self._resolve(page, undo["link"])
+            fields = self._page_item(page, item)
+            title = fields.get("Title") or item["name"]
+            # Compared as text: SharePoint may tidy the markup when it saves.
+            if undo.get("text") and _text_hash(fields.get("CanvasContent1") or "") != undo["text"]:
+                raise SharePointError(f"“{title}” has been edited since Cerebro changed it, so "
+                                      "undoing would lose that edit. Use the page's Version "
+                                      "history in SharePoint instead.")
+            self._publish_page(page, item, fields.get("Id"), saved["canvas"])
+            self._undo_file(undo["original"]).unlink(missing_ok=True)
+            return {"detail": f"Page “{title}” is back as it was", "url": item["url"]}
+
+        return self.run(work, "Undoing a SharePoint page change")
 
 
 connector: Optional[SharePointConnector] = register(SharePointConnector())

@@ -663,3 +663,7 @@ button.extra-chip:hover { border-color: var(--stroke-strong); color: var(--text)
   .chat-bar { padding: 12px 20px 0; }
   .chat-extras { padding: 8px 22px 0; }
 }
+
+/* Automatic changes */
+.auto-apply { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.card-error { margin-top: 8px; font-size: 12px; color: var(--err); }

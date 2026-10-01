@@ -399,9 +399,9 @@ def sharepoint_search(ctx: ToolContext, query: str = "", **_) -> dict:
 
 
 @tool("sharepoint_update_document",
-      "Propose changes to a Word or Excel file in SharePoint. Cerebro applies them to a "
-      "copy and shows the user a before/after comparison; the file in SharePoint changes "
-      "only after they approve.",
+      "Change a Word or Excel file in SharePoint. The user sees a before/after comparison; "
+      "depending on their setting the change is made straight away (and can be undone) or "
+      "after they approve it. The result says which.",
       schema(["link", "operations"], link=string_param("The document's SharePoint link."),
              operations=_DOC_OPERATIONS),
       mode="approval", label="Prepare a SharePoint document change", activity="writing",
@@ -420,25 +420,23 @@ def sharepoint_update_document(ctx: ToolContext, link: str = "", operations: lis
         except SharePointError as exc:
             return {"content": str(exc), "summary": "Not possible"}
         item = preview["item"]
-        action = actions.propose(
+        made = actions.propose_or_apply(
             ctx.db, "sharepoint_update_document", "sharepoint", f"Update {item['name']}",
             {"link": link, "operations": operations, "etag": item.get("etag")},
             preview={"fields": [{"name": "Document text", "before": preview["before"],
                                  "after": preview["after"]}],
                      "target": item["name"], "url": item["url"]},
             summary=f"{len(operations)} edit(s) to {item['name']}")
-        ctx.drafts.append(actions.card(action))
-        return {"content": f"Change to {item['name']} prepared as change #{action.id}; it is "
-                           "applied in SharePoint when the user approves it.",
-                "summary": "Waiting for approval"}
+        return _change_result(ctx, made, item["name"])
 
     return _guard(ctx, connector, run)
 
 
 @tool("sharepoint_update_page",
-      "Propose text changes on a SharePoint site page (SitePages/…aspx): each change "
-      "replaces some text on the page. The page is republished only after the user "
-      "approves a before/after comparison.",
+      "Change text on a SharePoint site page (SitePages/…aspx): each change replaces some "
+      "text on the page, and the page is republished. The user sees a before/after "
+      "comparison; depending on their setting it is published straight away (and can be "
+      "undone) or after they approve it. The result says which.",
       schema(["link", "changes"], link=string_param("The page's link."),
              changes={"type": "array", "description": "Each {find, replace}: exact text on "
                       "the page and what it becomes.",
@@ -459,18 +457,33 @@ def sharepoint_update_page(ctx: ToolContext, link: str = "", changes: list = Non
         except SharePointError as exc:
             return {"content": str(exc), "summary": "Not possible"}
         item = preview["item"]
-        action = actions.propose(
+        made = actions.propose_or_apply(
             ctx.db, "sharepoint_update_page", "sharepoint", f"Update page “{item['title']}”",
             {"link": link, "changes": changes},
             preview={"fields": [{"name": "Page text", "before": preview["before"],
                                  "after": preview["after"]}],
                      "target": item["title"], "url": item["url"]},
             summary=f"{preview['changes']} replacement(s)")
-        ctx.drafts.append(actions.card(action))
-        return {"content": f"Page change prepared as change #{action.id}; it is published when "
-                           "the user approves it.", "summary": "Waiting for approval"}
+        return _change_result(ctx, made, f"the page “{item['title']}”")
 
     return _guard(ctx, connector, run)
+
+
+def _change_result(ctx: ToolContext, made: dict, target: str) -> dict:
+    """What the model is told after a change was proposed — or already made."""
+    action, outcome = made["action"], made["outcome"]
+    ctx.drafts.append(made["card"])
+    if made["applied"]:
+        return {"content": f"Done: {target} was changed in SharePoint (change #{action.id}). "
+                           "The user has automatic SharePoint updates on, so it was applied "
+                           "straight away; they can undo it from the card.",
+                "summary": "Applied"}
+    if outcome is not None and action.status == "failed":
+        return {"content": f"Changing {target} failed: {action.error}. Nothing was changed.",
+                "summary": "Failed"}
+    return {"content": f"Change to {target} prepared as change #{action.id}; it is made in "
+                       "SharePoint when the user approves it.",
+            "summary": "Waiting for approval"}
 
 
 _PREFETCHED: Dict[str, float] = {}
@@ -549,3 +562,13 @@ def _run_update_document(db, args: dict) -> dict:
 @actions.executor("sharepoint_update_page")
 def _run_update_page(db, args: dict) -> dict:
     return _sharepoint().update_page(args["link"], args["changes"])
+
+
+@actions.undoer("sharepoint_update_document")
+def _undo_update_document(db, undo: dict) -> dict:
+    return _sharepoint().restore_document(undo)
+
+
+@actions.undoer("sharepoint_update_page")
+def _undo_update_page(db, undo: dict) -> dict:
+    return _sharepoint().restore_page(undo)

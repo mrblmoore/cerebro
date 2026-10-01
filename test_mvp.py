@@ -598,6 +598,17 @@ def test_installer_integrity():
 
     check("The wizard is what the installer runs at the end",
           "CerebroSetupWizard.exe" in iss and "postinstall" in iss)
+
+    # Services are imported lazily inside functions, which PyInstaller cannot
+    # see. One left out of the spec works from source and fails only in the
+    # installed app.
+    pinned = set(re.findall(r'"(app\.[\w.]+)"', spec))
+    services = ROOT / "backend" / "app" / "services"
+    unpinned = sorted(
+        "app." + ".".join(path.relative_to(ROOT / "backend" / "app").with_suffix("").parts)
+        for path in services.rglob("*.py") if path.name != "__init__.py")
+    unpinned = [name for name in unpinned if name not in pinned]
+    check("Every service module is pinned in the PyInstaller spec", not unpinned, unpinned)
     check("The welcome text says what Cerebro is", "WelcomeLabel2=" in iss)
     check("The finish text says what happens next", "FinishedLabel=" in iss)
 
@@ -3942,6 +3953,146 @@ def test_chats():
     db.close()
 
 
+def test_sharepoint_auto_apply():
+    """With automatic updates on, SharePoint changes happen at once and can be undone."""
+    print("\nSharePoint — automatic updates and undo")
+    import importlib
+    import io
+    import sys as _sys
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import browser
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext
+    from app.services.browser.engine import playwright_installed
+
+    sharepoint = browser.get("sharepoint")
+    with mock.patch.object(settings, "SHAREPOINT_AUTO_APPLY", False):
+        check("Automatic updates are off by default", not sharepoint.auto_apply
+              and sharepoint.status()["can_auto_apply"])
+    check("Dynamics changes always need approval",
+          not browser.get("dynamics").status()["can_auto_apply"])
+
+    try:
+        import docx
+    except ImportError:
+        print("  - skipped browser part: python-docx is not installed")
+        return
+    if not playwright_installed():
+        print("  - skipped browser part: Playwright is not installed")
+        return
+
+    server, state = _fake_sharepoint()
+    base = f"http://127.0.0.1:{server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    sharepoint_module = importlib.import_module("app.services.browser.sharepoint")
+    overrides = {"BROWSER_AUTOMATION_ENABLED": True, "SHAREPOINT_BROWSER_ENABLED": True,
+                 "SHAREPOINT_SITE_URL": base, "BROWSER_MODE": "headless",
+                 "SHAREPOINT_AUTO_APPLY": True,
+                 "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium",
+                 "BROWSER_TIMEOUT_SECONDS": 15}
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches += [mock.patch.object(engine_module, "BROWSER_PROFILE_DIR", Path(_TEMP_DIR) / "spa_profile"),
+                mock.patch.object(sharepoint_module, "CACHE_DIR", Path(_TEMP_DIR) / "spa_cache"),
+                mock.patch.object(sharepoint_module, "UNDO_DIR", Path(_TEMP_DIR) / "spa_undo")]
+    for patch in patches:
+        patch.start()
+    engine = browser.engine()
+    db = session()
+    doc_path = "/sites/Support/Shared Documents/Escalation Plan.docx"
+    page_path = "/sites/Support/SitePages/Onboarding.aspx"
+
+    def doc_text():
+        saved = docx.Document(io.BytesIO(state["files"][doc_path]["bytes"]))
+        return "\n".join(p.text for p in saved.paragraphs)
+
+    try:
+        try:
+            engine.submit(lambda eng: eng.page("signin").goto(f"{base}/login?done=1"))
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+        direct = f"{base}{doc_path.replace(' ', '%20')}"
+        ctx = ToolContext(db=db, context={})
+        result = REGISTRY["sharepoint_update_document"].handler(
+            ctx, link=direct, operations=[{"op": "replace_text", "find": "extension 4410",
+                                           "replace": "extension 5520"}])
+        card = ctx.drafts[0]
+        check("The document changes straight away", "extension 5520" in doc_text())
+        check("The model is told it was applied, not that it waits",
+              result["summary"] == "Applied" and "undo" in result["content"])
+        check("The card says it was applied automatically and offers undo",
+              card["status"] == "done" and card["automatic"] and card["can_undo"])
+        check("The before/after is still shown",
+              "4410" in card["preview"]["fields"][0]["before"])
+
+        outcome = actions.undo(db, card["action_id"])
+        check("Undo puts the document back", "extension 4410" in doc_text()
+              and "extension 5520" not in doc_text(), outcome.get("reply"))
+        check("An undone change can't be undone twice",
+              "Nothing to undo" in actions.undo(db, card["action_id"])["reply"])
+
+        # Undo refuses to overwrite someone else's later edit.
+        ctx = ToolContext(db=db, context={})
+        REGISTRY["sharepoint_update_document"].handler(
+            ctx, link=direct, operations=[{"op": "append_paragraph", "text": "Owner: Sam"}])
+        state["files"][doc_path]["etag"] = '"{A1},42"'
+        outcome = actions.undo(db, ctx.drafts[0]["action_id"])
+        check("Undo refuses when the file was edited since", "edited since" in outcome["reply"]
+              and "Owner: Sam" in doc_text())
+
+        # Pages
+        ctx = ToolContext(db=db, context={})
+        REGISTRY["sharepoint_update_page"].handler(
+            ctx, link=f"{base}{page_path}", changes=[{"find": "two calls", "replace": "four calls"}])
+        check("A page is published straight away",
+              "four calls" in state["pages"][page_path]["canvas"])
+        actions.undo(db, ctx.drafts[0]["action_id"])
+        canvas = state["pages"][page_path]["canvas"]
+        check("Undo republishes the page as it was",
+              "two calls" in canvas and "four calls" not in canvas
+              and 'data-sp-controldata="{&quot;x&quot;:1}"' in canvas)
+
+        # Turned off again: changes wait for approval.
+        with mock.patch.object(settings, "SHAREPOINT_AUTO_APPLY", False):
+            ctx = ToolContext(db=db, context={})
+            before = state["pages"][page_path]["canvas"]
+            result = REGISTRY["sharepoint_update_page"].handler(
+                ctx, link=f"{base}{page_path}", changes=[{"find": "two calls", "replace": "five calls"}])
+            check("With it off, nothing changes until approval",
+                  state["pages"][page_path]["canvas"] == before
+                  and result["summary"] == "Waiting for approval")
+            action_id = ctx.drafts[0]["action_id"]
+            actions.approve(db, action_id)
+            check("An approved change can be undone too",
+                  actions.card(db.get(actions.AgentAction, action_id))["can_undo"])
+
+        # A chat shows each change's current state, not the one it was saved with.
+        from app.services.chat_service import ChatService
+        chat = ChatService(db)
+        chat._store("assistant", "Prepared a change", kind="draft",
+                    meta={"cards": [{**ctx.drafts[0], "status": "awaiting_approval"}]})
+        shown = chat.history()[-1]["meta"]["cards"][0]
+        check("Reloading a chat shows a change as done, not still awaiting",
+              shown["status"] == "done" and shown["can_undo"])
+
+        from fastapi.testclient import TestClient
+        from app.main import app
+        with TestClient(app) as client:
+            listed = client.get("/api/integrations").json()["integrations"]
+            sp = next(i for i in listed if i["name"] == "sharepoint")
+            check("The Connect tab sees the setting", sp["can_auto_apply"] and sp["auto_apply"])
+            refused = client.post("/api/integrations/dynamics/auto-apply", json={"enabled": True})
+            check("Systems without automatic updates refuse the switch", refused.status_code == 400)
+    finally:
+        engine.shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        server.shutdown()
+        db.close()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -3975,7 +4126,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

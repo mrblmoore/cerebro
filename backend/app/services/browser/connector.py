@@ -115,6 +115,8 @@ class BrowserConnector:
     #: ``settings`` attributes that switch it on and hold its address.
     enabled_setting = ""
     url_setting = ""
+    #: ``settings`` attribute that lets its changes skip approval ("" = never).
+    auto_apply_setting = ""
     #: Default selectors; tenants override them in CONNECTORS_DIR/<name>.json.
     default_selectors: Dict[str, Any] = {}
 
@@ -358,7 +360,14 @@ class BrowserConnector:
             "signed_in": signed_in, "checked_at": checked,
             "account": self._account if signed_in else None,
             "sign_in": sign_in,
+            "can_auto_apply": bool(self.auto_apply_setting),
+            "auto_apply": self.auto_apply,
         }
+
+    @property
+    def auto_apply(self) -> bool:
+        """Whether changes here are made without waiting for approval."""
+        return bool(self.auto_apply_setting and getattr(settings, self.auto_apply_setting, False))
 
     # -------------------------------------------------------- page work
     def run(self, fn: Callable[[Any], Any], label: str) -> Any:

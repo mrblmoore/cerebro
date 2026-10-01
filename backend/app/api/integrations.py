@@ -7,6 +7,7 @@ Routes for the hidden-browser integrations (RightAnswers, Dynamics 365).
 ``GET  /api/integrations/{name}/auth/status``   poll that sign-in
 ``POST /api/integrations/{name}/check``         is the saved session still valid?
 ``DELETE /api/integrations/{name}/auth``        forget the sign-in
+``POST /api/integrations/{name}/auto-apply``    make changes without approval (or not)
 ``GET  /api/integrations/browser``              the hidden browser itself
 """
 
@@ -51,6 +52,21 @@ def enable(name: str) -> Dict[str, Any]:
     connector = _connector(name)
     result = settings_store.update({"BROWSER_AUTOMATION_ENABLED": True,
                                     connector.enabled_setting: True})
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("errors"))
+    return {"ok": True, "integration": connector.status()}
+
+
+@router.post("/{name}/auto-apply")
+def set_auto_apply(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Turn automatic changes on or off for a system that allows it."""
+    from app.core import settings_store
+
+    connector = _connector(name)
+    if not connector.auto_apply_setting:
+        raise HTTPException(status_code=400,
+                            detail=f"Changes in {connector.label} always need your approval.")
+    result = settings_store.update({connector.auto_apply_setting: bool(body.get("enabled"))})
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("errors"))
     return {"ok": True, "integration": connector.status()}

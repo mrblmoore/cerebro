@@ -32,7 +32,7 @@ class AgentAction(Base):
     #: and/or {"before": text, "after": text}.
     preview = Column(Text, nullable=True)
 
-    #: draft → running → done | failed;  draft → discarded
+    #: draft → running → done | failed;  draft → discarded;  done → undone
     status = Column(String, default="draft", index=True)
     result = Column(Text, nullable=True)
     error = Column(String, nullable=True)
@@ -50,6 +50,13 @@ class AgentAction(Base):
     def preview_dict(self) -> dict:
         try:
             value = json.loads(self.preview or "{}")
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    def result_dict(self) -> dict:
+        try:
+            value = json.loads(self.result or "{}")
             return value if isinstance(value, dict) else {}
         except (TypeError, ValueError):
             return {}

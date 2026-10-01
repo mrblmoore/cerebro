@@ -424,6 +424,11 @@ FIELDS: List[Field] = [
           "(-my) links work too.",
           type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
                                     ("SHAREPOINT_BROWSER_ENABLED", [True])]),
+    Field("SHAREPOINT_AUTO_APPLY", "Apply SharePoint changes automatically", "integrations",
+          "Off: every document or page change waits for your approval. On: changes are made "
+          "straight away — including by chat tasks — and each one can be undone from its card.",
+          type="bool", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("SHAREPOINT_BROWSER_ENABLED", [True])]),
     Field("DYNAMICS_URL", "Dynamics 365 address", "integrations",
           "Your organisation's address. Pre-filled with dental.crm.dynamics.com; a pasted "
           "case link works too — only the host is used.",

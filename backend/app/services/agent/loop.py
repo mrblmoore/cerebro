@@ -38,7 +38,7 @@ How to respond:
 - For general technical knowledge you are confident about, just answer; no tool is needed.
 - Context provided with a message is optional evidence. Ignore anything in it that is not about the question.
 - When a statement comes from a source, cite its bracketed ID exactly, e.g. [K1] or [S2]. Never invent IDs. Say plainly when nothing you found answers the question, then give your best general guidance.
-- Anything that sends or changes something outside this computer is only prepared as a draft card for the user to approve. Never claim something was sent, posted or updated unless a tool result says so.
+- Anything that sends or changes something outside this computer is prepared as a card for the user to approve — unless the tool result says it was already applied (the user can turn that on for SharePoint). Never claim something was sent, posted or updated unless a tool result says so.
 - Be concise and specific. Use short numbered steps for procedures. Markdown is fine."""
 
 #: Previous answers are shortened in the history the model sees; the model
@@ -265,8 +265,9 @@ def run(db, text: str, context: Dict[str, Any] = None,
     cards = _summary_cards(used_tools, cited) + ctx.drafts
     payload = {
         "reply": answer,
-        "kind": "draft" if any(c.get("type") in ("draft", "approval") for c in ctx.drafts)
-        else "answer",
+        "kind": "draft" if any(c.get("type") == "draft" or (
+            c.get("type") == "approval" and c.get("status") == "awaiting_approval")
+            for c in ctx.drafts) else "answer",
         "sources": cited, "cards": cards, "images": [],
         "tool": used_tools[-1] if used_tools else None,
         "tools_used": used_tools,

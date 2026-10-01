@@ -370,6 +370,13 @@ def discard_change(action_id: int, conversation_id: Optional[int] = None,
     return _service(db, conversation_id).handle_change(action_id, "discard")
 
 
+@router.post("/changes/{action_id}/undo", dependencies=[Depends(require_local_origin)])
+def undo_change(action_id: int, conversation_id: Optional[int] = None,
+                db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Reverse a change that was made (automatically or after approval)."""
+    return _service(db, conversation_id).handle_change(action_id, "undo")
+
+
 @router.get("/changes", dependencies=[Depends(require_local_origin)])
 def list_changes(status: Optional[str] = None, limit: int = Query(30, ge=1, le=200),
                  db: Session = Depends(get_db)) -> Dict[str, Any]:
@@ -379,8 +386,12 @@ def list_changes(status: Optional[str] = None, limit: int = Query(30, ge=1, le=2
     query = db.query(AgentAction)
     if status:
         query = query.filter(AgentAction.status == status)
+    from app.services.agent import actions
+
     rows = query.order_by(AgentAction.id.desc()).limit(limit).all()
-    return {"count": len(rows), "changes": [row.to_dict() for row in rows]}
+    changes = [{**row.to_dict(), "automatic": bool(row.result_dict().get("automatic")),
+                "can_undo": actions.can_undo(row)} for row in rows]
+    return {"count": len(changes), "changes": changes}
 
 
 @router.post("/upload-image", dependencies=[Depends(require_local_origin)])

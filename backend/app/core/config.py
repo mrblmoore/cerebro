@@ -174,6 +174,10 @@ class Settings(BaseSettings):
     #: no app registration (unlike SHAREPOINT_GRAPH_ENABLED below).
     SHAREPOINT_BROWSER_ENABLED: bool = False
     SHAREPOINT_SITE_URL: Optional[str] = "https://envistaconnect.sharepoint.com"
+    #: Apply SharePoint document and page changes as soon as Ask (or a chat
+    #: task) makes them, instead of waiting for approval. Each one is still
+    #: shown with its before/after and can be undone from its card.
+    SHAREPOINT_AUTO_APPLY: bool = False
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 

@@ -154,7 +154,14 @@ class ChatService:
         rows = (self._in_chat(self.db.query(ChatMessage))
                 .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
                 .limit(limit).all())
-        return [row.to_dict() for row in reversed(rows)]
+        messages = [row.to_dict() for row in reversed(rows)]
+        from app.services.agent import actions
+
+        for message in messages:
+            meta = message.get("meta")
+            if isinstance(meta, dict) and meta.get("cards"):
+                meta["cards"] = actions.refresh_cards(self.db, meta["cards"])
+        return messages
 
     def _last_assistant_message(self) -> Optional[ChatMessage]:
         return (self._in_chat(self.db.query(ChatMessage))
@@ -476,10 +483,11 @@ class ChatService:
         """Approve or discard a proposed change to an external system."""
         from app.services.agent import actions
 
-        result = (actions.approve(self.db, action_id) if decision == "approve"
-                  else actions.discard(self.db, action_id))
-        self._store("user", "Approve change" if decision == "approve" else "Discard change",
-                    kind="instruction")
+        handler = {"approve": actions.approve, "discard": actions.discard,
+                   "undo": actions.undo}[decision]
+        result = handler(self.db, action_id)
+        self._store("user", {"approve": "Approve change", "discard": "Discard change",
+                             "undo": "Undo change"}[decision], kind="instruction")
         meta = {key: result[key] for key in ("cards", "notify", "agent_action")
                 if result.get(key) not in (None, [], {})}
         self._store("assistant", result.get("reply") or "Done.",

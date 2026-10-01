@@ -160,5 +160,10 @@ template replies.
 - [x] **B8.6 Bedrock.** Models that refuse tool use or system prompts fall back
   automatically instead of failing as a "bad model ID". Nova uses temperature
   0 when choosing tools.
-- [ ] **B8.7 Check on Windows** with the user's Bedrock models: the buddy's
+- [x] **B8.7 Automatic SharePoint updates.** An opt-in setting (Connect tab
+  toggle) applies SharePoint document and page changes without approval. Every
+  SharePoint change, automatic or approved, can be undone for 30 days, and Undo
+  refuses if someone edited the item since. Chats show each change's current
+  status after a reload.
+- [ ] **B8.8 Check on Windows** with the user's Bedrock models: the buddy's
   transparency, a scheduled chat task, and tool use with Nova and Llama.

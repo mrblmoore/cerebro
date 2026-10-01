@@ -425,17 +425,23 @@ function changeCard(card) {
     <div class="action-head">
       <span class="title">${esc(card.title)}</span>
       <span class="badge accent">${esc(INTEGRATION_LABEL[card.integration] || card.integration || 'Change')}</span>
-      ${statusBadge(status)}
+      ${card.automatic && status !== 'undone' ? '<span class="badge ok">Applied automatically</span>' : statusBadge(status)}
     </div>
     <div class="diff">${fields.map(diffField).join('')}</div>
+    ${card.error && status === 'failed' ? `<div class="card-error">${esc(card.error)}</div>` : ''}
     ${status === 'awaiting_approval' ? `
       <div class="btn-row">
         <button class="btn primary" data-approve>${esc(card.approve_label || 'Approve')}</button>
         <button class="btn ghost" data-discard>${esc(card.discard_label || 'Discard')}</button>
         ${card.preview?.url ? '<button class="btn ghost" data-open>Open record</button>' : ''}
+      </div>` : card.can_undo || card.preview?.url ? `
+      <div class="btn-row">
+        ${card.can_undo ? '<button class="btn sm" data-undo>Undo</button>' : ''}
+        ${card.preview?.url ? '<button class="btn sm ghost" data-open>Open</button>' : ''}
       </div>` : ''}`;
   $('[data-approve]', node)?.addEventListener('click', () => decide(node, `/api/chat/changes/${card.action_id}/approve`));
   $('[data-discard]', node)?.addEventListener('click', () => decide(node, `/api/chat/changes/${card.action_id}/discard`));
+  $('[data-undo]', node)?.addEventListener('click', () => decide(node, `/api/chat/changes/${card.action_id}/undo`));
   $('[data-open]', node)?.addEventListener('click', () => openExternal(card.preview.url));
   return node;
 }
@@ -444,6 +450,7 @@ function statusBadge(status) {
   const map = {
     awaiting_approval: ['warn', 'Needs approval'], done: ['ok', 'Done'], running: ['accent', 'Running'],
     failed: ['err', 'Failed'], discarded: ['', 'Discarded'], queued: ['ok', 'Queued'],
+    undone: ['', 'Undone'],
   };
   const [kind, label] = map[status] || ['', status];
   return `<span class="badge ${kind}">${esc(label)}</span>`;
@@ -1128,10 +1135,20 @@ async function loadActivity() {
 
   if (recent.length) {
     lists.insertAdjacentHTML('beforeend', `<div class="section-title">Recent changes<span class="grow"></span></div>`);
-    recent.forEach(change => lists.insertAdjacentHTML('beforeend', `
-      <div class="card glass"><div class="list-row"><div class="grow"><div class="title">${esc(change.title)}</div>
-      <div class="meta">${esc(INTEGRATION_LABEL[change.integration] || change.integration)} · ${relTime(change.created_at)}${change.error ? ` · ${esc(change.error)}` : ''}</div></div>
-      ${statusBadge(change.status)}</div></div>`));
+    recent.forEach(change => {
+      const row = document.createElement('div');
+      row.className = 'card glass';
+      row.innerHTML = `<div class="list-row"><div class="grow"><div class="title">${esc(change.title)}</div>
+        <div class="meta">${esc(INTEGRATION_LABEL[change.integration] || change.integration)} · ${relTime(change.created_at)}${change.automatic ? ' · applied automatically' : ''}${change.error ? ` · ${esc(change.error)}` : ''}</div></div>
+        ${change.can_undo ? '<button class="btn sm" data-undo>Undo</button>' : ''}${statusBadge(change.status)}</div>`;
+      $('[data-undo]', row)?.addEventListener('click', async event => {
+        event.currentTarget.disabled = true;
+        const result = await api.post(`/api/chat/changes/${change.id}/undo`).catch(e => ({ reply: e.message, cards: [{ status: 'error' }] }));
+        toast(result.reply || 'Done', result.cards?.some(c => c.status === 'error') ? 'err' : 'ok');
+        loadActivity();
+      });
+      lists.append(row);
+    });
   }
 
   lists.insertAdjacentHTML('beforeend', `<div class="section-title">Tasks<span class="grow"></span></div>`);
@@ -1225,7 +1242,11 @@ function integrationCard(item) {
     <div class="logo ${item.name}">${LOGO[item.name] || item.label[0]}</div>
     <div style="min-width:0"><h4>${esc(item.label)} ${badge}</h4>
       <div class="meta">${item.account ? `Signed in as ${esc(item.account)} · ` : ''}${item.url ? esc(item.url) : 'Add its address in Settings'}${item.checked_at ? ` · checked ${relTime(new Date(item.checked_at * 1000).toISOString())}` : ''}</div>
-      ${item.sign_in?.detail && item.sign_in.status !== 'idle' ? `<p>${esc(item.sign_in.detail)}</p>` : ''}</div>
+      ${item.sign_in?.detail && item.sign_in.status !== 'idle' ? `<p>${esc(item.sign_in.detail)}</p>` : ''}
+      ${item.enabled && item.can_auto_apply ? `
+        <label class="auto-apply" title="Off: every change waits for your approval. On: changes are made straight away and can be undone from their card.">
+          <span class="switch"><input type="checkbox" data-auto ${item.auto_apply ? 'checked' : ''}><span></span></span>
+          Apply changes automatically</label>` : ''}</div>
     <div class="btn-row" style="margin:0;flex-direction:column">
       ${item.enabled ? `<button class="btn sm ${signedIn ? '' : 'primary'}" data-signin>${signedIn ? 'Sign in again' : 'Sign in'}</button>
       <button class="btn sm ghost" data-check>Check</button>
@@ -1247,6 +1268,17 @@ function integrationCard(item) {
     }
   });
   $('[data-teach]', card)?.addEventListener('click', e => teach(item.name, e.currentTarget));
+  $('[data-auto]', card)?.addEventListener('change', async e => {
+    const enabled = e.currentTarget.checked;
+    try {
+      await api.post(`/api/integrations/${item.name}/auto-apply`, { enabled });
+      toast(enabled ? `${item.label} changes will be made straight away — each can be undone`
+        : `${item.label} changes will wait for your approval`, 'ok');
+    } catch (error) {
+      e.currentTarget.checked = !enabled;
+      toast(error.message, 'err');
+    }
+  });
   $('[data-check]', card)?.addEventListener('click', async e => {
     e.currentTarget.disabled = true;
     const result = await api.post(`/api/integrations/${item.name}/check`).catch(err => ({ detail: err.message }));

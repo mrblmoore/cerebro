@@ -136,6 +136,19 @@ Nova Micro and 8B models are fine for plain questions.
 |---|---|
 | Search and read | Runs immediately while Ask works on your question. |
 | Note, field update, resolution, article edit, document or page change | Ask prepares the change and shows an **approval card** with a before/after preview. Nothing is sent until you click **Approve**. Discarded changes never run. |
+| SharePoint document or page change, with **Apply changes automatically** on | Made straight away, by Ask or by a chat task. The card still shows the before/after, is marked **Applied automatically**, and has **Undo**. |
+
+**Automatic SharePoint updates.** Turn on **Apply changes automatically** on
+the SharePoint card in the Connect tab (or Settings → RightAnswers, Dynamics &
+SharePoint). It is off by default. Dynamics and RightAnswers changes always
+wait for approval.
+
+**Undo.** Every SharePoint change, automatic or approved, can be undone from
+its card in the chat or from **Recent changes** in Activity, for 30 days.
+Cerebro keeps a copy of the file or page as it was in
+`%LOCALAPPDATA%\Cerebro\sharepoint_undo` and puts it back. If someone has
+edited the file or page since, Undo refuses rather than lose their edit; use
+SharePoint's **Version history** then.
 
 Every proposed and completed change is listed at `GET /api/chat/changes`.
 
@@ -228,7 +241,8 @@ SharePoint link, Ask opens it without being told to.
   approval card shows the document text before and after. On approval, Cerebro
   downloads the file again and checks that nobody changed it since the
   preview, which it refuses if they did. It then applies the edit and uploads
-  it back. SharePoint keeps the previous version in its version history.
+  it back. SharePoint keeps the previous version in its version history, and
+  the card's **Undo** puts the file back as it was.
   Libraries that require check-out are checked out and back in automatically.
 - **Change pages.** Text on a modern page is replaced in place, without
   touching the page's layout or web parts. The page is then checked out,
