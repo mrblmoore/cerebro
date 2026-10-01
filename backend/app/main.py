@@ -4,6 +4,7 @@ Cerebro API — application entry point.
 Serves the JSON API plus three built-in screens:
 
 * ``/``         dashboard: live context, recent events, knowledge, logs
+* ``/app``      the Cerebro app — Ask, Activity, Sources, Connect (desktop shell)
 * ``/setup``    first-run wizard
 * ``/settings`` full configuration centre
 """
@@ -111,6 +112,12 @@ async def dashboard():
     if not settings.SETUP_COMPLETED:
         return RedirectResponse("/setup")
     return _page("dashboard.html")
+
+
+@app.get("/app", include_in_schema=False)
+async def app_page():
+    """The Cerebro app: Ask, Activity, Sources and Connect (also the desktop shell)."""
+    return _page("app.html")
 
 
 @app.get("/setup", include_in_schema=False)

@@ -305,6 +305,35 @@ async def read_logs(lines: int = 200) -> Dict[str, Any]:
     return {"path": settings.log_path, "lines": logger.tail(min(max(lines, 1), 1000))}
 
 
+# ------------------------------------------------------------------ shutdown
+@router.post("/shutdown", dependencies=[Depends(require_local_origin)])
+def shutdown(request: Request) -> Dict[str, Any]:
+    """Stop the server — "Quit Cerebro" in the tray.
+
+    Only accepted from this machine. The packaged server registers its uvicorn
+    instance so it can exit cleanly; otherwise the process interrupts itself,
+    which uvicorn treats exactly like Ctrl+C.
+    """
+    import signal
+    import threading
+
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Shutdown is only accepted from this computer.")
+
+    server = getattr(request.app.state, "uvicorn_server", None)
+
+    def stop():
+        if server is not None:
+            server.should_exit = True
+        else:
+            signal.raise_signal(signal.SIGINT)
+
+    logger.info("system", "Shutdown requested from the desktop app")
+    threading.Timer(0.3, stop).start()
+    return {"ok": True, "detail": "Cerebro is stopping."}
+
+
 # ------------------------------------------------------------------ activity
 def _pending_approvals() -> int:
     """Drafts waiting on the user — counted fresh, never cached."""

@@ -1,4 +1,9 @@
-# Cerebro desktop widget and agent.
-# The widget itself only needs `requests` — its interface is built on Tkinter,
-# which ships with Python. Audio capture is optional.
+# Cerebro desktop app, tray and agent.
+# The classic widget only needs `requests` (its interface is Tkinter, which
+# ships with Python). Audio capture is optional.
 requests>=2.31,<3.0
+# The app window (Edge WebView2 on Windows) and the animated tray brain.
+# Without them the classic Tkinter widget opens instead.
+pywebview>=5.0,<7.0
+pystray>=0.19,<1.0
+Pillow>=10.0

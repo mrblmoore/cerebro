@@ -116,16 +116,27 @@ server = Analysis(
     cipher=block_cipher,
 )
 
+# The desktop app window is pywebview over Edge WebView2 (with pythonnet on
+# Windows); the tray is pystray. Both carry data files their imports don't show.
+widget_datas, widget_hidden = [], []
+for package in ("webview", "pystray", "clr_loader", "pythonnet"):
+    try:
+        widget_hidden += collect_submodules(package)
+        widget_datas += collect_data_files(package)
+    except Exception:  # optional at build time; the shell falls back to the classic widget
+        pass
+
 widget = Analysis(
     [str(ROOT / "packaging" / "cerebro_widget_app.py")],
     pathex=[str(DESKTOP), str(ROOT)],
     binaries=[],
-    datas=[],
+    datas=widget_datas,
     hiddenimports=[
         "widget", "widget_config", "win_integration", "agent", "branding",
         "activity_recorder", "document_watcher", "screenpipe_launcher", "mss", "PIL",
         "PIL.Image", "pynput", "pynput.keyboard",
-    ],
+        "shell", "tray", "brain_frames", "webview", "pystray", "clr",
+    ] + widget_hidden,
     hookspath=[],
     runtime_hooks=[],
     excludes=["fastapi", "uvicorn", "sqlalchemy"],

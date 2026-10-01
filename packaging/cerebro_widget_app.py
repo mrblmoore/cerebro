@@ -2,8 +2,9 @@
 """
 Entry point for the packaged Cerebro widget executable.
 
-Built windowed, so double-clicking it shows the widget and no console. It also
-starts the packaged Cerebro server and bundled desktop helpers when needed.
+Built windowed, so double-clicking it shows the app window and no console. It
+also starts the packaged Cerebro server and bundled desktop helpers when
+needed. ``--background`` starts in the system tray (used at Windows sign-in).
 """
 
 import subprocess
@@ -87,10 +88,15 @@ def _run_desktop_helpers(api_url: str) -> None:
         launch_if_installed(screenpipe_url)
 
 if __name__ == "__main__":
-    import widget
+    import shell
 
     api_url = _api_url()
     _ensure_server(api_url)
     _run_desktop_helpers(api_url)
     os.environ["CEREBRO_HELPERS_STARTED"] = "1"
-    sys.exit(widget.main())
+    arguments = ["--api", api_url]
+    if "--background" in sys.argv:
+        arguments.append("--background")
+    if "--classic" in sys.argv:
+        arguments.append("--classic")
+    sys.exit(shell.main(arguments))

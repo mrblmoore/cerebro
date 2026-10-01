@@ -62,11 +62,11 @@ Prefer a menu? Run `cerebro.bat` (or `./cerebro.sh`) with no arguments.
 **Dashboard** — `http://localhost:8000`
 Live context, recent events, knowledge search, system status and the activity log.
 
-**Desktop widget**
-A small always-on-top panel with a source-aware Ask transcript, connection
-readiness, citations and one Activity feed for tasks, approvals and events. Drag
-it anywhere, snap it to an edge, collapse it while you work, or set it to start
-with Windows.
+**Desktop app & tray**
+A modern always-on-top window with a streaming Ask transcript, live progress
+while Cerebro searches and works, source citations, and before/after approval
+cards. Closing it leaves Cerebro running in the system tray, where an animated
+brain shows what it is doing. See [docs/WIDGET.md](docs/WIDGET.md).
 
 **Browser extension**
 Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases and the SharePoint

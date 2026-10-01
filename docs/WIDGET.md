@@ -1,19 +1,52 @@
-# The Cerebro desktop widget
+# The Cerebro desktop app
 
-A small always-on-top panel for grounded conversation, readable sources and the
-work Cerebro is carrying out while you use Salesforce, Teams and everything else.
+A modern always-on-top window for grounded conversation, readable sources and
+the work Cerebro is carrying out while you use Dynamics, Teams and everything
+else. Closing it **does not quit Cerebro**. Cerebro keeps running in the system
+tray, and its brain icon animates to show what it is doing.
 
 ```
-Windows          double-click widget.bat
+Windows          double-click widget.bat (installed: Cerebro Widget)
 macOS / Linux    ./cerebro.sh widget
 ```
 
-It is built on Tkinter, which ships with Python, so there is nothing extra to
-install.
+The window is the same interface as `http://localhost:8000/app`. It is drawn
+with Microsoft Edge WebView2 (via pywebview), which is already on Windows 10
+and 11. If WebView2 or pywebview is missing, the previous Tkinter widget opens
+instead. It is also available on purpose with `python desktop/shell.py --classic`.
+
+## The tray brain
+
+| The brain is… | Cerebro is… |
+|---|---|
+| breathing, blinking | idle and ready |
+| sparkling, eyes up | thinking (waiting on the AI model) |
+| sweeping a magnifying glass | searching your sources |
+| scanning, with a spinning globe | working in RightAnswers or Dynamics |
+| wiggling a pencil | making an approved change |
+| bouncing a "!" | waiting for you to approve something |
+| circled by an orbit | syncing |
+| showing sound waves | listening |
+| red and dizzy | something failed. The tooltip says what. |
+| grey and asleep | the server is not reachable |
+
+- **Click** the icon to open Cerebro. Right-click for **Ask Cerebro…**, pending
+  approvals, **RightAnswers & Dynamics…**, the dashboard, settings and
+  **Start with Windows**.
+- A notification appears when a change is waiting for your approval.
+- **Quit Cerebro** in the tray menu is the only way to stop it, and it stops
+  the local server too.
+- Starting Cerebro again while it is in the tray simply brings the window back.
+- With **Start with Windows** on, Cerebro starts quietly in the tray at sign-in.
+
+Preview every animation with `python desktop/brain_frames.py --out preview/`.
 
 ---
 
-## The three tabs
+## The tabs
+
+**Connect** — sign in to RightAnswers and Dynamics 365, and check that the
+saved sessions still work. See [INTEGRATIONS.md](INTEGRATIONS.md).
 
 **Ask** — a real back-and-forth transcript. The composer stays at the bottom;
 active-source chips show what is in scope, and cited source links are attached

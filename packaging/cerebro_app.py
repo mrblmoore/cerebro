@@ -94,7 +94,11 @@ def main() -> int:
         # path for uvicorn's "app.main:app" string form to resolve against.
         from app.main import app
 
-        uvicorn.run(app, host=settings.HOST, port=settings.PORT, log_level="info")
+        server = uvicorn.Server(uvicorn.Config(app, host=settings.HOST, port=settings.PORT,
+                                               log_level="info"))
+        # "Quit Cerebro" in the tray stops the server through this handle.
+        app.state.uvicorn_server = server
+        server.run()
     except KeyboardInterrupt:
         pass
     return 0

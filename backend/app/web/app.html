@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cerebro</title>
+  <link rel="icon" href="/static/cerebro-256.png">
+  <link rel="stylesheet" href="/static/ui/app.css">
+  <script>
+    // Apply the saved theme before first paint, so there is no flash.
+    try {
+      const saved = localStorage.getItem('cerebro.theme');
+      const theme = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.dataset.theme = theme;
+    } catch (e) { /* storage unavailable: keep dark */ }
+    if (new URLSearchParams(location.search).has('shell')) document.documentElement.classList.add('shell');
+  </script>
+</head>
+<body>
+  <div class="aurora"></div>
+  <div class="grain"></div>
+
+  <div class="app">
+    <header class="titlebar pywebview-drag-region">
+      <div class="brand pywebview-drag-region">
+        <div class="brain-host" id="brand-brain"></div>
+        <div style="min-width:0">
+          <div class="brand-name">Cerebro</div>
+          <div class="status-line"><span class="status-dot" id="status-dot"></span><span id="status-text">Connecting…</span></div>
+        </div>
+      </div>
+      <button class="icon-btn" id="theme-btn" title="Light / dark" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
+      <button class="icon-btn" id="menu-btn" title="Dashboard and settings" aria-label="More">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>
+      </button>
+      <div class="win-controls" data-shell-only>
+        <button class="icon-btn" id="pin-btn" title="Keep on top" aria-label="Keep on top" aria-pressed="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.8V4h6v6.8l3 3.2v2H6v-2Z"/></svg>
+        </button>
+        <button class="icon-btn" id="compact-btn" title="Collapse" aria-label="Collapse">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12h14"/></svg>
+        </button>
+        <button class="icon-btn close" id="hide-btn" title="Hide to tray — Cerebro keeps running" aria-label="Hide to tray">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <section class="context-strip" id="context-strip" aria-label="Current context"></section>
+
+    <nav class="tabs glass" role="tablist" id="tabs">
+      <div class="tab-indicator" id="tab-indicator"></div>
+      <button class="tab" role="tab" data-tab="ask" aria-selected="true">Ask</button>
+      <button class="tab" role="tab" data-tab="activity">Activity <span class="count" id="approval-count"></span></button>
+      <button class="tab" role="tab" data-tab="sources">Sources</button>
+      <button class="tab" role="tab" data-tab="connect">Connect</button>
+    </nav>
+
+    <main>
+      <section class="panel active" id="panel-ask" role="tabpanel">
+        <div class="scroll" id="ask-scroll"><div class="thread" id="thread"></div></div>
+        <div class="composer-wrap">
+          <div id="attachment"></div>
+          <form class="composer glass" id="composer">
+            <button type="button" class="icon-btn" id="attach-btn" title="Attach an image" aria-label="Attach an image">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/></svg>
+            </button>
+            <input type="file" id="file-input" accept="image/*" hidden>
+            <textarea id="input" rows="1" placeholder="Ask anything — or tell Cerebro what to do…" aria-label="Message"></textarea>
+            <button class="send" id="send" type="submit" aria-label="Send" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+            </button>
+          </form>
+          <div class="hint"><span><span class="kbd">Enter</span> send · <span class="kbd">Shift</span>+<span class="kbd">Enter</span> new line · paste an image</span><span id="ai-hint"></span></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-activity" role="tabpanel">
+        <div class="scroll" id="activity-body"></div>
+      </section>
+
+      <section class="panel" id="panel-sources" role="tabpanel">
+        <div class="scroll">
+          <label class="search glass"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="kb-search" placeholder="Search the knowledge base…"></label>
+          <div id="kb-results"></div>
+          <div id="sources-body"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-connect" role="tabpanel">
+        <div class="scroll" id="connect-body"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast-host" id="toasts"></div>
+  <script type="module" src="/static/ui/app.js"></script>
+</body>
+</html>

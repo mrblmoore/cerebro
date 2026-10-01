@@ -123,13 +123,17 @@ def set_startup(enabled: bool, project_root: Path) -> bool:
             return True
 
         entry.parent.mkdir(parents=True, exist_ok=True)
-        widget_bat = project_root / "widget.bat"
+        executable = project_root / "CerebroWidget.exe"
+        # The installed app starts quietly in the tray; a source checkout
+        # opens its window through widget.bat as before.
+        target = (f'start "" "{executable}" --background' if executable.exists()
+                  else f'start "" "{project_root / "widget.bat"}"')
         entry.write_text(
             "@echo off\r\n"
-            "REM Created by the Cerebro widget — delete this file to stop it "
+            "REM Created by Cerebro — delete this file to stop it "
             "launching at sign-in.\r\n"
             f'cd /d "{project_root}"\r\n'
-            f'start "" "{widget_bat}"\r\n',
+            f"{target}\r\n",
             encoding="utf-8",
         )
         return True

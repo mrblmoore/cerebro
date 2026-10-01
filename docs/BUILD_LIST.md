@@ -96,25 +96,26 @@ template replies.
 
 ## Phase 5 — Modern UI
 
-- [ ] **B5.1 Design system** (`static/ui/`): dark-first glass surfaces on the
+- [x] **B5.1 Design system** (`static/ui/`): dark-first glass surfaces on the
   logo gradient, Inter, motion, light theme, reduced-motion support. No build
   step.
-- [ ] **B5.2 App page** (`/app`): streaming Ask with tool timeline, source pills,
+- [x] **B5.2 App page** (`/app`): streaming Ask with tool timeline, source pills,
   approval diffs; Sources, Activity and Integrations tabs; animated brain in
   the header.
-- [ ] **B5.3 Desktop shell** (`desktop/shell.py`, pywebview): frameless, always on
+- [x] **B5.3 Desktop shell** (`desktop/shell.py`, pywebview): frameless, always on
   top, snap/opacity/compact via a JS bridge.
-- [ ] **B5.4 Restyle** dashboard, settings and setup on the same system.
-- [ ] **B5.5 Packaging** for pywebview.
+- [x] **B5.4 Restyle** dashboard, settings and setup on the same system.
+- [x] **B5.5 Packaging** for pywebview.
 
 ## Phase 6 — Runs in the background, with a tray brain
 
-- [ ] **B6.1 Tray** (`desktop/tray.py`, pystray): closing the window hides it;
+- [x] **B6.1 Tray** (`desktop/tray.py`, pystray): closing the window hides it;
   menu with Open, Quick Ask, Integrations, Pause capture, Dashboard, Settings,
   Start with Windows, Quit. Quit stops the server too
   (`POST /api/system/shutdown`). Single instance. Start with Windows launches
   straight to the tray.
-- [ ] **B6.2 Brain animation.** Generated frame sets per state — breathing
+- [x] **B6.2 Brain animation.** Frames drawn at runtime by
+  `desktop/brain_frames.py`, so no image assets ship. One loop per state — breathing
   (idle), sparkling neurons (thinking), scanning eyes (browsing), bouncing "!"
   (approval), sound waves (listening), orbit (syncing), dizzy (error),
   sleeping (offline). The same brain animates in the app header.

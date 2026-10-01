@@ -362,7 +362,7 @@ def cmd_widget(args) -> int:
         print(f"  The widget will keep retrying — start the API with: "
               f"{'cerebro.bat' if IS_WINDOWS else './cerebro.sh'} start\n")
 
-    command = [str(python_for()), str(DESKTOP / "widget.py")]
+    command = [str(python_for()), str(DESKTOP / "shell.py")]
     if args.api:
         command += ["--api", args.api]
     return run(command)

@@ -3034,6 +3034,135 @@ def test_dynamics_case_prefetch():
           integration_tools.prefetch_dynamics_case("CAS-77777-ZZZZZ") is False)
 
 
+def test_tray_brain():
+    """Every activity state has its own tray animation, and the tray follows it."""
+    print("\nTray brain")
+    sys.path.insert(0, str(ROOT / "desktop"))
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        print("  - skipped: Pillow is not installed")
+        return
+    import brain_frames
+    import tray
+
+    sizes = {}
+    for state in brain_frames.STATES:
+        loop = brain_frames.frames(state, 32)
+        sizes[state] = (len(loop), loop[0].size)
+    check("Every state has an animation loop",
+          all(count >= 8 and size == (32, 32) for count, size in sizes.values()), sizes)
+    idle = brain_frames.frames("idle", 32)
+    check("The idle animation actually moves", idle[0].tobytes() != idle[len(idle) // 4].tobytes())
+    offline = brain_frames.frames("offline", 32)[0].convert("RGB")
+    r, g, b = offline.getpixel((16, 16))
+    check("Offline is drawn in grey", abs(r - g) < 12 and abs(g - b) < 12, (r, g, b))
+    error = brain_frames.frames("error", 32)[0].convert("RGB").getpixel((10, 16))
+    check("Errors turn the brain red", error[0] > error[2], error)
+    check("Unknown states fall back to idle", len(brain_frames.frames("bogus", 32)) == len(idle))
+
+    class FakeIcon:
+        def __init__(self):
+            self.title, self.notes = "", []
+
+        def update_menu(self):
+            pass
+
+        def notify(self, message, title):
+            self.notes.append(message)
+
+    brain = tray.BrainTray("http://127.0.0.1:1", actions={})
+    brain.icon = FakeIcon()
+    brain._on_activity({"state": "browsing", "detail": "Reading CAS-01234", "pending_approvals": 0})
+    check("The tray follows the live state", brain.state == "browsing")
+    check("The tooltip says what Cerebro is doing", "Reading CAS-01234" in brain.icon.title)
+    brain._on_activity({"state": "awaiting_approval", "detail": "1 draft", "pending_approvals": 1})
+    check("A new approval raises a notification", len(brain.icon.notes) == 1)
+    brain._on_activity({"state": "awaiting_approval", "detail": "1 draft", "pending_approvals": 1})
+    check("The same approval is not announced twice", len(brain.icon.notes) == 1)
+
+
+def test_desktop_shell():
+    """Closing hides to the tray, one instance runs, and Quit stops the server."""
+    print("\nDesktop shell")
+    sys.path.insert(0, str(ROOT / "desktop"))
+    from unittest import mock
+
+    import shell
+    import widget_config
+
+    lock = Path(_TEMP_DIR) / "shell.lock"
+    with mock.patch.object(shell, "LOCK_PATH", lock):
+        first, second = shell.SingleInstance(), shell.SingleInstance()
+        check("The first shell takes the instance lock", first.acquire())
+        check("A second launch does not start another shell", not second.acquire())
+
+    request_file = Path(_TEMP_DIR) / "show.request"
+    with mock.patch.object(shell, "SHOW_REQUEST", request_file), \
+            mock.patch.object(widget_config, "load", return_value=dict(widget_config.DEFAULTS)):
+        app = shell.Shell("http://127.0.0.1:1")
+        app.window = mock.MagicMock()
+        shell.SingleInstance.ask_running_instance_to_show("activity")
+        app._check_show_request()
+        check("A second launch brings the running window back",
+              app.window.show.called and not request_file.exists())
+        check("…on the requested tab",
+              "cerebroSelectTab('activity')" in app.window.evaluate_js.call_args[0][0])
+
+        app.window.reset_mock()
+        check("Closing the window only hides it", app._on_closing() is False and app.window.hide.called)
+        with mock.patch("requests.post") as post:
+            app.quit()
+        check("Quit asks the server to stop", post.call_args[0][0].endswith("/api/system/shutdown"))
+        check("Quit really closes the window", app._on_closing() is True and app.window.destroy.called)
+
+        api = shell.ShellApi(app)
+        with mock.patch("webbrowser.open") as opened:
+            api.open_external("javascript:alert(1)")
+            api.open_external("https://example.com")
+        check("Only web links are opened externally", opened.call_count == 1)
+
+    from fastapi.testclient import TestClient
+    from app.main import app as fastapi_app
+    from app.api import system
+
+    with TestClient(fastapi_app) as client:
+        refused = client.post("/api/system/shutdown")
+    check("Shutdown is refused unless it comes from this computer", refused.status_code == 403)
+
+    server = mock.MagicMock(should_exit=False)
+    request = mock.MagicMock()
+    request.client.host = "127.0.0.1"
+    request.app.state.uvicorn_server = server
+    import time as _time
+    system.shutdown(request)
+    _time.sleep(0.5)
+    check("A local shutdown stops the server cleanly", server.should_exit is True)
+
+
+def test_app_page():
+    """The modern app page is served and wired to the live endpoints."""
+    print("\nApp page")
+    from fastapi.testclient import TestClient
+    from app.main import app as fastapi_app
+
+    with TestClient(fastapi_app) as client:
+        page = client.get("/app")
+        script = client.get("/static/ui/app.js")
+        brain = client.get("/static/ui/brain.js")
+    check("The app page is served", page.status_code == 200 and "Cerebro" in page.text)
+    check("Its scripts are served", script.status_code == 200 and brain.status_code == 200)
+    check("Ask streams progress", "/api/chat/stream" in script.text)
+    check("The header follows live activity", "/api/system/activity/stream" in script.text)
+    check("Changes are approved from the app", "/api/chat/changes/" in script.text)
+    check("Integrations can be signed in from the app", "/auth/start" in script.text)
+    check("The window can be dragged in the shell", "pywebview-drag-region" in page.text)
+    markdown = (ROOT / "backend" / "app" / "web" / "static" / "ui" / "markdown.js").read_text(encoding="utf-8")
+    render = markdown[markdown.index("export function renderMarkdown"):]
+    check("Replies are escaped before any markup is applied",
+          "const lines = escapeHTML(source)" in render.split("\n", 2)[1])
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -3067,7 +3196,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
