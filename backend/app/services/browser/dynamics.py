@@ -33,7 +33,11 @@ CASE_FIELDS = ("incidentid,ticketnumber,title,description,statecode,statuscode,"
                "_customerid_value,_ownerid_value")
 
 #: Case fields Cerebro may change (with approval), and how to send each one.
-#: Option-set fields accept the number or, case-insensitively, its label.
+#: Option-set fields accept the number or, case-insensitively, its label —
+#: labels are read from the organisation's own metadata (see
+#: ``DynamicsConnector.option_sets``), so customised values such as "Waiting
+#: on customer" work. OPTION_LABELS is only the fallback when metadata can't
+#: be read.
 EDITABLE_FIELDS = {
     "title": "text", "description": "text",
     "prioritycode": "option", "severitycode": "option", "statuscode": "option",
@@ -43,6 +47,8 @@ OPTION_LABELS = {
     "severitycode": {"default value": 1},
     "statuscode": {"in progress": 1, "on hold": 2, "waiting for details": 3, "researching": 4},
 }
+FIELD_NAMES = {"title": "Title", "description": "Description", "prioritycode": "Priority",
+               "severitycode": "Severity", "statuscode": "Status reason"}
 #: Resolution status codes for CloseIncident.
 RESOLUTION_STATUS = {"problem solved": 5, "information provided": 1000}
 
@@ -66,8 +72,55 @@ class DynamicsConnector(BrowserConnector):
     url_setting = "DYNAMICS_URL"
     default_selectors: Dict[str, Any] = {}
 
+    def __init__(self):
+        super().__init__()
+        self._option_sets: Optional[Dict[str, Dict[str, Any]]] = None
+
     def sign_in_url(self) -> str:
         return self.url("/main.aspx")
+
+    def account_name(self, page) -> Optional[str]:
+        """The signed-in user's name, so the Connect tab can say who it is."""
+        who = self._api(page, "WhoAmI")["json"] or {}
+        user_id = who.get("UserId")
+        if not user_id:
+            return None
+        user = self._api(page, f"systemusers({user_id})?$select=fullname,domainname")["json"] or {}
+        return user.get("fullname") or user.get("domainname")
+
+    def option_sets(self, page) -> Dict[str, Dict[str, Any]]:
+        """This organisation's labels for the case option sets, read once.
+
+        Returns ``{field: {"by_label": {label.lower(): value},
+        "by_value": {value: label}}}``. Fields whose metadata can't be read
+        are simply absent, and the built-in labels are used for them.
+        """
+        if self._option_sets is not None:
+            return self._option_sets
+        kinds = {"prioritycode": "PicklistAttributeMetadata",
+                 "severitycode": "PicklistAttributeMetadata",
+                 "statuscode": "StatusAttributeMetadata"}
+        found: Dict[str, Dict[str, Any]] = {}
+        for field, kind in kinds.items():
+            try:
+                data = self._api(
+                    page, f"EntityDefinitions(LogicalName='incident')/Attributes(LogicalName='{field}')"
+                          f"/Microsoft.Dynamics.CRM.{kind}?$select=LogicalName"
+                          f"&$expand=OptionSet($select=Options)")["json"] or {}
+            except DynamicsError:
+                continue
+            by_label, by_value = {}, {}
+            for option in (data.get("OptionSet") or {}).get("Options") or []:
+                label = (((option.get("Label") or {}).get("UserLocalizedLabel") or {})
+                         .get("Label"))
+                if label is None or option.get("Value") is None:
+                    continue
+                by_label[label.strip().lower()] = int(option["Value"])
+                by_value[int(option["Value"])] = label
+            if by_label:
+                found[field] = {"by_label": by_label, "by_value": by_value}
+        self._option_sets = found
+        return found
 
     def is_signed_in(self, page) -> bool:
         return self.on_own_site(page.url) and not self.looks_like_login(page.url)
@@ -146,34 +199,35 @@ class DynamicsConnector(BrowserConnector):
         return self.run(work, f"Searching {self.label} cases")
 
     def get_case(self, case: str) -> Dict[str, Any]:
-        def work(page):
-            incident_id = self._resolve_id(page, case)
-            row = self._api(page, f"incidents({incident_id})?$select={CASE_FIELDS}")["json"] or {}
-            notes = self._api(
-                page, f"annotations?$select=subject,notetext,createdon,_createdby_value"
-                      f"&$filter=_objectid_value eq {incident_id}&$orderby=createdon desc&$top=15"
-            )["json"] or {}
-            activities = self._api(
-                page, f"activitypointers?$select=subject,activitytypecode,description,createdon"
-                      f"&$filter=_regardingobjectid_value eq {incident_id}"
-                      f"&$orderby=createdon desc&$top=15")["json"] or {}
-            return {
-                **self._case_summary(row),
-                "description": row.get("description"),
-                "url": self.record_url(incident_id),
-                "raw": {k: row.get(k) for k in EDITABLE_FIELDS},
-                "notes": [{"subject": n.get("subject"), "text": n.get("notetext"),
-                           "created": n.get("createdon"),
-                           "by": _formatted(n, "_createdby_value")}
-                          for n in notes.get("value") or []],
-                "activities": [{"subject": a.get("subject"),
-                                "type": _formatted(a, "activitytypecode"),
-                                "description": (a.get("description") or "")[:800],
-                                "created": a.get("createdon")}
-                               for a in activities.get("value") or []],
-            }
+        return self.run(lambda page: self._read_case(page, case),
+                        f"Reading {self.label} case {case}")
 
-        return self.run(work, f"Reading {self.label} case {case}")
+    def _read_case(self, page, case: str) -> Dict[str, Any]:
+        incident_id = self._resolve_id(page, case)
+        row = self._api(page, f"incidents({incident_id})?$select={CASE_FIELDS}")["json"] or {}
+        notes = self._api(
+            page, f"annotations?$select=subject,notetext,createdon,_createdby_value"
+                  f"&$filter=_objectid_value eq {incident_id}&$orderby=createdon desc&$top=15"
+        )["json"] or {}
+        activities = self._api(
+            page, f"activitypointers?$select=subject,activitytypecode,description,createdon"
+                  f"&$filter=_regardingobjectid_value eq {incident_id}"
+                  f"&$orderby=createdon desc&$top=15")["json"] or {}
+        return {
+            **self._case_summary(row),
+            "description": row.get("description"),
+            "url": self.record_url(incident_id),
+            "raw": {k: row.get(k) for k in EDITABLE_FIELDS},
+            "notes": [{"subject": n.get("subject"), "text": n.get("notetext"),
+                       "created": n.get("createdon"),
+                       "by": _formatted(n, "_createdby_value")}
+                      for n in notes.get("value") or []],
+            "activities": [{"subject": a.get("subject"),
+                            "type": _formatted(a, "activitytypecode"),
+                            "description": (a.get("description") or "")[:800],
+                            "created": a.get("createdon")}
+                           for a in activities.get("value") or []],
+        }
 
     # -------------------------------------------------------------- writes
     # Called only by approved AgentActions (see app.services.agent).
@@ -188,10 +242,31 @@ class DynamicsConnector(BrowserConnector):
 
         return self.run(work, f"Adding a note to {case}")
 
-    def update_case(self, case: str, fields: Dict[str, Any]) -> Dict[str, Any]:
-        payload = self.normalise_fields(fields)
+    def prepare_update(self, case: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        """Read the case and turn a requested change into exact field values.
 
+        Returns the case, the payload to send, and before/after rows in the
+        organisation's own labels for the approval card.
+        """
         def work(page):
+            record = self._read_case(page, case)
+            options = self.option_sets(page)
+            payload = self.normalise_fields(fields, options)
+            raw = record.get("raw") or {}
+            rows = []
+            for name, value in payload.items():
+                labels = (options.get(name) or {}).get("by_value") or {}
+                before = raw.get(name)
+                rows.append({"name": FIELD_NAMES.get(name, name),
+                             "before": labels.get(before, before),
+                             "after": labels.get(value, value)})
+            return {"case": record, "payload": payload, "rows": rows}
+
+        return self.run(work, f"Preparing a change to {case}")
+
+    def update_case(self, case: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        def work(page):
+            payload = self.normalise_fields(fields, self.option_sets(page))
             incident_id = self._resolve_id(page, case)
             self._api(page, f"incidents({incident_id})", method="PATCH", body=payload)
             return {"incident_id": incident_id, "fields": list(payload),
@@ -221,23 +296,43 @@ class DynamicsConnector(BrowserConnector):
 
     # ------------------------------------------------------------- helpers
     @staticmethod
-    def normalise_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate a requested change and convert labels to option values."""
-        payload = {}
-        for key, value in (fields or {}).items():
+    def field_names(fields: Dict[str, Any]) -> Dict[str, str]:
+        """Map requested field names ("priority") to Dataverse ones ("prioritycode")."""
+        names = {}
+        for key in fields or {}:
             name = str(key).lower().replace(" ", "")
             name = {"priority": "prioritycode", "severity": "severitycode",
-                    "status": "statuscode", "subject": "title"}.get(name, name)
-            kind = EDITABLE_FIELDS.get(name)
-            if kind is None:
+                    "status": "statuscode", "statusreason": "statuscode",
+                    "subject": "title"}.get(name, name)
+            if name not in EDITABLE_FIELDS:
                 raise DynamicsError(
                     f"Cerebro does not change the “{key}” field. It can change: "
-                    + ", ".join(EDITABLE_FIELDS) + ".")
+                    + ", ".join(FIELD_NAMES[f].lower() for f in EDITABLE_FIELDS) + ".")
+            names[key] = name
+        return names
+
+    @staticmethod
+    def normalise_fields(fields: Dict[str, Any],
+                         options: Dict[str, Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Validate a requested change and convert labels to option values.
+
+        ``options`` is :meth:`option_sets`' result; without it the built-in
+        labels are used.
+        """
+        payload = {}
+        names = DynamicsConnector.field_names(fields)
+        for key, value in (fields or {}).items():
+            name = names[key]
+            kind = EDITABLE_FIELDS[name]
             if kind == "option":
                 if isinstance(value, str) and not value.strip().isdigit():
-                    mapped = OPTION_LABELS.get(name, {}).get(value.strip().lower())
+                    labels = ((options or {}).get(name) or {}).get("by_label") \
+                        or OPTION_LABELS.get(name, {})
+                    mapped = labels.get(value.strip().lower())
                     if mapped is None:
-                        raise DynamicsError(f"Unknown value “{value}” for {name}.")
+                        choices = ", ".join(sorted(label.title() for label in labels)) or "none known"
+                        raise DynamicsError(f"“{value}” isn't a {FIELD_NAMES.get(name, name).lower()} "
+                                            f"in this Dynamics. Choose one of: {choices}.")
                     value = mapped
                 value = int(value)
             else:

@@ -408,14 +408,16 @@ FIELDS: List[Field] = [
           "Search, read and (with your approval) update knowledge articles.", type="bool",
           show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
     Field("RIGHTANSWERS_URL", "RightAnswers address", "integrations",
-          "The address you open RightAnswers at, e.g. https://company.rightanswers.com/portal",
+          "The address you open RightAnswers at. Pre-filled with DEXIS's; only the host "
+          "matters, so a full page address works too.",
           type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
                                     ("RIGHTANSWERS_ENABLED", [True])]),
     Field("DYNAMICS_ENABLED", "Dynamics 365", "integrations",
           "Search and read cases; post notes and update tickets with your approval.",
           type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
     Field("DYNAMICS_URL", "Dynamics 365 address", "integrations",
-          "Your organisation's address, e.g. https://contoso.crm.dynamics.com",
+          "Your organisation's address. Pre-filled with dental.crm.dynamics.com; a pasted "
+          "case link works too — only the host is used.",
           type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
                                     ("DYNAMICS_ENABLED", [True])]),
 

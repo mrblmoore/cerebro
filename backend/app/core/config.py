@@ -163,11 +163,12 @@ class Settings(BaseSettings):
     #: Longest Cerebro waits for one page to load or one step to finish.
     BROWSER_TIMEOUT_SECONDS: int = 30
     RIGHTANSWERS_ENABLED: bool = False
-    #: Your RightAnswers portal, e.g. https://company.rightanswers.com/portal
-    RIGHTANSWERS_URL: Optional[str] = None
+    #: The company's RightAnswers site. Only the host matters; any path is
+    #: ignored, and a missing "https://" is added.
+    RIGHTANSWERS_URL: Optional[str] = "https://dexis.rightanswers.com"
     DYNAMICS_ENABLED: bool = False
-    #: Your Dynamics 365 organisation, e.g. https://contoso.crm.dynamics.com
-    DYNAMICS_URL: Optional[str] = None
+    #: The company's Dynamics 365 organisation (host only, as above).
+    DYNAMICS_URL: Optional[str] = "https://dental.crm.dynamics.com"
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 

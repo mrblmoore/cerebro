@@ -156,18 +156,22 @@ def dynamics_update_case(ctx: ToolContext, case: str = "", fields: dict = None, 
 
     connector = _dynamics()
     try:
-        payload = DynamicsConnector.normalise_fields(fields or {})
+        # Field names are checked now; option labels are checked against the
+        # organisation's own metadata in prepare_update below.
+        DynamicsConnector.field_names(fields or {})
     except DynamicsError as exc:
         return {"content": str(exc), "summary": "Not allowed"}
 
     def run():
-        current = connector.get_case(case)
-        raw = current.get("raw") or {}
-        rows = [{"name": name, "before": raw.get(name), "after": value}
-                for name, value in payload.items()]
+        try:
+            prepared = connector.prepare_update(case, fields or {})
+        except DynamicsError as exc:
+            return {"content": str(exc), "summary": "Not allowed"}
+        current, rows = prepared["case"], prepared["rows"]
         action = actions.propose(
             ctx.db, "dynamics_update_case", "dynamics",
-            f"Update {current.get('ticket') or case}", {"case": case, "fields": payload},
+            f"Update {current.get('ticket') or case}",
+            {"case": case, "fields": prepared["payload"]},
             preview={"fields": rows, "target": current.get("ticket") or case,
                      "url": current.get("url")},
             summary=", ".join(f"{r['name']}: {r['before']} → {r['after']}" for r in rows))

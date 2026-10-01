@@ -2,6 +2,7 @@
 Routes for the hidden-browser integrations (RightAnswers, Dynamics 365).
 
 ``GET  /api/integrations``                      every integration and its state
+``POST /api/integrations/{name}/enable``        switch it (and the browser) on
 ``POST /api/integrations/{name}/auth/start``    open the sign-in window
 ``GET  /api/integrations/{name}/auth/status``   poll that sign-in
 ``POST /api/integrations/{name}/check``         is the saved session still valid?
@@ -38,6 +39,23 @@ def browser_status() -> Dict[str, Any]:
     return browser.engine().status()
 
 
+@router.post("/{name}/enable")
+def enable(name: str) -> Dict[str, Any]:
+    """Switch on the hidden browser and this system — the one-click "Sign in".
+
+    The address is already pre-filled, so after this the sign-in window can
+    open straight away. Nothing else changes.
+    """
+    from app.core import settings_store
+
+    connector = _connector(name)
+    result = settings_store.update({"BROWSER_AUTOMATION_ENABLED": True,
+                                    connector.enabled_setting: True})
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("errors"))
+    return {"ok": True, "integration": connector.status()}
+
+
 @router.post("/{name}/auth/start")
 def start_sign_in(name: str) -> Dict[str, Any]:
     return _connector(name).begin_sign_in()
@@ -47,6 +65,23 @@ def start_sign_in(name: str) -> Dict[str, Any]:
 def sign_in_status(name: str) -> Dict[str, Any]:
     connector = _connector(name)
     return {**connector.sign_in_state(), "integration": connector.status()}
+
+
+@router.post("/{name}/teach/start")
+def start_teaching(name: str) -> Dict[str, Any]:
+    """Open the portal visibly and learn its layout from one search."""
+    teacher = getattr(_connector(name), "teacher", None)
+    if teacher is None:
+        raise HTTPException(status_code=404, detail=f"{name} doesn't need teaching.")
+    return teacher.start()
+
+
+@router.get("/{name}/teach/status")
+def teaching_status(name: str) -> Dict[str, Any]:
+    teacher = getattr(_connector(name), "teacher", None)
+    if teacher is None:
+        raise HTTPException(status_code=404, detail=f"{name} doesn't need teaching.")
+    return teacher.state()
 
 
 @router.post("/{name}/check")

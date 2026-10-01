@@ -90,7 +90,8 @@ hiddenimports = [
     "app.services.agent.actions", "app.services.agent.integration_tools",
     "app.services.browser", "app.services.browser.engine",
     "app.services.browser.connector", "app.services.browser.dynamics",
-    "app.services.browser.rightanswers", "app.api.integrations",
+    "app.services.browser.rightanswers", "app.services.browser.teach",
+    "app.api.integrations",
     "app.models.agent_action",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")

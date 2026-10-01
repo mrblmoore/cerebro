@@ -53,6 +53,28 @@ class RightAnswersError(RuntimeError):
     pass
 
 
+#: Links that look like knowledge articles, for portals whose result markup
+#: the selectors don't match (yet). Returns [{href, title}] in page order.
+_ARTICLE_LINKS_JS = r"""
+(pattern) => {
+  const re = new RegExp(pattern, 'i');
+  const seen = new Set();
+  const out = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    const href = a.href;
+    const title = (a.innerText || a.title || '').trim();
+    if (!re.test(href) || seen.has(href) || title.length < 4) continue;
+    seen.add(href);
+    const box = a.closest('li, tr, article, [class*="result"], [class*="item"]') || a.parentElement;
+    const text = (box && box.innerText || '').replace(title, '').trim();
+    out.push({href, title: title.slice(0, 200), snippet: text.slice(0, 300)});
+  }
+  return out;
+}
+"""
+ARTICLE_LINK_PATTERN = r"solution|article|kb[-_/]?\d|[?&](?:id|docid|contentid)="
+
+
 class RightAnswersConnector(BrowserConnector):
     name = "rightanswers"
     label = "RightAnswers"
@@ -60,17 +82,19 @@ class RightAnswersConnector(BrowserConnector):
     url_setting = "RIGHTANSWERS_URL"
     default_selectors = DEFAULT_SELECTORS
 
+    def __init__(self):
+        super().__init__()
+        from app.services.browser.teach import Teacher
+
+        #: Learns this company's portal layout by watching one search.
+        self.teacher = Teacher(self)
+
     # ------------------------------------------------------------ helpers
     def _template(self, key: str, **values) -> str:
         template = self.selectors().get(key) or ""
         if not template:
             return ""
-        origin = self.base_url
-        # ``{base}`` is the portal root as entered; templates that already
-        # include "/portal" work whether or not the user typed it.
-        if "/portal" in template and origin.lower().endswith("/portal"):
-            origin = origin[: -len("/portal")]
-        return template.format(base=origin, **values)
+        return template.format(base=self.base_url, **values)
 
     def article_id_from(self, url: str) -> Optional[str]:
         match = re.search(self.selectors()["article_id_pattern"], url or "")
@@ -124,6 +148,13 @@ class RightAnswersConnector(BrowserConnector):
                 })
                 if len(results) >= limit:
                     break
+            if not results:
+                # The result markup isn't what the selectors expect: fall back
+                # to any link that looks like an article.
+                for link in page.evaluate(_ARTICLE_LINKS_JS, ARTICLE_LINK_PATTERN)[:limit]:
+                    results.append({"id": self.article_id_from(link["href"]),
+                                    "title": link["title"], "snippet": link["snippet"],
+                                    "url": link["href"]})
             return results
 
         return self.run(work, f"Searching {self.label}")
@@ -192,7 +223,12 @@ class RightAnswersConnector(BrowserConnector):
                 article_id = article
             else:
                 article_id = self._open_article(page, article)
-                page.locator(selectors["edit_button"]).first.click()
+                edit = page.locator(selectors["edit_button"]).first
+                if not edit.count():
+                    raise RightAnswersError(
+                        "Cerebro couldn't find this portal's Edit button. Open Cerebro → "
+                        "Connect → RightAnswers → Teach, and include the Edit step.")
+                edit.click()
                 self.settle(page)
             if title is not None:
                 page.locator(selectors["editor_title"]).first.fill(title)

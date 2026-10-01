@@ -782,13 +782,29 @@ function integrationCard(item) {
   card.innerHTML = `
     <div class="logo ${item.name}">${LOGO[item.name] || item.label[0]}</div>
     <div style="min-width:0"><h4>${esc(item.label)} ${badge}</h4>
-      <div class="meta">${item.url ? esc(item.url) : 'Add its address in Settings'}${item.checked_at ? ` · checked ${relTime(new Date(item.checked_at * 1000).toISOString())}` : ''}</div>
+      <div class="meta">${item.account ? `Signed in as ${esc(item.account)} · ` : ''}${item.url ? esc(item.url) : 'Add its address in Settings'}${item.checked_at ? ` · checked ${relTime(new Date(item.checked_at * 1000).toISOString())}` : ''}</div>
       ${item.sign_in?.detail && item.sign_in.status !== 'idle' ? `<p>${esc(item.sign_in.detail)}</p>` : ''}</div>
     <div class="btn-row" style="margin:0;flex-direction:column">
       ${item.enabled ? `<button class="btn sm ${signedIn ? '' : 'primary'}" data-signin>${signedIn ? 'Sign in again' : 'Sign in'}</button>
-      <button class="btn sm ghost" data-check>Check</button>` : '<button class="btn sm" data-settings>Set up</button>'}
+      <button class="btn sm ghost" data-check>Check</button>
+      ${item.name === 'rightanswers' && signedIn ? '<button class="btn sm ghost" data-teach>Teach</button>' : ''}`
+      : item.configured ? '<button class="btn sm primary" data-connect>Connect</button>'
+      : '<button class="btn sm" data-settings>Set up</button>'}
     </div>`;
   $('[data-signin]', card)?.addEventListener('click', e => signIn(item.name, e.currentTarget));
+  // One click: switch the system (and the hidden browser) on, then sign in.
+  $('[data-connect]', card)?.addEventListener('click', async e => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      await api.post(`/api/integrations/${item.name}/enable`);
+      await signIn(item.name, button);
+    } catch (error) {
+      toast(error.message, 'err');
+      button.disabled = false;
+    }
+  });
+  $('[data-teach]', card)?.addEventListener('click', e => teach(item.name, e.currentTarget));
   $('[data-check]', card)?.addEventListener('click', async e => {
     e.currentTarget.disabled = true;
     const result = await api.post(`/api/integrations/${item.name}/check`).catch(err => ({ detail: err.message }));
@@ -797,6 +813,22 @@ function integrationCard(item) {
   });
   $('[data-settings]', card)?.addEventListener('click', () => openExternal(`${location.origin}/settings#integrations`));
   return card;
+}
+
+/** Teach Cerebro the RightAnswers portal's layout, by watching one search. */
+async function teach(name, button) {
+  if (button) button.disabled = true;
+  const started = await api.post(`/api/integrations/${name}/teach/start`).catch(err => ({ ok: false, detail: err.message }));
+  if (!started.ok) { toast(started.detail || 'Teaching could not start', 'err'); if (button) button.disabled = false; return; }
+  toast(started.detail || 'Follow the steps in the window that opened.');
+  const poll = setInterval(async () => {
+    const status = await api.get(`/api/integrations/${name}/teach/status`).catch(() => null);
+    if (!status || ['waiting', 'searching', 'opening', 'editing'].includes(status.status)) return;
+    clearInterval(poll);
+    toast(status.detail || 'Done', status.status === 'learned' ? 'ok' : 'err');
+    if (state.tab === 'connect') loadConnect();
+    if (button) button.disabled = false;
+  }, 2000);
 }
 
 async function signIn(name, button) {

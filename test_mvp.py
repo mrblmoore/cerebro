@@ -2693,7 +2693,11 @@ def _fake_sites():
         "articles": {"KB100": {"title": "Fix Outlook 0x80040115",
                                "body": "Repair the Outlook profile, then disable cached mode."},
                      "KB200": {"title": "Reset VPN client",
-                               "body": "Remove and re-add the VPN profile."}},
+                               "body": "Remove and re-add the VPN profile."},
+                     "KB300": {"title": "Reset a forgotten password",
+                               "body": "Open the self-service portal, choose Forgot password, "
+                                       "confirm the code sent to your phone, then choose a new "
+                                       "password of at least fourteen characters."}},
         "requests": [],
     }
 
@@ -2709,7 +2713,7 @@ def _fake_sites():
         def _send(self, code, body="", kind="text/html", headers=None):
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
-            self.send_header("Content-Type", kind)
+            self.send_header("Content-Type", f"{kind}; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             for key, value in (headers or {}).items():
                 self.send_header(key, value)
@@ -2760,6 +2764,11 @@ def _fake_sites():
                 if url.path.endswith("/CloseIncident"):
                     state["case"]["statecode"] = 1
                     return self._send(204, "")
+            elif url.path == "/kb/save":
+                form = {k: v[0] for k, v in parse_qs(body).items()}
+                state["articles"][form["docid"]].update(
+                    {"title": form["kbTitle"], "body": form["kbBody"]})
+                return self._send(302, "", headers={"Location": f"/kb/view?docid={form['docid']}"})
             else:
                 form = {k: v[0] for k, v in parse_qs(body).items()}
                 article = state["articles"].setdefault(form["id"], {})
@@ -2785,6 +2794,20 @@ def _fake_sites():
                 return self._send(200, "<title>Dynamics 365</title><main>Dashboard</main>")
             if path.endswith("/WhoAmI"):
                 return self._json({"UserId": "u1"})
+            if "/systemusers(" in path:
+                return self._json({"fullname": "Sam Agent"})
+            if "EntityDefinitions" in path:
+                # This org renamed "High" to "Urgent" and added its own status.
+                options = {
+                    "prioritycode": [(1, "Urgent"), (2, "Normal"), (3, "Low")],
+                    "statuscode": [(1, "In Progress"), (3, "Waiting on customer")],
+                }
+                field = next((name for name in options if name in path), None)
+                if field is None:
+                    return self._json({"error": {"message": "not found"}}, 404)
+                return self._json({"OptionSet": {"Options": [
+                    {"Value": value, "Label": {"UserLocalizedLabel": {"Label": label}}}
+                    for value, label in options[field]]}})
             if path.endswith("/incidents"):
                 flt = unquote(query.get("$filter", ""))
                 case = state["case"]
@@ -2824,6 +2847,38 @@ def _fake_sites():
                     f"<main><h1>{article['title']}</h1>"
                     f"<div class='solution-body'>{article['body']}</div>"
                     f"<a href='/edit?solutionid={key}'>Edit</a></main>"))
+            # A second portal layout that matches none of the default
+            # selectors — standing in for a company's customised portal.
+            if path == "/kb/search":
+                text = query.get("q", "").lower()
+                hits = "".join(
+                    f"<div class='hit'><h5><a href='/kb/view?docid={key}'>{a['title']}</a></h5>"
+                    f"<span class='blurb'>{a['body'][:50]}</span></div>"
+                    for key, a in state["articles"].items()
+                    if any(word in (a["title"] + a["body"]).lower() for word in text.split()))
+                return self._send(200, (
+                    "<div id='page'><div class='topnav'><a href='/kb/home'>Home</a></div>"
+                    f"<div class='hits'>{hits}</div></div>"))
+            if path == "/kb/view":
+                key = query.get("docid")
+                article = state["articles"].get(key)
+                if not article:
+                    return self._send(404, "<div>Not found</div>")
+                return self._send(200, (
+                    "<div id='page'><div class='crumbs'>Home › Accounts</div>"
+                    f"<div id='kbArticle'><h2 class='kb-title'>{article['title']}</h2>"
+                    f"<div class='kb-text'>{article['body']}</div></div>"
+                    f"<a href='/kb/edit?docid={key}'>Edit article</a></div>"))
+            if path == "/kb/edit":
+                key = query.get("docid")
+                article = state["articles"][key]
+                return self._send(200, (
+                    "<form method='post' action='/kb/save'>"
+                    f"<input type='hidden' name='docid' value='{key}'>"
+                    "<input type='hidden' name='__VIEWSTATE' value='SECRET-TOKEN'>"
+                    f"<input id='kbTitle' name='kbTitle' value='{article['title']}'>"
+                    f"<textarea id='kbBody' name='kbBody'>{article['body']}</textarea>"
+                    "<button type='submit'>Save article</button></form>"))
             if path == "/edit":
                 key = query.get("solutionid")
                 article = state["articles"][key]
@@ -2905,7 +2960,9 @@ def test_browser_integrations():
         # Sign in the way the visible window would: visit the login page once.
         browser.engine().submit(lambda eng: eng.page("signin").goto(f"{dynamics_url}/login?done=1"))
         browser.engine().submit(lambda eng: eng.page("signin").goto(f"{rightanswers_url[:-7]}/login?done=1"))
-        check("After sign-in the session is recognised", dynamics.check()["signed_in"] is True)
+        signed = dynamics.check()
+        check("After sign-in the session is recognised", signed["signed_in"] is True)
+        check("The check says who is signed in", signed.get("account") == "Sam Agent")
         # The browser closes when idle and after the sign-in window; a session
         # cookie must survive that, or every restart would mean signing in again.
         browser.engine().submit(lambda eng: eng.close_context())
@@ -2942,16 +2999,23 @@ def test_browser_integrations():
         before_requests = len(state["requests"])
         REGISTRY["dynamics_add_note"].handler(ctx, case="CAS-01234-ABCDE",
                                               text="Profile repaired; user confirmed.")
+        refused = REGISTRY["dynamics_update_case"].handler(ctx, case="CAS-01234-ABCDE",
+                                                           fields={"priority": "High"})
+        check("A label this org doesn't use is refused, listing its own labels",
+              "Urgent" in refused["content"]
+              and not any(c.get("tool") == "dynamics_update_case" for c in ctx.drafts))
         REGISTRY["dynamics_update_case"].handler(ctx, case="CAS-01234-ABCDE",
-                                                 fields={"priority": "High"})
+                                                 fields={"priority": "Urgent"})
         REGISTRY["rightanswers_update_article"].handler(
             ctx, article="KB100", body="Repair the profile. Disable cached mode. Rebuild the OST.")
         check("Proposing changes sends nothing", len(state["requests"]) == before_requests)
         drafts = [card for card in ctx.drafts if card["type"] == "approval"]
         check("Each change becomes an approval card", len(drafts) == 3)
         update_card = next(c for c in drafts if c["tool"] == "dynamics_update_case")
-        check("The update card shows before and after",
-              update_card["preview"]["fields"][0] == {"name": "prioritycode", "before": 2, "after": 1})
+        check("The update card shows before and after in the org's own words",
+              update_card["preview"]["fields"][0] == {"name": "Priority", "before": "Normal",
+                                                       "after": "Urgent"},
+              update_card["preview"]["fields"])
 
         for card in drafts:
             outcome = actions.approve(db, card["action_id"])
@@ -3163,6 +3227,139 @@ def test_app_page():
           "const lines = escapeHTML(source)" in render.split("\n", 2)[1])
 
 
+def test_rightanswers_teach():
+    """A portal laid out differently still works, and Teach learns its layout."""
+    print("\nRightAnswers — unfamiliar portal and Teach")
+    import importlib
+    import json as _json
+    import sys as _sys
+    import time as _time
+    import zipfile
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import browser
+    from app.services.browser.connector import normalise_address
+    from app.services.browser.engine import playwright_installed
+
+    check("Addresses typed without https:// work",
+          normalise_address("dental.crm.dynamics.com") == "https://dental.crm.dynamics.com")
+    check("Pasted page links are reduced to the site",
+          normalise_address("https://dental.crm.dynamics.com/main.aspx?appid=1&pagetype=entityrecord")
+          == "https://dental.crm.dynamics.com")
+    check("The company addresses are pre-filled",
+          settings.DYNAMICS_URL == "https://dental.crm.dynamics.com"
+          and settings.RIGHTANSWERS_URL == "https://dexis.rightanswers.com")
+
+    from fastapi.testclient import TestClient
+    from app.main import app as fastapi_app
+    from app.core import settings_store
+
+    with mock.patch.object(settings_store, "update",
+                           return_value={"ok": True, "applied": []}) as update, \
+            TestClient(fastapi_app) as client:
+        response = client.post("/api/integrations/rightanswers/enable")
+    check("Connect switches on the hidden browser and the system in one step",
+          response.status_code == 200 and update.call_args[0][0] ==
+          {"BROWSER_AUTOMATION_ENABLED": True, "RIGHTANSWERS_ENABLED": True})
+
+    if not playwright_installed():
+        print("  - skipped browser part: Playwright is not installed")
+        return
+
+    servers, state = _fake_sites()
+    base = f"http://127.0.0.1:{servers['rightanswers'].server_port}"
+    connectors_dir = Path(_TEMP_DIR) / "connectors"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    overrides = {
+        "BROWSER_AUTOMATION_ENABLED": True, "RIGHTANSWERS_ENABLED": True,
+        "RIGHTANSWERS_URL": f"{base}/portal/", "BROWSER_MODE": "headless",
+        "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium",
+        "BROWSER_TIMEOUT_SECONDS": 15,
+    }
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches += [
+        mock.patch.object(engine_module, "BROWSER_PROFILE_DIR", Path(_TEMP_DIR) / "teach_profile"),
+        mock.patch("app.services.browser.connector.CONNECTORS_DIR", connectors_dir),
+        mock.patch("app.services.browser.teach.CONNECTORS_DIR", connectors_dir),
+        mock.patch("app.services.browser.teach.EDIT_STEP_SECONDS", 20),
+    ]
+    for patch in patches:
+        patch.start()
+    rightanswers = browser.get("rightanswers")
+    engine = browser.engine()
+    try:
+        try:
+            engine.submit(lambda eng: eng.page("signin").goto(f"{base}/login?done=1"))
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+
+        # Before teaching: only the search address is known; the result
+        # markup matches none of the default selectors.
+        connectors_dir.mkdir(parents=True, exist_ok=True)
+        (connectors_dir / "rightanswers.json").write_text(
+            _json.dumps({"search_url": "{base}/kb/search?q={query}"}), encoding="utf-8")
+        results = rightanswers.search("password")
+        check("Search falls back to article-looking links on an unfamiliar portal",
+              results and results[0]["title"] == "Reset a forgotten password", results)
+        (connectors_dir / "rightanswers.json").unlink()
+
+        teacher = rightanswers.teacher
+        started = teacher.start(mode="headless")
+        check("Teaching starts and tells the user what to search for",
+              started["ok"] and "password" in started["detail"])
+
+        def user(action):
+            engine.submit(lambda eng: action(eng._pages["rightanswers"]))
+            _time.sleep(3.5)
+
+        user(lambda page: page.goto(f"{base}/kb/search?q=password"))
+        user(lambda page: page.click("text=Reset a forgotten password"))
+        user(lambda page: page.click("text=Edit article"))
+        deadline = _time.time() + 40
+        while teacher.state()["status"] not in ("learned", "failed") and _time.time() < deadline:
+            _time.sleep(1)
+        learned = teacher.state().get("learned") or {}
+        check("Teaching finishes", teacher.state()["status"] == "learned", teacher.state())
+        check("It learns the search address",
+              learned.get("search_url") == "{base}/kb/search?q={query}", learned)
+        check("It learns the article address",
+              learned.get("article_url") == "{base}/kb/view?docid={id}", learned)
+        check("It learns which elements are results", learned.get("result_item") == "div.hit", learned)
+        check("It learns where an article's text is",
+              learned.get("article_body") in ("#kbArticle", "div.kb-text"), learned)
+        check("It learns the editor",
+              learned.get("editor_body") == "#kbBody" and learned.get("edit_url")
+              == "{base}/kb/edit?docid={id}", learned)
+        check("It pins the Save button by its label",
+              "Save article" in str(learned.get("save_button")), learned)
+        saved = _json.loads((connectors_dir / "rightanswers.json").read_text(encoding="utf-8"))
+        check("What it learned is saved for the connector", saved.get("result_item") == "div.hit")
+
+        with zipfile.ZipFile(connectors_dir / "rightanswers-capture.zip") as bundle:
+            names = set(bundle.namelist())
+            editor_html = bundle.read("editor.html").decode("utf-8")
+        check("A diagnostic bundle is saved", {"urls.json", "search.html", "article.html"} <= names)
+        check("Hidden form values are removed from the bundle", "SECRET-TOKEN" not in editor_html)
+
+        results = rightanswers.search("password")
+        check("Searches use the learned layout",
+              results and results[0]["id"] == "KB300" and "forgotten" in results[0]["title"])
+        article = rightanswers.get_article("KB300")
+        check("Articles are read with the learned layout",
+              "fourteen characters" in article["body"] and "Home" not in article["body"], article)
+        rightanswers.update_article("KB300", body="Use the new self-service reset page.")
+        check("Articles are updated through the learned editor",
+              state["articles"]["KB300"]["body"] == "Use the new self-service reset page.")
+    finally:
+        engine.shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        for server in servers.values():
+            server.shutdown()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -3196,7 +3393,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

@@ -81,6 +81,19 @@ _READABLE_JS = """
 """
 
 
+def normalise_address(value) -> str:
+    """``dental.crm.dynamics.com/main.aspx?…`` → ``https://dental.crm.dynamics.com``."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "https://" + text.lstrip("/")
+    parsed = urlparse(text)
+    if not parsed.netloc:
+        return ""
+    return f"{parsed.scheme or 'https'}://{parsed.netloc}".rstrip("/")
+
+
 class SignInRequired(RuntimeError):
     """The browser is not (or no longer) signed in to this system."""
 
@@ -110,11 +123,17 @@ class BrowserConnector:
         self._sign_in: Dict[str, Any] = {"status": "idle"}
         self._signed_in: Optional[bool] = None
         self._checked_at: Optional[float] = None
+        self._account: Optional[str] = None
 
     # ----------------------------------------------------------- config
     @property
     def base_url(self) -> str:
-        return (getattr(settings, self.url_setting, None) or "").strip().rstrip("/")
+        """The system's address, normalised to ``https://host``.
+
+        People type ``dental.crm.dynamics.com`` or paste a whole case link;
+        both systems live at the root of their host, so only the host is kept.
+        """
+        return normalise_address(getattr(settings, self.url_setting, None))
 
     @property
     def origin(self) -> str:
@@ -269,7 +288,7 @@ class BrowserConnector:
         """Open the system hidden and report whether the session still works."""
         try:
             self.require_enabled()
-            signed_in = engine().submit(
+            signed_in, account = engine().submit(
                 lambda eng: self._probe_signed_in(eng), f"Checking {self.label} sign-in")
         except (NotConfigured, BrowserUnavailable) as exc:
             return {"ok": False, "signed_in": False, "detail": str(exc)}
@@ -277,15 +296,29 @@ class BrowserConnector:
             return {"ok": False, "signed_in": False, "detail": f"Could not open {self.label}: {exc}"}
         with self._state_lock:
             self._signed_in, self._checked_at = signed_in, time.time()
-        return {"ok": signed_in, "signed_in": signed_in,
-                "detail": f"Signed in to {self.label}" if signed_in
-                          else f"Not signed in — click Sign in for {self.label}."}
+            self._account = account if signed_in else None
+        detail = (f"Signed in to {self.label}" + (f" as {account}" if account else "")
+                  if signed_in else f"Not signed in — click Sign in for {self.label}.")
+        return {"ok": signed_in, "signed_in": signed_in, "account": account, "detail": detail}
 
-    def _probe_signed_in(self, eng) -> bool:
+    def _probe_signed_in(self, eng):
         page = eng.page(self.name)
         page.goto(self.sign_in_url(), wait_until="domcontentloaded")
         self.settle(page)
-        return self.is_signed_in(page)
+        if not self.is_signed_in(page):
+            return False, None
+        try:
+            return True, self.account_name(page)
+        except SignInRequired:
+            return False, None
+        except Exception as exc:  # noqa: BLE001 - signed in; the name is a nicety
+            logger.info("browser", "Could not read the signed-in account",
+                        {"connector": self.name, "error": str(exc)[:200]})
+            return True, None
+
+    def account_name(self, page) -> Optional[str]:
+        """Who the browser is signed in as, when the system can say (override)."""
+        return None
 
     def sign_out(self) -> Dict[str, Any]:
         """Forget this system's cookies in Cerebro's browser profile."""
@@ -323,6 +356,7 @@ class BrowserConnector:
             "enabled": self.enabled, "url": self.base_url or None,
             "configured": bool(self.base_url),
             "signed_in": signed_in, "checked_at": checked,
+            "account": self._account if signed_in else None,
             "sign_in": sign_in,
         }
 
