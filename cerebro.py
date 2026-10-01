@@ -558,9 +558,21 @@ def cmd_stop(args) -> int:
         print("Cerebro is not running.")
         return 0
 
+    # The server stops itself when asked (the same request as "Quit Cerebro"
+    # in the tray), which works on every platform.
+    try:
+        request = urllib.request.Request(f"{api_base()}/api/system/shutdown", data=b"",
+                                         method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            if response.status == 200:
+                print("Cerebro is stopping.")
+                return 0
+    except (urllib.error.URLError, OSError):
+        pass
+
     pattern = "uvicorn app.main:app"
     if IS_WINDOWS:
-        print("Stop Cerebro by closing its window, or press Ctrl+C in it.")
+        print("Stop Cerebro by choosing Quit in its tray icon, or press Ctrl+C in its window.")
         return 0
 
     subprocess.call(["pkill", "-f", pattern])

@@ -133,18 +133,22 @@ class Shell:
         events.resized += self._on_resized
         return self.window
 
-    def _on_closing(self):
+    def _on_closing(self, *_):
         # Closing the window (Alt+F4, taskbar) hides it; only Quit stops Cerebro.
         if self._quitting:
             return True
         self.hide()
         return False
 
-    def _on_moved(self, x, y):
+    # pywebview versions differ in the arguments they pass to window events,
+    # so these take the last two numbers they are given.
+    def _on_moved(self, *args):
+        x, y = [value for value in args if isinstance(value, (int, float))][-2:]
         self.config["x"], self.config["y"] = int(x), int(y)
         self._save_soon()
 
-    def _on_resized(self, width, height):
+    def _on_resized(self, *args):
+        width, height = [value for value in args if isinstance(value, (int, float))][-2:]
         if not self.compact and height > COMPACT_HEIGHT + 20:
             self.config["width"], self.config["height"] = int(width), int(height)
             self._save_soon()

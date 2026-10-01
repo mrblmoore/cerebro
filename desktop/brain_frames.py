@@ -30,12 +30,14 @@ from typing import Dict, List, Tuple
 STATES = ("idle", "thinking", "searching", "browsing", "writing",
           "awaiting_approval", "syncing", "listening", "error", "offline")
 
-#: Frames per loop and seconds per frame, per state.
+#: Frames per loop and seconds per frame, per state. Idle and offline run
+#: slower: the tray redraws its icon on every frame, and those two states are
+#: on screen most of the day.
 TIMING = {
-    "idle": (24, 0.12), "thinking": (12, 0.09), "searching": (12, 0.09),
+    "idle": (24, 0.2), "thinking": (12, 0.09), "searching": (12, 0.09),
     "browsing": (12, 0.1), "writing": (8, 0.09), "awaiting_approval": (10, 0.09),
     "syncing": (12, 0.08), "listening": (10, 0.1), "error": (8, 0.08),
-    "offline": (16, 0.15),
+    "offline": (16, 0.3),
 }
 
 HEMISPHERE = ("M128 30C106 30 88 41 80 59 60 58 44 71 42 90 27 98 20 116 26 133 "
