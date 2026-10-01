@@ -28,6 +28,7 @@ DEFAULTS = {
     "width": 372,
     "height": 460,
     "active_tab": "ask",
+    "desktop_buddy": True,      # the animated brain on the desktop while Cerebro works
 }
 
 

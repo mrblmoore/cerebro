@@ -28,21 +28,21 @@ class ActivityWatcher(threading.Thread):
         super().__init__(name="cerebro-tray-activity", daemon=True)
         self.api_url = api_url.rstrip("/")
         self.on_change = on_change
-        self._stop = threading.Event()
+        self._halt = threading.Event()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._halt.set()
 
     def run(self) -> None:
         failures = 0
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             try:
                 with requests.get(f"{self.api_url}/api/system/activity/stream",
                                   stream=True, timeout=(5, 40)) as response:
                     response.raise_for_status()
                     failures = 0
                     for line in response.iter_lines(decode_unicode=True):
-                        if self._stop.is_set():
+                        if self._halt.is_set():
                             return
                         if line and line.startswith("data: "):
                             self.on_change(json.loads(line[6:]))
@@ -51,17 +51,22 @@ class ActivityWatcher(threading.Thread):
                 if failures >= 2:
                     self.on_change({"state": "offline",
                                     "detail": "Cerebro's server is not responding"})
-            self._stop.wait(min(15, 1 + failures * 2))
+            self._halt.wait(min(15, 1 + failures * 2))
 
 
 class BrainTray:
     """The animated tray icon and its menu."""
 
     def __init__(self, api_url: str, actions: Dict[str, Callable[..., None]],
-                 startup: Optional[Dict[str, Callable]] = None):
+                 startup: Optional[Dict[str, Callable]] = None,
+                 buddy: Optional[Dict[str, Callable]] = None):
         self.api_url = api_url.rstrip("/")
         self.actions = actions
         self.startup = startup or {}
+        #: {"get": () -> bool, "set": (bool) -> None} for the desktop buddy.
+        self.buddy = buddy or {}
+        #: Also told about every activity snapshot (the desktop buddy).
+        self.listeners = []
         self.state = "idle"
         self.detail = "Starting…"
         self.pending = 0
@@ -86,6 +91,9 @@ class BrainTray:
             Item("RightAnswers, Dynamics & SharePoint…", act("open", "connect")),
             Item("Dashboard", act("dashboard")),
             Item("Settings", act("settings")),
+            Item("Show working buddy", self._toggle_buddy,
+                 checked=lambda item: bool(self.buddy.get("get", lambda: False)()),
+                 visible=bool(self.buddy)),
             Item("Start with Windows", self._toggle_startup,
                  checked=lambda item: bool(self.startup.get("get", lambda: False)()),
                  visible=bool(self.startup)),
@@ -96,6 +104,10 @@ class BrainTray:
     def _status_text(self) -> str:
         label = brain_frames_label(self.state)
         return label if self.state == "idle" else f"{label}: {self.detail}"[:60]
+
+    def _toggle_buddy(self, icon, item) -> None:
+        current = bool(self.buddy.get("get", lambda: False)())
+        self.buddy.get("set", lambda enabled: None)(not current)
 
     def _toggle_startup(self, icon, item) -> None:
         current = bool(self.startup.get("get", lambda: False)())
@@ -129,6 +141,11 @@ class BrainTray:
 
     # ---------------------------------------------------------- updates
     def _on_activity(self, snapshot: dict) -> None:
+        for listener in self.listeners:
+            try:
+                listener(snapshot)
+            except Exception:  # noqa: BLE001 - a listener never breaks the tray
+                pass
         previous_pending = self.pending
         self.state = snapshot.get("state") or "idle"
         self.detail = snapshot.get("detail") or brain_frames_label(self.state)

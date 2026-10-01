@@ -3709,6 +3709,47 @@ def test_bedrock_tool_fallbacks():
     llm_service._NO_SYSTEM_PROMPT.clear()
 
 
+def test_desktop_buddy():
+    """The desktop buddy appears while Cerebro works and goes away after."""
+    print("\nDesktop buddy")
+    sys.path.insert(0, str(ROOT / "desktop"))
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        print("  - skipped: Pillow is not installed")
+        return
+    import buddy
+
+    now = [100.0]
+    logic = buddy.BuddyLogic(clock=lambda: now[0])
+    check("Hidden while idle", not logic.visible())
+    logic.update({"state": "browsing", "detail": "Reading CAS-01234 in Dynamics"})
+    check("Appears while Cerebro works", logic.visible())
+    check("Shows what it's doing", "CAS-01234" in logic.caption)
+    check("Working in the browser shows the laptop brain", logic.sprite == "working")
+    logic.update({"state": "searching", "detail": "Searching RightAnswers"})
+    check("Research shows the studying brain", logic.sprite == "studying")
+    logic.update({"state": "idle"})
+    now[0] += 1
+    check("Lingers a moment after the work is done", logic.visible())
+    now[0] += 3
+    check("Then goes away", not logic.visible())
+    logic.update({"state": "thinking", "detail": "Thinking"})
+    logic.dismiss()
+    check("× hides it", not logic.visible())
+    logic.update({"state": "writing", "detail": "Adding a note"})
+    check("…for the rest of that piece of work", not logic.visible())
+    logic.update({"state": "idle"})
+    logic.update({"state": "thinking", "detail": "Thinking"})
+    check("…and it comes back for the next one", logic.visible())
+    logic.update({"state": "awaiting_approval", "detail": "1 draft"})
+    now[0] += 10
+    check("Waiting for approval is not work", not logic.visible())
+    logic.enabled = False
+    logic.update({"state": "thinking"})
+    check("Turning it off in the tray keeps it away", not logic.visible())
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -3742,7 +3783,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

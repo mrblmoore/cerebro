@@ -106,6 +106,7 @@ class Shell:
         self.start_hidden = start_hidden
         self.window = None
         self.tray = None
+        self.buddy = None
         self.compact = False
         self._quitting = False
         self._save_timer = None
@@ -211,14 +212,46 @@ class Shell:
             "quit": self.quit,
             "tick": self._check_show_request,
         }
+        buddy_toggle = {"get": lambda: bool(self.config.get("desktop_buddy", True)),
+                        "set": self.set_buddy}
         try:
             tray_module.preload()
-            self.tray = tray_module.BrainTray(self.api_url, actions, startup)
+            self.tray = tray_module.BrainTray(self.api_url, actions, startup, buddy_toggle)
+            self.start_buddy()
             self.tray.start()
         except Exception as exc:  # noqa: BLE001 - no tray: closing then really quits
             print(f"Tray unavailable: {exc}")
             self.tray = None
         return self.tray
+
+    # --------------------------------------------------------- buddy
+    def start_buddy(self):
+        """The animated brain that appears on the desktop while Cerebro works."""
+        try:
+            import buddy as buddy_module
+        except ImportError:
+            return None
+        self.buddy = buddy_module.Buddy(on_open=lambda: self.show(None), avoid=self._window_rect)
+        self.buddy.set_enabled(bool(self.config.get("desktop_buddy", True)))
+        self.tray.listeners.append(self.buddy.feed)
+        self.buddy.start()
+        return self.buddy
+
+    def set_buddy(self, enabled: bool):
+        self.config["desktop_buddy"] = bool(enabled)
+        widget_config.save(self.config)
+        if self.buddy:
+            self.buddy.set_enabled(enabled)
+
+    def _window_rect(self):
+        try:
+            if self.config.get("x") is None:
+                return None
+            height = COMPACT_HEIGHT if self.compact else int(self.config.get("height") or 0)
+            return (int(self.config["x"]), int(self.config["y"]),
+                    int(self.config.get("width") or 0), height)
+        except (TypeError, ValueError):
+            return None
 
     def _check_show_request(self):
         try:
@@ -241,6 +274,8 @@ class Shell:
             pass
         if self.tray is not None:
             self.tray.stop()
+        if self.buddy:
+            self.buddy.stop()
         if self.window is not None:
             self.window.destroy()
 
