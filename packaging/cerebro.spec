@@ -87,8 +87,20 @@ hiddenimports = [
     "app.services.ask_tools", "app.core.activity_state",
     "app.services.agent", "app.services.agent.registry",
     "app.services.agent.tools", "app.services.agent.loop",
+    "app.services.agent.actions", "app.services.agent.integration_tools",
+    "app.services.browser", "app.services.browser.engine",
+    "app.services.browser.connector", "app.services.browser.dynamics",
+    "app.services.browser.rightanswers", "app.api.integrations",
+    "app.models.agent_action",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
+# Playwright drives the installed Edge through its own Node-based driver, which
+# lives in package data rather than importable modules.
+try:
+    hiddenimports += collect_submodules("playwright")
+    datas += collect_data_files("playwright")
+except Exception:  # Playwright not installed: integrations are simply unavailable
+    pass
 
 excludes = ["tkinter"]   # the server build has no interface
 

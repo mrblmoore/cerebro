@@ -110,6 +110,14 @@ GROUPS = [
         "description": "Which documents Cerebro may read, and how it handles edits.",
     },
     {
+        "id": "integrations",
+        "title": "RightAnswers & Dynamics",
+        "icon": "🌐",
+        "description": "Let Cerebro work in RightAnswers and Dynamics 365 through a hidden "
+                       "browser that uses your own sign-in. Reads happen straight away; "
+                       "every change is shown to you for approval first.",
+    },
+    {
         "id": "brain",
         "title": "Second Brain",
         "icon": "🧠",
@@ -370,6 +378,46 @@ FIELDS: List[Field] = [
     Field("BROWSER_EXCLUDED_DOMAINS", "Never report these domains", "documents",
           "One per line. Applies whatever the tracking setting is.",
           placeholder="mybank.com\npayroll.company.com"),
+
+    # Integrations (hidden browser)
+    Field("BROWSER_AUTOMATION_ENABLED", "Use the hidden browser", "integrations",
+          "Lets Cerebro open RightAnswers and Dynamics 365 in a browser you never see, "
+          "signed in as you.", type="bool"),
+    Field("BROWSER_CHANNEL", "Browser", "integrations",
+          "Which installed browser Cerebro drives. Edge is already on every Windows PC.",
+          type="select", options=[
+              {"value": "msedge", "label": "Microsoft Edge (recommended)"},
+              {"value": "chrome", "label": "Google Chrome"},
+              {"value": "chromium", "label": "Bundled Chromium"},
+          ], show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BROWSER_MODE", "Window", "integrations",
+          "Hidden is invisible. Off-screen is a real window parked out of sight, for sign-in "
+          "systems that refuse hidden browsers. Visible shows exactly what Cerebro does.",
+          type="select", options=[
+              {"value": "headless", "label": "Hidden (recommended)"},
+              {"value": "offscreen", "label": "Off-screen window"},
+              {"value": "visible", "label": "Visible — watch it work"},
+          ], show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BROWSER_IDLE_SECONDS", "Close when idle (s)", "integrations",
+          "The hidden browser closes after this long without work, and reopens when needed.",
+          type="number", advanced=True, show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BROWSER_TIMEOUT_SECONDS", "Page timeout (s)", "integrations",
+          "Longest Cerebro waits for a page or a step before giving up.",
+          type="number", advanced=True, show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("RIGHTANSWERS_ENABLED", "RightAnswers", "integrations",
+          "Search, read and (with your approval) update knowledge articles.", type="bool",
+          show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("RIGHTANSWERS_URL", "RightAnswers address", "integrations",
+          "The address you open RightAnswers at, e.g. https://company.rightanswers.com/portal",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("RIGHTANSWERS_ENABLED", [True])]),
+    Field("DYNAMICS_ENABLED", "Dynamics 365", "integrations",
+          "Search and read cases; post notes and update tickets with your approval.",
+          type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("DYNAMICS_URL", "Dynamics 365 address", "integrations",
+          "Your organisation's address, e.g. https://contoso.crm.dynamics.com",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("DYNAMICS_ENABLED", [True])]),
 
     # Second brain
     Field("PERSONA", "How Cerebro speaks to you", "brain", type="select", options=[

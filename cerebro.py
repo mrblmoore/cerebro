@@ -61,6 +61,7 @@ ALL_REQUIREMENTS = (
     ("backend/requirements.txt", "Backend core", True),
     ("backend/requirements-documents.txt", "Word, Excel, PowerPoint and PDF", True),
     ("backend/requirements-ai.txt", "OpenAI and Amazon Bedrock", True),
+    ("backend/requirements-browser.txt", "RightAnswers and Dynamics 365 (hidden browser)", False),
     ("backend/requirements-search.txt", "Qdrant vector search", False),
     ("backend/requirements-postgres.txt", "PostgreSQL driver", False),
     ("desktop/requirements.txt", "Desktop widget", True),

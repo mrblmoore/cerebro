@@ -1,4 +1,5 @@
 from app.models.activity import ActivitySnapshot
+from app.models.agent_action import AgentAction
 from app.models.audio import AudioRecording, Transcription
 from app.models.case import Case
 from app.models.chat import ChatMessage
@@ -15,6 +16,7 @@ from app.models.task import Task
 from app.models.tracked_document import TrackedDocument
 
 __all__ = [
+    "AgentAction",
     "Case",
     "Event",
     "ContextState",

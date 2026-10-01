@@ -452,6 +452,20 @@ class ChatService:
         return {"reply": reply, "kind": "answer", "images": images,
                 "sources": citations, "cards": cards, "tool": "search_sources"}
 
+    def handle_change(self, action_id: int, decision: str) -> Dict[str, Any]:
+        """Approve or discard a proposed change to an external system."""
+        from app.services.agent import actions
+
+        result = (actions.approve(self.db, action_id) if decision == "approve"
+                  else actions.discard(self.db, action_id))
+        self._store("user", "Approve change" if decision == "approve" else "Discard change",
+                    kind="instruction")
+        meta = {key: result[key] for key in ("cards", "notify", "agent_action")
+                if result.get(key) not in (None, [], {})}
+        self._store("assistant", result.get("reply") or "Done.",
+                    kind=result.get("kind") or "completion", meta=meta)
+        return result
+
     def handle_action(self, action_id: int, decision: str) -> Dict[str, Any]:
         """Approve or discard a preview shown in Ask and record the outcome."""
         from app.services.ask_tools import AskToolService

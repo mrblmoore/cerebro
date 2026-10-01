@@ -240,7 +240,9 @@ def run(db, text: str, context: Dict[str, Any] = None,
     cited = [source for source in ctx.sources if f"[{source['ref']}]" in answer]
     cards = _summary_cards(used_tools, cited) + ctx.drafts
     payload = {
-        "reply": answer, "kind": "draft" if ctx.drafts else "answer",
+        "reply": answer,
+        "kind": "draft" if any(c.get("type") in ("draft", "approval") for c in ctx.drafts)
+        else "answer",
         "sources": cited, "cards": cards, "images": [],
         "tool": used_tools[-1] if used_tools else None,
         "tools_used": used_tools,

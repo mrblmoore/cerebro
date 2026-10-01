@@ -145,6 +145,29 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_ID: Optional[str] = None
     #: Largest document Cerebro will read into memory, in megabytes.
     DOCUMENT_MAX_MB: float = 25.0
+
+    # --------------------------------------------------------- integrations
+    #: A hidden browser, driven by Playwright, that works in RightAnswers and
+    #: Dynamics 365 with the user's own sign-in. Cerebro keeps a dedicated
+    #: browser profile for it; no passwords are stored here.
+    BROWSER_AUTOMATION_ENABLED: bool = False
+    #: ``msedge`` uses the Edge already on Windows; ``chrome`` uses Chrome;
+    #: ``chromium`` uses a Playwright-downloaded Chromium.
+    BROWSER_CHANNEL: str = "msedge"
+    #: ``headless`` is invisible; ``offscreen`` is a real window placed off
+    #: screen, for sign-in systems that refuse headless browsers; ``visible``
+    #: shows what Cerebro is doing (useful for checking a new setup).
+    BROWSER_MODE: str = "headless"
+    #: Close the hidden browser after this long without work.
+    BROWSER_IDLE_SECONDS: int = 300
+    #: Longest Cerebro waits for one page to load or one step to finish.
+    BROWSER_TIMEOUT_SECONDS: int = 30
+    RIGHTANSWERS_ENABLED: bool = False
+    #: Your RightAnswers portal, e.g. https://company.rightanswers.com/portal
+    RIGHTANSWERS_URL: Optional[str] = None
+    DYNAMICS_ENABLED: bool = False
+    #: Your Dynamics 365 organisation, e.g. https://contoso.crm.dynamics.com
+    DYNAMICS_URL: Optional[str] = None
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 

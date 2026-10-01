@@ -2663,6 +2663,377 @@ def test_chat_stream():
           kinds[-1] == "message" and "service portal" in events[-1][1]["reply"])
 
 
+def _fake_sites():
+    """Two tiny local web apps standing in for Dynamics 365 and RightAnswers.
+
+    Both require a session cookie (set by visiting /login?done=1) and send the
+    browser to /login without it, the way the real systems redirect to a
+    sign-in page.
+    """
+    import http.server
+    import json as _json
+    import re as _re
+    import threading
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    guid = "11111111-2222-3333-4444-555555555555"
+    state = {
+        "case": {"incidentid": guid, "ticketnumber": "CAS-01234-ABCDE",
+                 "title": "Outlook cannot connect", "description": "User sees 0x80040115.",
+                 "statecode": 0, "statuscode": 1, "prioritycode": 2, "severitycode": 1,
+                 "caseorigincode": 1, "createdon": "2026-09-30T10:00:00Z",
+                 "modifiedon": "2026-10-01T09:00:00Z", "_customerid_value": "c1",
+                 "_customerid_value@OData.Community.Display.V1.FormattedValue": "Contoso",
+                 "_ownerid_value": "o1",
+                 "_ownerid_value@OData.Community.Display.V1.FormattedValue": "Sam Agent",
+                 "statuscode@OData.Community.Display.V1.FormattedValue": "In Progress",
+                 "prioritycode@OData.Community.Display.V1.FormattedValue": "Normal"},
+        "notes": [{"subject": "Called user", "notetext": "Asked for a screenshot.",
+                   "createdon": "2026-09-30T11:00:00Z"}],
+        "articles": {"KB100": {"title": "Fix Outlook 0x80040115",
+                               "body": "Repair the Outlook profile, then disable cached mode."},
+                     "KB200": {"title": "Reset VPN client",
+                               "body": "Remove and re-add the VPN profile."}},
+        "requests": [],
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        site = "dynamics"
+
+        def log_message(self, *args):
+            pass
+
+        def _signed_in(self):
+            return "session=ok" in (self.headers.get("Cookie") or "")
+
+        def _send(self, code, body="", kind="text/html", headers=None):
+            data = body.encode("utf-8") if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _json(self, payload, code=200):
+            self._send(code, _json.dumps(payload), "application/json")
+
+        def _body(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            return self.rfile.read(length).decode("utf-8") if length else ""
+
+        def _login(self, query):
+            if query.get("done"):
+                self._send(302, "", headers={"Set-Cookie": "session=ok; Path=/",
+                                             "Location": "/home"})
+            else:
+                self._send(200, "<h1>Sign in</h1><a href='/login?done=1'>Sign in</a>")
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            if url.path == "/login":
+                return self._login(query)
+            if not self._signed_in():
+                if url.path.startswith("/api/"):
+                    return self._json({"error": {"message": "unauthorised"}}, 401)
+                return self._send(302, "", headers={"Location": "/login"})
+            if self.site == "dynamics":
+                return self._dynamics_get(url, query)
+            return self._rightanswers_get(url, query)
+
+        def do_POST(self):
+            url = urlparse(self.path)
+            if not self._signed_in():
+                return self._json({"error": {"message": "unauthorised"}}, 401)
+            body = self._body()
+            state["requests"].append(("POST", url.path, body))
+            if self.site == "dynamics":
+                if url.path.endswith("/annotations"):
+                    data = _json.loads(body)
+                    state["notes"].insert(0, {"subject": data["subject"],
+                                              "notetext": data["notetext"],
+                                              "createdon": "2026-10-01T12:00:00Z"})
+                    return self._send(204, "", headers={
+                        "OData-EntityId": "/api/data/v9.2/annotations(abc)"})
+                if url.path.endswith("/CloseIncident"):
+                    state["case"]["statecode"] = 1
+                    return self._send(204, "")
+            else:
+                form = {k: v[0] for k, v in parse_qs(body).items()}
+                article = state["articles"].setdefault(form["id"], {})
+                article.update({"title": form.get("title", article.get("title")),
+                                "body": form.get("body", article.get("body"))})
+                return self._send(302, "", headers={
+                    "Location": f"/portal/app/portlets/results/viewsolution.jsp?solutionid={form['id']}"})
+            self._json({"error": {"message": "not found"}}, 404)
+
+        def do_PATCH(self):
+            url = urlparse(self.path)
+            if not self._signed_in():
+                return self._json({"error": {"message": "unauthorised"}}, 401)
+            body = _json.loads(self._body())
+            state["requests"].append(("PATCH", url.path, body))
+            state["case"].update(body)
+            self._send(204, "")
+
+        # ------------------------------------------------------- dynamics
+        def _dynamics_get(self, url, query):
+            path = url.path
+            if path in ("/main.aspx", "/home"):
+                return self._send(200, "<title>Dynamics 365</title><main>Dashboard</main>")
+            if path.endswith("/WhoAmI"):
+                return self._json({"UserId": "u1"})
+            if path.endswith("/incidents"):
+                flt = unquote(query.get("$filter", ""))
+                case = state["case"]
+                match = _re.search(r"ticketnumber eq '([^']+)'", flt)
+                rows = [case] if (not flt or (match and match.group(1) == case["ticketnumber"])
+                                  or ("contains" in flt and "outlook" in flt.lower())) else []
+                return self._json({"value": rows})
+            if "/incidents(" in path:
+                return self._json(state["case"])
+            if path.endswith("/annotations"):
+                return self._json({"value": state["notes"]})
+            if path.endswith("/activitypointers"):
+                return self._json({"value": []})
+            return self._json({"error": {"message": "not found"}}, 404)
+
+        # --------------------------------------------------- rightanswers
+        def _rightanswers_get(self, url, query):
+            path = url.path
+            if path in ("/home", "/portal", "/portal/"):
+                return self._send(200, "<main>RightAnswers portal</main>")
+            if path == "/portal/ss/":
+                text = query.get("searchText", "").lower()
+                items = "".join(
+                    f"<li class='result' data-solution-id='{key}'>"
+                    f"<a href='/portal/app/portlets/results/viewsolution.jsp?solutionid={key}'>"
+                    f"<span class='title'>{a['title']}</span></a>"
+                    f"<p class='snippet'>{a['body'][:60]}</p></li>"
+                    for key, a in state["articles"].items()
+                    if any(word in (a["title"] + a["body"]).lower() for word in text.split()))
+                return self._send(200, f"<main><ul>{items}</ul></main>")
+            if path.endswith("viewsolution.jsp"):
+                key = query.get("solutionid")
+                article = state["articles"].get(key)
+                if not article:
+                    return self._send(404, "<main>Not found</main>")
+                return self._send(200, (
+                    f"<main><h1>{article['title']}</h1>"
+                    f"<div class='solution-body'>{article['body']}</div>"
+                    f"<a href='/edit?solutionid={key}'>Edit</a></main>"))
+            if path == "/edit":
+                key = query.get("solutionid")
+                article = state["articles"][key]
+                return self._send(200, (
+                    "<main><form method='post' action='/save'>"
+                    f"<input type='hidden' name='id' value='{key}'>"
+                    f"<input name='title' value='{article['title']}'>"
+                    f"<textarea name='body'>{article['body']}</textarea>"
+                    "<button type='submit'>Save</button></form></main>"))
+            return self._send(404, "<main>Not found</main>")
+
+    servers = {}
+    for site in ("dynamics", "rightanswers"):
+        handler = type(f"{site}Handler", (Handler,), {"site": site})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers[site] = server
+    return servers, state
+
+
+def test_browser_integrations():
+    """The hidden browser reads and (after approval) writes Dynamics and RightAnswers."""
+    print("\nHidden browser — Dynamics 365 and RightAnswers")
+    import sys as _sys
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import browser
+    import importlib
+
+    # ``app.services.browser.engine`` the module, not the ``engine()`` accessor
+    # the package re-exports under the same name.
+    engine_module = importlib.import_module("app.services.browser.engine")
+    from app.services.browser.engine import BrowserUnavailable, playwright_installed
+
+    if not playwright_installed():
+        print("  - skipped: Playwright is not installed")
+        return
+
+    servers, state = _fake_sites()
+    dynamics_url = f"http://127.0.0.1:{servers['dynamics'].server_port}"
+    rightanswers_url = f"http://127.0.0.1:{servers['rightanswers'].server_port}/portal"
+    profile = Path(_TEMP_DIR) / "browser_profile"
+    overrides = {
+        "BROWSER_AUTOMATION_ENABLED": True, "DYNAMICS_ENABLED": True,
+        "RIGHTANSWERS_ENABLED": True, "DYNAMICS_URL": dynamics_url,
+        "RIGHTANSWERS_URL": rightanswers_url, "BROWSER_MODE": "headless",
+        "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium",
+        "BROWSER_TIMEOUT_SECONDS": 15,
+    }
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches.append(mock.patch.object(engine_module, "BROWSER_PROFILE_DIR", profile))
+    for patch in patches:
+        patch.start()
+    db = session()
+    try:
+        dynamics = browser.get("dynamics")
+        rightanswers = browser.get("rightanswers")
+        check("Both integrations are registered and enabled",
+              dynamics.enabled and rightanswers.enabled)
+
+        try:
+            status = dynamics.check()
+        except BrowserUnavailable as exc:
+            print(f"  - skipped: no browser could be started ({exc})")
+            return
+        if "No browser could be started" in status.get("detail", ""):
+            print(f"  - skipped: {status['detail'][:160]}")
+            return
+        check("Before sign-in the session is reported as not signed in",
+              status["signed_in"] is False)
+        try:
+            dynamics.search_cases("outlook")
+            raised = None
+        except browser.SignInRequired as exc:
+            raised = exc
+        check("Work without a session asks the user to sign in", raised is not None)
+
+        # Sign in the way the visible window would: visit the login page once.
+        browser.engine().submit(lambda eng: eng.page("signin").goto(f"{dynamics_url}/login?done=1"))
+        browser.engine().submit(lambda eng: eng.page("signin").goto(f"{rightanswers_url[:-7]}/login?done=1"))
+        check("After sign-in the session is recognised", dynamics.check()["signed_in"] is True)
+        # The browser closes when idle and after the sign-in window; a session
+        # cookie must survive that, or every restart would mean signing in again.
+        browser.engine().submit(lambda eng: eng.close_context())
+        check("The sign-in survives the browser restarting", dynamics.check()["signed_in"] is True)
+
+        cases = dynamics.search_cases("outlook")
+        check("Dynamics cases are found through the Web API",
+              cases and cases[0]["ticket"] == "CAS-01234-ABCDE")
+        check("Formatted values come back readable", cases[0]["customer"] == "Contoso")
+        record = dynamics.get_case("CAS-01234-ABCDE")
+        check("A case is read with its timeline notes",
+              record["notes"] and record["notes"][0]["subject"] == "Called user")
+
+        results = rightanswers.search("outlook")
+        check("RightAnswers search returns articles",
+              results and results[0]["id"] == "KB100")
+        article = rightanswers.get_article("KB100")
+        check("A RightAnswers article is read in full",
+              article["title"] == "Fix Outlook 0x80040115" and "cached mode" in article["body"])
+
+        # Through Ask's tools: reads run now, writes wait for approval.
+        from app.services.agent import actions
+        from app.services.agent.registry import REGISTRY, ToolContext
+        from app.models.agent_action import AgentAction
+
+        ctx = ToolContext(db=db, context={})
+        result = REGISTRY["dynamics_get_case"].handler(ctx, case="CAS-01234-ABCDE")
+        check("The case tool cites the case", "[CRM1]" in result["content"])
+        from app.models.case import Case
+        mirrored = db.query(Case).filter(Case.case_id == "CAS-01234-ABCDE").first()
+        check("The case is mirrored locally with its Dynamics link",
+              mirrored is not None and mirrored.url and mirrored.external_id)
+
+        before_requests = len(state["requests"])
+        REGISTRY["dynamics_add_note"].handler(ctx, case="CAS-01234-ABCDE",
+                                              text="Profile repaired; user confirmed.")
+        REGISTRY["dynamics_update_case"].handler(ctx, case="CAS-01234-ABCDE",
+                                                 fields={"priority": "High"})
+        REGISTRY["rightanswers_update_article"].handler(
+            ctx, article="KB100", body="Repair the profile. Disable cached mode. Rebuild the OST.")
+        check("Proposing changes sends nothing", len(state["requests"]) == before_requests)
+        drafts = [card for card in ctx.drafts if card["type"] == "approval"]
+        check("Each change becomes an approval card", len(drafts) == 3)
+        update_card = next(c for c in drafts if c["tool"] == "dynamics_update_case")
+        check("The update card shows before and after",
+              update_card["preview"]["fields"][0] == {"name": "prioritycode", "before": 2, "after": 1})
+
+        for card in drafts:
+            outcome = actions.approve(db, card["action_id"])
+            check(f"Approved {card['tool']} runs", outcome.get("notify") is True, outcome.get("reply"))
+        check("The note reached Dynamics",
+              state["notes"][0]["notetext"] == "Profile repaired; user confirmed.")
+        check("The priority changed in Dynamics", state["case"]["prioritycode"] == 1)
+        check("The article changed in RightAnswers",
+              "Rebuild the OST" in state["articles"]["KB100"]["body"])
+        check("Approved changes are recorded as done",
+              all(db.get(AgentAction, c["action_id"]).status == "done" for c in drafts))
+
+        discard_ctx = ToolContext(db=db, context={})
+        REGISTRY["dynamics_resolve_case"].handler(discard_ctx, case="CAS-01234-ABCDE",
+                                                  resolution="Fixed")
+        card = discard_ctx.drafts[0]
+        actions.discard(db, card["action_id"])
+        check("A discarded change never runs", state["case"]["statecode"] == 0)
+
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        with TestClient(app) as client:
+            listed = client.get("/api/integrations").json()
+        check("Integrations are listed over the API",
+              {item["name"] for item in listed["integrations"]} == {"dynamics", "rightanswers"})
+    finally:
+        browser.engine().shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        for server in servers.values():
+            server.shutdown()
+        db.close()
+
+
+def test_browser_disabled_by_default():
+    """Nothing launches a browser unless it is switched on."""
+    print("\nHidden browser — off by default")
+    from app.core.config import settings
+    from app.services import browser
+    from app.services.agent.registry import ToolContext, available_tools
+
+    check("The hidden browser is off by default", settings.BROWSER_AUTOMATION_ENABLED is False)
+    try:
+        browser.engine().submit(lambda eng: None)
+        refused = False
+    except browser.BrowserUnavailable:
+        refused = True
+    check("Work is refused while it is off", refused)
+    names = {item.name for item in available_tools(ToolContext(db=None))}
+    check("Integration tools are hidden from the model while off",
+          not any(name.startswith(("dynamics_", "rightanswers_")) for name in names))
+    check("Integration writes are approval-gated",
+          all(browser_tool.mode == "approval" for browser_tool in __import__(
+              "app.services.agent.registry", fromlist=["REGISTRY"]).REGISTRY.values()
+              if browser_tool.name.startswith(("dynamics_add", "dynamics_update",
+                                               "dynamics_resolve", "rightanswers_update",
+                                               "rightanswers_create"))))
+
+
+def test_dynamics_case_prefetch():
+    """Opening a Dynamics case starts a background read only when Dynamics is on."""
+    print("\nDynamics — background case read")
+    from unittest import mock
+
+    from app.services.agent import integration_tools
+
+    with mock.patch.object(integration_tools, "prefetch_dynamics_case",
+                           return_value=True) as prefetch:
+        db = session()
+        engine = ContextEngine(db)
+        engine.process_event(EventCreate(event_type="CRM_CASE_OPENED", source="test",
+                                         case_id="CAS-77777-ZZZZZ",
+                                         data={"system": "Dynamics 365", "case_id": "CAS-77777-ZZZZZ"}))
+        db.close()
+    check("A Dynamics case opening asks for a background read",
+          prefetch.call_args and prefetch.call_args[0][0] == "CAS-77777-ZZZZZ")
+    integration_tools._PREFETCHED.clear()
+    check("Nothing is fetched while Dynamics is switched off",
+          integration_tools.prefetch_dynamics_case("CAS-77777-ZZZZZ") is False)
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -2696,7 +3067,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

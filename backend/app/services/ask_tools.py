@@ -71,12 +71,26 @@ class AskToolService:
         return catalog()
 
     def try_decision(self, text: str) -> Optional[dict]:
-        """Approve or discard the pending draft when the message says so."""
-        pending = self.pending_action()
-        if pending and APPROVE_RE.match((text or "").strip()):
-            return self.approve(pending.id)
-        if pending and DISCARD_RE.match((text or "").strip()):
-            return self.discard(pending.id)
+        """Approve or discard the newest pending draft when the message says so.
+
+        Drafts are either outbound mail/Teams messages or changes to an
+        external system (Dynamics, RightAnswers); the newest of either kind
+        is the one on screen.
+        """
+        text = (text or "").strip()
+        approving, discarding = APPROVE_RE.match(text), DISCARD_RE.match(text)
+        if not approving and not discarding:
+            return None
+        from app.services.agent import actions
+
+        message_draft = self.pending_action()
+        change = actions.pending(self.db)
+        if change and (message_draft is None or
+                       (change.created_at or 0, change.id) >= (message_draft.created_at or 0, 0)):
+            return (actions.approve(self.db, change.id) if approving
+                    else actions.discard(self.db, change.id))
+        if message_draft:
+            return self.approve(message_draft.id) if approving else self.discard(message_draft.id)
         return None
 
     def pending_action(self) -> Optional[EnterpriseAction]:

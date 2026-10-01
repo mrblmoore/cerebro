@@ -57,40 +57,41 @@ template replies.
 
 ## Phase 2 — Hidden browser platform (Playwright for Python)
 
-- [ ] **B2.1 Browser engine.** One worker thread owns Playwright's sync API and
+- [x] **B2.1 Browser engine.** One worker thread owns Playwright's sync API and
   a persistent context in `DATA_DIR/browser_profile` (`channel="msedge"`).
   Modes: `headless` (default), `offscreen` (for SSO that refuses headless),
   `visible`. Idle shutdown, failure screenshots, `browsing` activity.
-- [ ] **B2.2 Sign-in.** "Sign in" reopens the profile visibly, waits until the
+- [x] **B2.2 Sign-in.** "Sign in" reopens the profile visibly, waits until the
   connector sees a signed-in page, then returns to hidden. Routes under
   `/api/integrations/{name}/auth`. Expired sessions surface as a "Sign in
   again" card.
-- [ ] **B2.3 Connector base.** Selectors live in overridable JSON
+- [x] **B2.3 Connector base.** Selectors live in overridable JSON
   (`DATA_DIR/connectors/<name>.json`) so a tenant's layout can be tuned without
   a code change. Helpers for navigation, readable-text extraction and
   authenticated in-page `fetch`.
-- [ ] **B2.4 Generic approvals.** `AgentAction` (tool, args, before/after
+- [x] **B2.4 Generic approvals.** `AgentAction` (tool, args, before/after
   preview, status) beside the existing email/Teams drafts.
-- [ ] **B2.5 Settings & packaging.** Integrations settings group;
+- [x] **B2.5 Settings & packaging.** Integrations settings group;
   `backend/requirements-browser.txt`; PyInstaller hooks. No bundled Chromium —
   the installed Edge is used.
 
 ## Phase 3 — Dynamics 365
 
-- [ ] **B3.1 Connector.** Uses the Dataverse Web API from inside the signed-in
+- [x] **B3.1 Connector.** Uses the Dataverse Web API from inside the signed-in
   page (the user's own session authenticates it — no app registration).
-- [ ] **B3.2 Tools.** Search cases, read a case with its timeline, add a note,
+- [x] **B3.2 Tools.** Search cases, read a case with its timeline, add a note,
   update fields, resolve — writes behind approval with a field diff.
-- [ ] **B3.3 Context.** When the extension sees a Dynamics case open, Cerebro
+- [x] **B3.3 Context.** When the extension sees a Dynamics case open, Cerebro
   reads it in the background so Ask already knows it.
 
 ## Phase 4 — RightAnswers
 
-- [ ] **B4.1 Connector.** Search, open and extract articles via configurable
-  selectors (calibrated once against the real tenant).
-- [ ] **B4.2 Tools.** Search, read, update and create articles (writes behind
+- [x] **B4.1 Connector.** Search, open and extract articles via configurable
+  selectors. *Still to do: calibrate the selectors once against the real
+  tenant* (see docs/INTEGRATIONS.md).
+- [x] **B4.2 Tools.** Search, read, update and create articles (writes behind
   approval with a body diff); draft a KB article from a resolved case.
-- [ ] **B4.3 Knowledge upsert.** Re-reading an article updates its indexed copy
+- [x] **B4.3 Knowledge upsert.** Re-reading an article updates its indexed copy
   instead of duplicating it.
 
 ## Phase 5 — Modern UI

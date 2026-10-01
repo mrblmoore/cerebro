@@ -9,6 +9,7 @@ from app.api.copilot import router as copilot_router
 from app.api.documents import router as documents_router
 from app.api.enterprise import router as enterprise_router
 from app.api.events import router as events_router
+from app.api.integrations import router as integrations_router
 from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
 from app.api.style import router as style_router
@@ -32,6 +33,7 @@ ROUTERS = [
     copilot_router,
     audio_router,
     sources_router,
+    integrations_router,
 ]
 
 __all__ = [
@@ -51,4 +53,5 @@ __all__ = [
     "audio_router",
     "system_router",
     "sources_router",
+    "integrations_router",
 ]

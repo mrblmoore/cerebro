@@ -123,6 +123,30 @@ def discard_action(action_id: int, db: Session = Depends(get_db)) -> Dict[str, A
     return ChatService(db).handle_action(action_id, "discard")
 
 
+@router.post("/changes/{action_id}/approve", dependencies=[Depends(require_local_origin)])
+def approve_change(action_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Run an approved change to Dynamics, RightAnswers or another system."""
+    return ChatService(db).handle_change(action_id, "approve")
+
+
+@router.post("/changes/{action_id}/discard", dependencies=[Depends(require_local_origin)])
+def discard_change(action_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    return ChatService(db).handle_change(action_id, "discard")
+
+
+@router.get("/changes", dependencies=[Depends(require_local_origin)])
+def list_changes(status: Optional[str] = None, limit: int = Query(30, ge=1, le=200),
+                 db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Proposed and completed changes, newest first — the approvals queue."""
+    from app.models.agent_action import AgentAction
+
+    query = db.query(AgentAction)
+    if status:
+        query = query.filter(AgentAction.status == status)
+    rows = query.order_by(AgentAction.id.desc()).limit(limit).all()
+    return {"count": len(rows), "changes": [row.to_dict() for row in rows]}
+
+
 @router.post("/upload-image", dependencies=[Depends(require_local_origin)])
 async def upload_image(file: UploadFile) -> Dict[str, Any]:
     # Read capped at one byte past the limit rather than the whole body, so an

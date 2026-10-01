@@ -164,6 +164,25 @@ class RAGService:
 
         return db_document
 
+    def upsert_document(self, document: Dict[str, Any]) -> Document:
+        """Index a document, replacing the earlier copy with the same URL.
+
+        Re-reading an article from an external knowledge base (RightAnswers)
+        refreshes it instead of adding a duplicate every time.
+        """
+        url = document.get("url")
+        existing = (self.db.query(Document).filter(Document.url == url).first()
+                    if url else None)
+        if existing is None:
+            return self.index_document(document)
+        content = document.get("content") or ""
+        if not content.strip():
+            raise ValueError("Document content is empty — nothing to index.")
+        if existing.content == content and existing.title == (document.get("title") or existing.title):
+            return existing
+        self.delete_document(existing)
+        return self.index_document(document)
+
     def _index_chunks(self, document: Document) -> int:
         """Replace a document's section index with locally searchable chunks."""
         self.db.query(KnowledgeChunk).filter(

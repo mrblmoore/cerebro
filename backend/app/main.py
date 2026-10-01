@@ -58,6 +58,9 @@ async def lifespan(app: FastAPI):
     yield
 
     watchers.stop()
+    from app.services import browser
+
+    browser.engine().shutdown()
     logger.info("shutdown", "Cerebro stopped")
 
 

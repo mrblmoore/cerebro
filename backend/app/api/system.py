@@ -52,6 +52,7 @@ OPTIONAL_PACKAGES = {
     "pypdf": ("PDF documents", "backend/requirements-documents.txt"),
     "mss": ("Activity screenshots", "desktop/requirements-capture.txt"),
     "pynput": ("Typed-text capture", "desktop/requirements-capture.txt"),
+    "playwright": ("RightAnswers & Dynamics (hidden browser)", "backend/requirements-browser.txt"),
 }
 
 
@@ -279,6 +280,16 @@ def test_connection(target: str, db: Session = Depends(get_db)) -> Dict[str, Any
         from app.api.copilot import test_bridge
 
         return test_bridge(db)
+    if target == "integrations":
+        from app.services import browser
+
+        results = [{"integration": c.label, **c.check()}
+                   for c in browser.connectors() if c.enabled]
+        if not results:
+            return {"ok": False, "detail": "Turn on the hidden browser and RightAnswers or "
+                                           "Dynamics 365, and enter its address, first."}
+        return {"ok": all(r["ok"] for r in results),
+                "detail": " · ".join(f"{r['integration']}: {r['detail']}" for r in results)}
     raise HTTPException(status_code=404, detail=f"Unknown test target: {target}")
 
 
