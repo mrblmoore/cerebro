@@ -1716,7 +1716,12 @@ class CerebroWidget:
                     # Do not make the user wait for the history refresh to see
                     # the answer. The following history load reconciles this
                     # optimistic entry with the stored conversation.
-                    if not self.chat_history or self.chat_history[-1].get("role") != "assistant":
+                    # Compare content, not just role: a history load that
+                    # finished before the reply was stored ends with the
+                    # *previous* answer, which must not stand in for this one.
+                    recent = (self.chat_history or [])[-3:]
+                    if not any(item.get("role") == "assistant" and item.get("content") == reply
+                               for item in recent):
                         self.chat_history = (self.chat_history or []) + [{
                             "role": "assistant", "content": reply,
                             "kind": payload.get("kind", "answer") if isinstance(payload, dict) else "answer",

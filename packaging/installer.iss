@@ -72,10 +72,10 @@ FinishedLabel=Leave the box below ticked and setup will open next. It checks eve
 [Tasks]
 Name: "desktopicon"; Description: "Put Cerebro on my desktop"; \
   GroupDescription: "Shortcuts:"
-; The widget is a small always-on-top panel showing the current case, so the
-; description says what it is rather than just naming it.
+; Cerebro starts quietly in the system tray (its animated brain icon) and
+; opens with a click, so the description says what that means.
 Name: "widgetstartup"; \
-  Description: "Start the Cerebro widget when I sign in (a small always-on-top panel)"; \
+  Description: "Start Cerebro in the system tray when I sign in"; \
   GroupDescription: "Startup:"
 
 [Files]
@@ -92,7 +92,7 @@ Name: "{group}\Install Browser Extension"; Filename: "{app}\_internal\browser-ex
 Name: "{group}\Uninstall Cerebro";  Filename: "{uninstallexe}"
 Name: "{autodesktop}\Cerebro";      Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 Name: "{autodesktop}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks: desktopicon
-Name: "{userstartup}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Tasks: widgetstartup
+Name: "{userstartup}\Cerebro Widget"; Filename: "{app}\{#WidgetExeName}"; Parameters: "--background"; Tasks: widgetstartup
 
 [Run]
 ; Configuration is part of installing, not a separate errand afterwards. The

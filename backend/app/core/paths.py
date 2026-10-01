@@ -54,6 +54,13 @@ AUDIO_DIR = DATA_DIR / "audio"
 VECTOR_DIR = DATA_DIR / "vectors"
 ACTIVITY_DIR = DATA_DIR / "activity"
 CHAT_IMAGES_DIR = DATA_DIR / "chat_images"
+#: The hidden browser's own profile: cookies and sign-ins for RightAnswers
+#: and Dynamics live here, never in Cerebro's settings.
+BROWSER_PROFILE_DIR = DATA_DIR / "browser_profile"
+#: Per-tenant overrides for connector selectors (``<name>.json``).
+CONNECTORS_DIR = DATA_DIR / "connectors"
+#: Screenshots taken when a browser step fails, for diagnosis.
+BROWSER_SCREENSHOTS_DIR = DATA_DIR / "browser_screenshots"
 
 ENV_EXAMPLE = BACKEND_DIR / ".env.example"
 

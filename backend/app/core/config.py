@@ -74,6 +74,21 @@ class Settings(BaseSettings):
     LLM_TIMEOUT: int = 60
     LLM_MAX_TOKENS: int = 500
     LLM_TEMPERATURE: float = 0.7
+    #: How Ask lets the model call tools (search, read, draft). ``auto`` uses the
+    #: provider's native tool calling and falls back to a JSON protocol for
+    #: models that do not support it; ``json`` forces the fallback; ``off``
+    #: answers in a single step with whatever context is already in view.
+    LLM_TOOL_MODE: str = "auto"  # auto | native | json | off
+    #: Ask writes longer answers than a case note; this is its own cap.
+    ASK_MAX_TOKENS: int = 1200
+    #: Most tool calls Ask may make while answering one message.
+    ASK_MAX_STEPS: int = 6
+    #: Minimum similarity for a source excerpt to be offered as evidence.
+    #: Below it, an excerpt is treated as unrelated and left out of the answer.
+    ASK_MIN_SOURCE_SCORE: float = 0.12
+    #: An opened document counts as "what you are looking at" for this long
+    #: after it was last seen, then stops being pulled into unrelated answers.
+    ASK_ACTIVE_DOCUMENT_MINUTES: int = 20
 
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
@@ -130,6 +145,39 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_ID: Optional[str] = None
     #: Largest document Cerebro will read into memory, in megabytes.
     DOCUMENT_MAX_MB: float = 25.0
+
+    # --------------------------------------------------------- integrations
+    #: A hidden browser, driven by Playwright, that works in RightAnswers and
+    #: Dynamics 365 with the user's own sign-in. Cerebro keeps a dedicated
+    #: browser profile for it; no passwords are stored here.
+    BROWSER_AUTOMATION_ENABLED: bool = False
+    #: ``msedge`` uses the Edge already on Windows; ``chrome`` uses Chrome;
+    #: ``chromium`` uses a Playwright-downloaded Chromium.
+    BROWSER_CHANNEL: str = "msedge"
+    #: ``headless`` is invisible; ``offscreen`` is a real window placed off
+    #: screen, for sign-in systems that refuse headless browsers; ``visible``
+    #: shows what Cerebro is doing (useful for checking a new setup).
+    BROWSER_MODE: str = "headless"
+    #: Close the hidden browser after this long without work.
+    BROWSER_IDLE_SECONDS: int = 300
+    #: Longest Cerebro waits for one page to load or one step to finish.
+    BROWSER_TIMEOUT_SECONDS: int = 30
+    RIGHTANSWERS_ENABLED: bool = False
+    #: The company's RightAnswers site. Only the host matters; any path is
+    #: ignored, and a missing "https://" is added.
+    RIGHTANSWERS_URL: Optional[str] = "https://dexis.rightanswers.com"
+    DYNAMICS_ENABLED: bool = False
+    #: The company's Dynamics 365 organisation (host only, as above).
+    DYNAMICS_URL: Optional[str] = "https://dental.crm.dynamics.com"
+    #: SharePoint through the same hidden browser and sign-in: open pasted
+    #: links, read documents and pages, and change them with approval. Needs
+    #: no app registration (unlike SHAREPOINT_GRAPH_ENABLED below).
+    SHAREPOINT_BROWSER_ENABLED: bool = False
+    SHAREPOINT_SITE_URL: Optional[str] = "https://envistaconnect.sharepoint.com"
+    #: Apply SharePoint document and page changes as soon as Ask (or a chat
+    #: task) makes them, instead of waiting for approval. Each one is still
+    #: shown with its before/after and can be undone from its card.
+    SHAREPOINT_AUTO_APPLY: bool = False
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 

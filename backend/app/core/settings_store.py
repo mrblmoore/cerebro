@@ -110,6 +110,14 @@ GROUPS = [
         "description": "Which documents Cerebro may read, and how it handles edits.",
     },
     {
+        "id": "integrations",
+        "title": "RightAnswers, Dynamics & SharePoint",
+        "icon": "🌐",
+        "description": "Let Cerebro work in RightAnswers, Dynamics 365 and SharePoint through a hidden "
+                       "browser that uses your own sign-in. Reads happen straight away; "
+                       "every change is shown to you for approval first.",
+    },
+    {
         "id": "brain",
         "title": "Second Brain",
         "icon": "🧠",
@@ -260,6 +268,27 @@ FIELDS: List[Field] = [
           show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
     Field("LLM_TIMEOUT", "Request timeout (s)", "ai", type="number", advanced=True,
           show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("LLM_TOOL_MODE", "Tool use in Ask", "ai",
+          "How Ask lets the model search, read and draft on its own. Automatic uses the "
+          "provider's tool calling and falls back for models without it.",
+          type="select", advanced=True, options=[
+              {"value": "auto", "label": "Automatic (recommended)"},
+              {"value": "native", "label": "Native tool calling only"},
+              {"value": "json", "label": "JSON protocol (older local models)"},
+              {"value": "off", "label": "Off — answer in one step"},
+          ], show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_MAX_TOKENS", "Ask answer length", "ai",
+          "The longest answer Ask may write, in tokens.", type="number", advanced=True,
+          show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_MAX_STEPS", "Ask tool steps", "ai",
+          "How many searches or reads Ask may make for one message.", type="number",
+          advanced=True, show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_MIN_SOURCE_SCORE", "Source relevance floor", "ai",
+          "Excerpts scoring below this are treated as unrelated and never cited. "
+          "Raise it if answers drag in unrelated documents.", type="number", advanced=True),
+    Field("ASK_ACTIVE_DOCUMENT_MINUTES", "Active document window (minutes)", "ai",
+          "How long an opened document stays 'what you are looking at' after it was last seen.",
+          type="number", advanced=True),
 
     # Knowledge
     Field("VECTOR_BACKEND", "Vector backend", "knowledge",
@@ -349,6 +378,62 @@ FIELDS: List[Field] = [
     Field("BROWSER_EXCLUDED_DOMAINS", "Never report these domains", "documents",
           "One per line. Applies whatever the tracking setting is.",
           placeholder="mybank.com\npayroll.company.com"),
+
+    # Integrations (hidden browser)
+    Field("BROWSER_AUTOMATION_ENABLED", "Use the hidden browser", "integrations",
+          "Lets Cerebro open RightAnswers and Dynamics 365 in a browser you never see, "
+          "signed in as you.", type="bool"),
+    Field("BROWSER_CHANNEL", "Browser", "integrations",
+          "Which installed browser Cerebro drives. Edge is already on every Windows PC.",
+          type="select", options=[
+              {"value": "msedge", "label": "Microsoft Edge (recommended)"},
+              {"value": "chrome", "label": "Google Chrome"},
+              {"value": "chromium", "label": "Bundled Chromium"},
+          ], show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BROWSER_MODE", "Window", "integrations",
+          "Hidden is invisible. Off-screen is a real window parked out of sight, for sign-in "
+          "systems that refuse hidden browsers. Visible shows exactly what Cerebro does.",
+          type="select", options=[
+              {"value": "headless", "label": "Hidden (recommended)"},
+              {"value": "offscreen", "label": "Off-screen window"},
+              {"value": "visible", "label": "Visible — watch it work"},
+          ], show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BROWSER_IDLE_SECONDS", "Close when idle (s)", "integrations",
+          "The hidden browser closes after this long without work, and reopens when needed.",
+          type="number", advanced=True, show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BROWSER_TIMEOUT_SECONDS", "Page timeout (s)", "integrations",
+          "Longest Cerebro waits for a page or a step before giving up.",
+          type="number", advanced=True, show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("RIGHTANSWERS_ENABLED", "RightAnswers", "integrations",
+          "Search, read and (with your approval) update knowledge articles.", type="bool",
+          show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("RIGHTANSWERS_URL", "RightAnswers address", "integrations",
+          "The address you open RightAnswers at. Pre-filled with DEXIS's; only the host "
+          "matters, so a full page address works too.",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("RIGHTANSWERS_ENABLED", [True])]),
+    Field("DYNAMICS_ENABLED", "Dynamics 365", "integrations",
+          "Search and read cases; post notes and update tickets with your approval.",
+          type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("SHAREPOINT_BROWSER_ENABLED", "SharePoint", "integrations",
+          "Open SharePoint links you paste into Ask, read documents and pages, and update them "
+          "with your approval — signed in as you, no app registration.",
+          type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("SHAREPOINT_SITE_URL", "SharePoint address", "integrations",
+          "Your SharePoint. Pre-filled with envistaconnect.sharepoint.com; its OneDrive "
+          "(-my) links work too.",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("SHAREPOINT_BROWSER_ENABLED", [True])]),
+    Field("SHAREPOINT_AUTO_APPLY", "Apply SharePoint changes automatically", "integrations",
+          "Off: every document or page change waits for your approval. On: changes are made "
+          "straight away — including by chat tasks — and each one can be undone from its card.",
+          type="bool", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("SHAREPOINT_BROWSER_ENABLED", [True])]),
+    Field("DYNAMICS_URL", "Dynamics 365 address", "integrations",
+          "Your organisation's address. Pre-filled with dental.crm.dynamics.com; a pasted "
+          "case link works too — only the host is used.",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("DYNAMICS_ENABLED", [True])]),
 
     # Second brain
     Field("PERSONA", "How Cerebro speaks to you", "brain", type="select", options=[

@@ -13,6 +13,10 @@ class Case(Base):
     title = Column(String)
     description = Column(Text, nullable=True)
     status = Column(String, default="open")
+    #: The record's own ID and link in the CRM (e.g. a Dynamics incident GUID),
+    #: filled when Cerebro reads the case through an integration.
+    external_id = Column(String, nullable=True, index=True)
+    url = Column(String, nullable=True)
     
     # Context
     error_code = Column(String, nullable=True)

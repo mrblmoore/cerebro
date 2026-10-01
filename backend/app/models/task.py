@@ -25,7 +25,7 @@ class Task(Base):
     #: The user's own words, kept verbatim so the intent is never lost in parsing.
     instruction = Column(Text, nullable=True)
 
-    #: reminder | document_update | draft_reply | summarise | custom
+    #: reminder | document_update | draft_reply | summarise | agent | custom
     kind = Column(String, index=True, default="reminder")
     #: JSON describing the concrete action (path, section, recipient, prompt…).
     spec = Column(Text, nullable=True)
@@ -45,6 +45,8 @@ class Task(Base):
     attribution = Column(String, nullable=True)
 
     case_id = Column(String, nullable=True, index=True)
+    #: The Ask chat this task was assigned to; its results post there.
+    conversation_id = Column(Integer, nullable=True, index=True)
 
     next_run = Column(DateTime, nullable=True, index=True)
     last_run = Column(DateTime, nullable=True)
@@ -74,6 +76,7 @@ class Task(Base):
             "autonomous": bool(self.autonomous),
             "attribution": self.attribution,
             "case_id": self.case_id,
+            "conversation_id": self.conversation_id,
             "next_run": self.next_run.isoformat() if self.next_run else None,
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "last_result": self.last_result,

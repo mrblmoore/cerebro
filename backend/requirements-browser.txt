@@ -1,0 +1,4 @@
+# Hidden-browser integrations (RightAnswers, Dynamics 365).
+# Uses the Microsoft Edge already on Windows, so no browser is downloaded.
+# For the bundled-Chromium fallback also run: python -m playwright install chromium
+playwright>=1.49,<2.0

@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.models.task import Task
 
 SCHEDULES = ("once", "hourly", "daily", "weekdays", "weekly", "manual")
+KINDS = ("reminder", "document_update", "draft_reply", "summarise", "agent", "custom")
 
 TIME_RE = re.compile(r"\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 
@@ -111,7 +112,10 @@ Current context:
 
 Fields:
   title: short label
-  kind: reminder | document_update | draft_reply | summarise | custom
+  kind: reminder | document_update | draft_reply | summarise | agent | custom
+        (agent = anything Cerebro must look up or do with its tools when the
+        task runs: check Dynamics cases, search RightAnswers or SharePoint,
+        review the inbox, research and report back)
   schedule: once | hourly | daily | weekdays | weekly | manual
   at_time: "HH:MM" 24h, or null
   autonomous: true only if the user clearly said to act without asking
@@ -213,7 +217,8 @@ class TaskService:
     def create_from_instruction(self, instruction: str,
                                 context: Dict[str, Any] = None,
                                 source: str = "user",
-                                extra_spec: Dict[str, Any] = None) -> Task:
+                                extra_spec: Dict[str, Any] = None,
+                                conversation_id: int = None) -> Task:
         """
         Parse and store a task from natural language.
 
@@ -221,8 +226,17 @@ class TaskService:
         text on its own — the chat service uses it to fold in a document path
         or similar detail the user gave in reply to a clarifying question,
         without needing an AI provider to have understood it.
+
+        ``conversation_id`` assigns the task to an Ask chat. Open-ended work
+        there runs as an ``agent`` task, whose results post back to the chat.
         """
         parsed = parse_instruction(instruction, context)
+        if parsed.get("kind") == "agent" and not conversation_id:
+            conversation_id = (context or {}).get("conversation_id")
+        if conversation_id and parsed.get("kind") in ("custom", "summarise"):
+            parsed["kind"] = "agent"
+        if parsed.get("kind") not in KINDS:
+            parsed["kind"] = "reminder"
         # A manual task created *from chat* is a contradiction: the user is
         # asking now.  Run it once instead of confirming "when you ask" and
         # leaving it with no next_run forever.  Explicitly scheduled tasks keep
@@ -250,6 +264,7 @@ class TaskService:
             autonomous=bool(parsed.get("autonomous")),
             attribution=parsed.get("attribution"),
             case_id=(context or {}).get("crm_case"),
+            conversation_id=conversation_id,
             next_run=next_run,
             status="active",
             source=source,
@@ -259,6 +274,36 @@ class TaskService:
         self.db.refresh(task)
         logger.info("tasks", "Created task",
                     {"title": task.title, "kind": task.kind, "schedule": task.schedule})
+        return task
+
+    def assign_to_chat(self, conversation_id: int, instruction: str,
+                       schedule: str = "once", at_time: str = None,
+                       title: str = None) -> Task:
+        """
+        Give a chat a job, exactly as described, on an explicit schedule.
+
+        Unlike :meth:`create_from_instruction` nothing is parsed: the user
+        picked the schedule in the UI, and the instruction is passed to the
+        agent word for word when the task runs.
+        """
+        from app.services.conversations import title_from
+
+        schedule = schedule if schedule in SCHEDULES else "once"
+        if at_time and not re.fullmatch(r"\d{1,2}:\d{2}", at_time):
+            raise ValueError("Use HH:MM for the time.")
+        task = Task(
+            title=(title or title_from(instruction))[:80],
+            instruction=instruction, kind="agent",
+            spec=json.dumps({"prompt": instruction}),
+            schedule=schedule, at_time=at_time or None,
+            conversation_id=conversation_id, status="active", source="chat",
+            next_run=compute_next_run(schedule, at_time or None),
+        )
+        self.db.add(task)
+        self.db.commit()
+        self.db.refresh(task)
+        logger.info("tasks", "Assigned task to chat",
+                    {"chat": conversation_id, "title": task.title, "schedule": schedule})
         return task
 
     def due(self, now: datetime = None) -> List[Task]:

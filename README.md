@@ -62,11 +62,11 @@ Prefer a menu? Run `cerebro.bat` (or `./cerebro.sh`) with no arguments.
 **Dashboard** — `http://localhost:8000`
 Live context, recent events, knowledge search, system status and the activity log.
 
-**Desktop widget**
-A small always-on-top panel with a source-aware Ask transcript, connection
-readiness, citations and one Activity feed for tasks, approvals and events. Drag
-it anywhere, snap it to an edge, collapse it while you work, or set it to start
-with Windows.
+**Desktop app & tray**
+A modern always-on-top window with a streaming Ask transcript, live progress
+while Cerebro searches and works, source citations, and before/after approval
+cards. Closing it leaves Cerebro running in the system tray, where an animated
+brain shows what it is doing. See [docs/WIDGET.md](docs/WIDGET.md).
 
 **Browser extension**
 Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases and the SharePoint
@@ -80,6 +80,14 @@ Power Automate drops each message into a folder as JSON; Cerebro ingests it,
 triages what is urgent, links it to the right case, and drafts replies that go
 back out through a second flow. No Microsoft credentials live in Cerebro.
 See [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md).
+
+**RightAnswers, Dynamics 365 & SharePoint**
+A hidden browser that uses your own sign-in lets Ask search and read
+RightAnswers articles, Dynamics cases, and any SharePoint document or page you
+paste a link to. With your approval, it can also post case notes, update
+tickets, edit articles, and change Word and Excel files and pages. Every change
+is shown as a before/after card first. See
+[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 **Documents**
 Reads Word, Excel, PowerPoint and PDF files you have open, with local OCR for

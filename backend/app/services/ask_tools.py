@@ -1,10 +1,15 @@
-"""Tool execution for Ask.
+"""Deterministic Ask actions: approvals, and the no-AI fallback.
 
-Ask used to be a choice between answering a question and creating a scheduled
-task.  This module supplies the missing middle: safe, immediate operations over
-services Cerebro already owns.  Read operations run immediately.  Anything
-that leaves the computer is created as a draft and requires an explicit user
-approval before it reaches the Power Automate outbox.
+With an AI provider connected, Ask's tools live in ``app.services.agent`` and
+the model chooses them. This module keeps what must not depend on a model:
+
+* approving or discarding a draft card (typed or clicked), and
+* keyword routing for installs with no AI provider, where recognising
+  "summarise my inbox" by phrase is still better than nothing.
+
+Read operations run immediately. Anything that leaves the computer is created
+as a draft and requires an explicit user approval before it reaches the Power
+Automate outbox.
 """
 
 import re
@@ -18,18 +23,6 @@ from app.models.tracked_document import TrackedDocument
 from app.services.enterprise_service import EnterpriseService
 
 
-TOOL_CATALOG = [
-    {"name": "get_current_context", "mode": "read", "label": "Current work context"},
-    {"name": "search_sources", "mode": "read", "label": "Search connected sources"},
-    {"name": "read_document", "mode": "read", "label": "Read current documents"},
-    {"name": "search_sharepoint", "mode": "read", "label": "Search SharePoint"},
-    {"name": "get_inbox_briefing", "mode": "read", "label": "Summarise Outlook and Teams"},
-    {"name": "get_message_thread", "mode": "read", "label": "Read message threads"},
-    {"name": "draft_reply", "mode": "draft", "label": "Draft an email or Teams reply"},
-    {"name": "send_email", "mode": "approval", "label": "Send email through Power Automate"},
-    {"name": "send_teams_message", "mode": "approval", "label": "Post through Power Automate"},
-    {"name": "create_task", "mode": "write", "label": "Create and schedule tasks"},
-]
 
 APPROVE_RE = re.compile(
     r"^(?:yes[,. ]*)?(?:approve|send|send it|send this|send the draft|go ahead|do it)[.! ]*$",
@@ -72,7 +65,33 @@ class AskToolService:
 
     @staticmethod
     def catalog() -> List[dict]:
-        return [dict(item) for item in TOOL_CATALOG]
+        """Every tool Ask can use, with the safety mode applied to each."""
+        from app.services.agent import catalog
+
+        return catalog()
+
+    def try_decision(self, text: str) -> Optional[dict]:
+        """Approve or discard the newest pending draft when the message says so.
+
+        Drafts are either outbound mail/Teams messages or changes to an
+        external system (Dynamics, RightAnswers); the newest of either kind
+        is the one on screen.
+        """
+        text = (text or "").strip()
+        approving, discarding = APPROVE_RE.match(text), DISCARD_RE.match(text)
+        if not approving and not discarding:
+            return None
+        from app.services.agent import actions
+
+        message_draft = self.pending_action()
+        change = actions.pending(self.db)
+        if change and (message_draft is None or
+                       (change.created_at or 0, change.id) >= (message_draft.created_at or 0, 0)):
+            return (actions.approve(self.db, change.id) if approving
+                    else actions.discard(self.db, change.id))
+        if message_draft:
+            return self.approve(message_draft.id) if approving else self.discard(message_draft.id)
+        return None
 
     def pending_action(self) -> Optional[EnterpriseAction]:
         return (self.db.query(EnterpriseAction)
@@ -86,11 +105,9 @@ class AskToolService:
         lowered = text.lower()
         context = context or {}
 
-        pending = self.pending_action()
-        if pending and APPROVE_RE.match(text):
-            return self.approve(pending.id)
-        if pending and DISCARD_RE.match(text):
-            return self.discard(pending.id)
+        decision = self.try_decision(text)
+        if decision is not None:
+            return decision
 
         if self._is_inbox_briefing(lowered):
             return self._inbox_briefing(text)

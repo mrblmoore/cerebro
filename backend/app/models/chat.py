@@ -40,6 +40,8 @@ class ChatMessage(Base):
 
     task_id = Column(Integer, nullable=True, index=True)
     case_id = Column(String, nullable=True, index=True)
+    #: The chat this turn belongs to (see app.models.conversation).
+    conversation_id = Column(Integer, nullable=True, index=True)
 
     created_at = Column(DateTime, default=func.now(), index=True)
 
@@ -59,6 +61,7 @@ class ChatMessage(Base):
             "image_path": self.image_path,
             "task_id": self.task_id,
             "case_id": self.case_id,
+            "conversation_id": self.conversation_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

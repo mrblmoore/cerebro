@@ -137,6 +137,12 @@ class ContextEngine:
         context.crm_case = data.get("case_id") or event_data.case_id
         context.crm_system = data.get("system", "Salesforce")
         context.customer = data.get("customer") or context.customer
+        if "dynamics" in str(context.crm_system or "").lower() and context.crm_case:
+            # Read the case through the hidden browser in the background, so
+            # Ask already knows it by the time the user asks about it.
+            from app.services.agent.integration_tools import prefetch_dynamics_case
+
+            prefetch_dynamics_case(context.crm_case)
 
     @staticmethod
     def _on_case_closed(context, event_data, event):

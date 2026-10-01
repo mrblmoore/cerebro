@@ -61,6 +61,7 @@ ALL_REQUIREMENTS = (
     ("backend/requirements.txt", "Backend core", True),
     ("backend/requirements-documents.txt", "Word, Excel, PowerPoint and PDF", True),
     ("backend/requirements-ai.txt", "OpenAI and Amazon Bedrock", True),
+    ("backend/requirements-browser.txt", "RightAnswers and Dynamics 365 (hidden browser)", False),
     ("backend/requirements-search.txt", "Qdrant vector search", False),
     ("backend/requirements-postgres.txt", "PostgreSQL driver", False),
     ("desktop/requirements.txt", "Desktop widget", True),
@@ -361,7 +362,7 @@ def cmd_widget(args) -> int:
         print(f"  The widget will keep retrying — start the API with: "
               f"{'cerebro.bat' if IS_WINDOWS else './cerebro.sh'} start\n")
 
-    command = [str(python_for()), str(DESKTOP / "widget.py")]
+    command = [str(python_for()), str(DESKTOP / "shell.py")]
     if args.api:
         command += ["--api", args.api]
     return run(command)
@@ -557,9 +558,21 @@ def cmd_stop(args) -> int:
         print("Cerebro is not running.")
         return 0
 
+    # The server stops itself when asked (the same request as "Quit Cerebro"
+    # in the tray), which works on every platform.
+    try:
+        request = urllib.request.Request(f"{api_base()}/api/system/shutdown", data=b"",
+                                         method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            if response.status == 200:
+                print("Cerebro is stopping.")
+                return 0
+    except (urllib.error.URLError, OSError):
+        pass
+
     pattern = "uvicorn app.main:app"
     if IS_WINDOWS:
-        print("Stop Cerebro by closing its window, or press Ctrl+C in it.")
+        print("Stop Cerebro by choosing Quit in its tray icon, or press Ctrl+C in its window.")
         return 0
 
     subprocess.call(["pkill", "-f", pattern])

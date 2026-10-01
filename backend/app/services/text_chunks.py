@@ -56,8 +56,32 @@ def split(text: str, target: int = TARGET_CHARS) -> List[Dict[str, str]]:
     return chunks
 
 
-def rank(query: str, chunks: Iterable[Dict[str, str]], limit: int = 6) -> List[Dict[str, str]]:
-    """Rank transient chunks locally without network calls or new credentials."""
+#: A hit scoring below this fraction of the best hit is noise riding along
+#: with one genuinely relevant passage.
+RELATIVE_CUTOFF = 0.45
+
+
+def relevant(scored: List[tuple], min_score: float = 0.0) -> List[tuple]:
+    """Keep ``(score, item)`` pairs that clear the absolute and relative floors.
+
+    ``scored`` must already be sorted best-first.
+    """
+    if not scored:
+        return []
+    floor = max(min_score, scored[0][0] * RELATIVE_CUTOFF) if min_score > 0 else 0.0
+    return [(score, item) for score, item in scored if score > 0 and score >= floor]
+
+
+def rank(query: str, chunks: Iterable[Dict[str, str]], limit: int = 6,
+         min_score: float = 0.0) -> List[Dict[str, str]]:
+    """Rank transient chunks locally without network calls or new credentials.
+
+    With ``min_score`` set, only chunks that are actually about the query are
+    returned — possibly none, which is the honest answer for an unrelated
+    question.
+    """
+    if min_score > 0:
+        query = embeddings.focus_query(query)
     query_vector = embeddings.local_embedding(query)
     scored = []
     for chunk in chunks:
@@ -66,5 +90,6 @@ def rank(query: str, chunks: Iterable[Dict[str, str]], limit: int = 6) -> List[D
         if score > 0:
             scored.append((score, chunk))
     scored.sort(key=lambda item: item[0], reverse=True)
+    scored = relevant(scored, min_score)
     return [{**chunk, "score": round(score, 4)} for score, chunk in scored[:limit]]
 

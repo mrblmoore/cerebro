@@ -164,6 +164,25 @@ class RAGService:
 
         return db_document
 
+    def upsert_document(self, document: Dict[str, Any]) -> Document:
+        """Index a document, replacing the earlier copy with the same URL.
+
+        Re-reading an article from an external knowledge base (RightAnswers)
+        refreshes it instead of adding a duplicate every time.
+        """
+        url = document.get("url")
+        existing = (self.db.query(Document).filter(Document.url == url).first()
+                    if url else None)
+        if existing is None:
+            return self.index_document(document)
+        content = document.get("content") or ""
+        if not content.strip():
+            raise ValueError("Document content is empty — nothing to index.")
+        if existing.content == content and existing.title == (document.get("title") or existing.title):
+            return existing
+        self.delete_document(existing)
+        return self.index_document(document)
+
     def _index_chunks(self, document: Document) -> int:
         """Replace a document's section index with locally searchable chunks."""
         self.db.query(KnowledgeChunk).filter(
@@ -273,14 +292,21 @@ class RAGService:
                 "backend": self._backend}
 
     # ----------------------------------------------------------- reading
-    def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 5,
+               min_score: float = 0.0) -> List[Dict[str, Any]]:
+        """Best-matching knowledge sections.
+
+        ``min_score`` > 0 drops sections that are not really about the query
+        (Ask uses it so an unrelated question gets no citations rather than
+        the nearest irrelevant ones).
+        """
         if not query or not query.strip():
             return []
 
         try:
             self._ensure_chunks()
-            chunks = self._search_chunks(query, limit)
-            if chunks:
+            chunks = self._search_chunks(query, limit, min_score)
+            if chunks or min_score > 0:
                 return chunks
             if self._backend == "qdrant":
                 results = self._search_qdrant(query, limit)
@@ -291,7 +317,10 @@ class RAGService:
             logger.error("rag_service", "Search failed", {"error": str(exc)})
             return []
 
-    def _search_chunks(self, query: str, limit: int) -> List[Dict[str, Any]]:
+    def _search_chunks(self, query: str, limit: int,
+                       min_score: float = 0.0) -> List[Dict[str, Any]]:
+        if min_score > 0:
+            query = embeddings.focus_query(query)
         query_vector = embeddings.local_embedding(query)
         signature = embeddings.local_signature()
         documents = {document.id: document for document in self.db.query(Document).all()}
@@ -310,8 +339,10 @@ class RAGService:
                 scored.append((score, chunk, documents[chunk.document_id]))
         self.db.commit()
         scored.sort(key=lambda item: item[0], reverse=True)
+        kept = text_chunks.relevant([(score, (chunk, document))
+                                     for score, chunk, document in scored], min_score)
         results = []
-        for index, (score, chunk, document) in enumerate(scored[:limit], start=1):
+        for index, (score, (chunk, document)) in enumerate(kept[:limit], start=1):
             results.append({
                 "id": document.id, "document_id": document.id,
                 "chunk_id": chunk.id, "title": document.title,

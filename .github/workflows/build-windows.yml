@@ -83,6 +83,7 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-ai.txt
           pip install -r backend/requirements-documents.txt
+          pip install -r backend/requirements-browser.txt
           pip install -r desktop/requirements.txt
           pip install -r desktop/requirements-capture.txt
           pip install pyinstaller

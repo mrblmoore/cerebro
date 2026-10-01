@@ -41,11 +41,19 @@ def _context(db: Session) -> Dict[str, Any]:
                   .filter(TrackedDocument.name == context.window_title).first())
         payload["active_document"] = record.path if record else context.window_title
     if not payload.get("active_document"):
+        from datetime import datetime, timedelta
+
+        from app.core.config import settings
         from app.models.source import Source
 
+        # Only a document seen recently is "this document". Without the time
+        # window, a file opened this morning was silently attached to every
+        # later instruction and question.
+        cutoff = datetime.utcnow() - timedelta(minutes=settings.ASK_ACTIVE_DOCUMENT_MINUTES)
         source = (db.query(Source)
                   .filter(Source.kind.in_(("document", "sharepoint")),
-                          Source.active.is_(True), Source.local_path.isnot(None))
+                          Source.active.is_(True), Source.local_path.isnot(None),
+                          Source.last_seen >= cutoff)
                   .order_by(Source.last_seen.desc()).first())
         if source:
             payload["active_document"] = source.local_path

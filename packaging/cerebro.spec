@@ -84,8 +84,25 @@ hiddenimports = [
     "app.services.source_service", "app.services.text_chunks",
     "app.services.style_service", "app.services.task_executors",
     "app.services.task_service", "app.services.watchers",
+    "app.services.ask_tools", "app.core.activity_state",
+    "app.services.agent", "app.services.agent.registry",
+    "app.services.agent.tools", "app.services.agent.loop",
+    "app.services.agent.actions", "app.services.agent.integration_tools",
+    "app.services.browser", "app.services.browser.engine",
+    "app.services.browser.connector", "app.services.browser.dynamics",
+    "app.services.browser.rightanswers", "app.services.browser.teach",
+    "app.services.browser.sharepoint", "app.services.conversations",
+    "app.api.integrations",
+    "app.models.agent_action",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
+# Playwright drives the installed Edge through its own Node-based driver, which
+# lives in package data rather than importable modules.
+try:
+    hiddenimports += collect_submodules("playwright")
+    datas += collect_data_files("playwright")
+except Exception:  # Playwright not installed: integrations are simply unavailable
+    pass
 
 excludes = ["tkinter"]   # the server build has no interface
 
@@ -101,16 +118,28 @@ server = Analysis(
     cipher=block_cipher,
 )
 
+# The desktop app window is pywebview over Edge WebView2 (with pythonnet on
+# Windows); the tray is pystray. Both carry data files their imports don't show.
+widget_datas, widget_hidden = [], []
+for package in ("webview", "pystray", "clr_loader", "pythonnet"):
+    try:
+        widget_hidden += collect_submodules(package)
+        widget_datas += collect_data_files(package)
+    except Exception:  # optional at build time; the shell falls back to the classic widget
+        pass
+
 widget = Analysis(
     [str(ROOT / "packaging" / "cerebro_widget_app.py")],
     pathex=[str(DESKTOP), str(ROOT)],
     binaries=[],
-    datas=[],
+    datas=widget_datas,
     hiddenimports=[
         "widget", "widget_config", "win_integration", "agent", "branding",
         "activity_recorder", "document_watcher", "screenpipe_launcher", "mss", "PIL",
         "PIL.Image", "pynput", "pynput.keyboard",
-    ],
+        "shell", "tray", "brain_frames", "buddy", "webview", "pystray", "clr",
+        "tkinter", "PIL.ImageTk",
+    ] + widget_hidden,
     hookspath=[],
     runtime_hooks=[],
     excludes=["fastapi", "uvicorn", "sqlalchemy"],

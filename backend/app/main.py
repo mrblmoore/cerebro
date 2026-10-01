@@ -4,6 +4,7 @@ Cerebro API — application entry point.
 Serves the JSON API plus three built-in screens:
 
 * ``/``         dashboard: live context, recent events, knowledge, logs
+* ``/app``      the Cerebro app — Ask, Activity, Sources, Connect (desktop shell)
 * ``/setup``    first-run wizard
 * ``/settings`` full configuration centre
 """
@@ -19,7 +20,7 @@ from app.api import ROUTERS
 from app.api.system import VERSION
 from app.core import init_db, logger, settings
 from app.services import watchers
-from app.core.paths import WEB_DIR
+from app.core.paths import WEB_DIR, bundled
 
 STARTUP_BANNER = r"""
    ___                _
@@ -58,6 +59,9 @@ async def lifespan(app: FastAPI):
     yield
 
     watchers.stop()
+    from app.services import browser
+
+    browser.engine().shutdown()
     logger.info("shutdown", "Cerebro stopped")
 
 
@@ -85,6 +89,11 @@ for router in ROUTERS:
 if (WEB_DIR / "static").exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
+# The pixel mascot's animation strips, shared with the tray and desktop buddy.
+_MASCOT_DIR = bundled("assets", "mascot")
+if _MASCOT_DIR.exists():
+    app.mount("/mascot", StaticFiles(directory=str(_MASCOT_DIR)), name="mascot")
+
 
 @app.exception_handler(Exception)
 async def internal_error_handler(request: Request, exc: Exception):
@@ -108,6 +117,12 @@ async def dashboard():
     if not settings.SETUP_COMPLETED:
         return RedirectResponse("/setup")
     return _page("dashboard.html")
+
+
+@app.get("/app", include_in_schema=False)
+async def app_page():
+    """The Cerebro app: Ask, Activity, Sources and Connect (also the desktop shell)."""
+    return _page("app.html")
 
 
 @app.get("/setup", include_in_schema=False)

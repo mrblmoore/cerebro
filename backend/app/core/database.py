@@ -54,6 +54,40 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
+    _adopt_unfiled_messages()
+
+
+def _adopt_unfiled_messages() -> None:
+    """
+    Put chat messages from before multiple chats existed into one chat.
+
+    Ask used to be one long thread. Those messages are kept, gathered into a
+    conversation called "Earlier chat", rather than vanishing from the UI.
+    """
+    from sqlalchemy import func as sql_func
+
+    from app.models.chat import ChatMessage
+    from app.models.conversation import Conversation
+
+    db = SessionLocal()
+    try:
+        if not db.query(ChatMessage.id).filter(ChatMessage.conversation_id.is_(None)).first():
+            return
+        last = db.query(sql_func.max(ChatMessage.created_at)) \
+            .filter(ChatMessage.conversation_id.is_(None)).scalar()
+        chat = Conversation(title="Earlier chat", last_message_at=last)
+        db.add(chat)
+        db.flush()
+        db.query(ChatMessage).filter(ChatMessage.conversation_id.is_(None)) \
+            .update({ChatMessage.conversation_id: chat.id}, synchronize_session=False)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - never block start-up over old chat
+        db.rollback()
+        from app.core import logger
+
+        logger.warn("database", "Could not file earlier chat messages", {"error": str(exc)})
+    finally:
+        db.close()
 
 
 def _add_missing_columns() -> None:

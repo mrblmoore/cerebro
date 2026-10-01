@@ -197,6 +197,74 @@ def _summarise(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
             "detail": summary}
 
 
+# ------------------------------------------------------------------ agent
+#: How a scheduled run is put to the agent. The schedule itself is already
+#: handled, so the model must do the work rather than schedule it again.
+AGENT_TASK_PROMPT = ("This is a run of a task assigned to this chat ({schedule}). Do it now "
+                     "and report what you found or did. The schedule is already handled — "
+                     "do not create another task.\n\nTask: {work}")
+
+
+def _agent(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run the Ask agent on the task's instruction, inside the chat it belongs to.
+
+    It can use every tool Ask can — search, Dynamics, RightAnswers,
+    SharePoint, the inbox — and its answer is posted into that chat as an
+    assistant message. Anything that would change an outside system is only
+    proposed as an approval card in the chat, exactly as in Ask; the task is
+    then left "needs review" (a one-off) until the user decides.
+    """
+    from app.services import conversations
+    from app.services.agent import loop
+    from app.services.chat_service import ChatService
+    from app.services.llm_service import LLMService
+
+    if not LLMService().enabled:
+        return {"ok": False, "status": "failed",
+                "detail": "Connect an AI provider to run chat tasks."}
+
+    chat = None
+    if task.conversation_id:
+        try:
+            chat = ChatService(db, task.conversation_id)
+        except LookupError:
+            chat = None
+    if chat is None:
+        # The chat was deleted, or the task predates chats: give it its own.
+        chat = ChatService(db, conversations.create(db, title=task.title).id)
+        task.conversation_id = chat.conversation_id
+        db.commit()
+
+    work = spec.get("prompt") or task.instruction or task.title
+    schedule = "one-off" if task.schedule == "once" else f"runs {task.schedule}"
+    context = {"conversation_id": chat.conversation_id, "task_run": task.id}
+    if task.case_id:
+        context["crm_case"] = task.case_id
+    history = loop._history(db, chat.conversation_id)
+    result = loop.run(db, AGENT_TASK_PROMPT.format(schedule=schedule, work=work), context,
+                      history=history, instructions=chat.conversation.instructions)
+
+    meta = {key: result[key] for key in ("cards", "sources", "action", "tools_used")
+            if result.get(key) not in (None, [], {})}
+    meta["task"] = {"id": task.id, "title": task.title, "run": (task.run_count or 0) + 1}
+    chat._store("assistant", result["reply"], kind="task_result", meta=meta,
+                task_id=task.id, case_id=task.case_id)
+
+    waiting = result.get("kind") == "draft"
+    if waiting:
+        from app.services.nudge_service import NudgeService
+
+        NudgeService(db).raise_nudge(
+            title=f"{task.title}: waiting for your approval",
+            body=f"Open the chat “{chat.conversation.title or 'New chat'}” to review it.",
+            kind="task_result", task_id=task.id, case_id=task.case_id)
+    detail = result["reply"]
+    return {"ok": True, "status": "needs_review" if waiting and task.schedule == "once" else None,
+            "summary": "Waiting for approval" if waiting else "Posted to chat",
+            "detail": detail}
+
+
 # ---------------------------------------------------------------- helpers
 def _resolve_document(db: Session, target: str) -> "Path | None":
     """Find a document by path, tracked name, or the most recent match."""
@@ -231,4 +299,5 @@ HANDLERS = {
     "document_update": _document_update,
     "draft_reply": _draft_reply,
     "summarise": _summarise,
+    "agent": _agent,
 }

@@ -1,33 +1,31 @@
 """
 Chat service — the conversational layer tasks and nudges do not provide.
 
-Four things happen here that nowhere else in Cerebro does:
+With an AI provider connected, every message (other than a typed "approve"
+or "discard" for a pending draft) goes to the agent in
+:mod:`app.services.agent`. The model answers the question itself and decides
+when to search the knowledge base, open sources, local records, SharePoint or
+the inbox, read a document, draft a reply or create a task — so a general
+question gets an answer instead of a template, and an incomplete instruction
+gets a natural follow-up question.
 
-1. **General questions get answered**, not turned into a task. "What's the fix
-   for 0x80040115?" should get an answer, using the AI provider plus whatever
-   the knowledge base and memory already know — not "I'll 0x80040115 — once,
-   shortly."
+Without an AI provider the older deterministic path still applies:
+
+1. **Questions get an honest reply** listing only sources that are actually
+   relevant to what was asked.
 2. **An incomplete instruction gets a clarifying question**, not a task that
-   silently cannot run. "Keep the project log updated daily under my name"
-   with no document in view is asked "which document?" instead of creating a
-   task that fails at 9am with "no document set."
-3. **The next message answers that question** rather than starting over: the
-   most recent clarification is remembered, so "the one on the shared drive"
-   completes the original instruction instead of becoming its own reminder.
-4. **Answers also draw on what Cerebro has *seen but not indexed*** — a
-   document someone just opened, or a webpage the browser extension captured
-   — not only the deliberately-indexed knowledge base. Indexing stays an
-   explicit, permanent, opt-in action (``POST /documents/{id}/index``); this
-   is a lighter, ephemeral read of whatever is already sitting in
-   ``tracked_documents``/``events`` so a fresh document is useful immediately.
+   silently cannot run ("keep the project log updated" → "which document?").
+3. **The next message answers that question** rather than starting over.
 
 Every turn — both sides — is stored in :class:`~app.models.chat.ChatMessage` so
-the widget can show a real thread instead of one reply at a time.
+the widget can show a real thread instead of one reply at a time. Each turn
+belongs to one chat (:class:`~app.models.conversation.Conversation`): history,
+"what did I just say" and clarifications are all scoped to it, and the chat's
+standing instructions go to the agent with every message.
 """
 
 import json
 import re
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -136,8 +134,16 @@ def _clarifying_question(missing: str) -> str:
 
 
 class ChatService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, conversation_id: int = None):
+        from app.services import conversations
+
         self.db = db
+        #: Raises LookupError for a chat id that does not exist.
+        self.conversation = conversations.resolve(db, conversation_id)
+        self.conversation_id = self.conversation.id
+
+    def _in_chat(self, query):
+        return query.filter(ChatMessage.conversation_id == self.conversation_id)
 
     # -------------------------------------------------------------- history
     def history(self, limit: int = 50) -> list:
@@ -145,13 +151,20 @@ class ChatService:
         # ``CURRENT_TIMESTAMP``, which only has one-second resolution, and a
         # fast exchange of several messages can land in the same second. ``id``
         # breaks the tie in true insertion order.
-        rows = (self.db.query(ChatMessage)
+        rows = (self._in_chat(self.db.query(ChatMessage))
                 .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
                 .limit(limit).all())
-        return [row.to_dict() for row in reversed(rows)]
+        messages = [row.to_dict() for row in reversed(rows)]
+        from app.services.agent import actions
+
+        for message in messages:
+            meta = message.get("meta")
+            if isinstance(meta, dict) and meta.get("cards"):
+                meta["cards"] = actions.refresh_cards(self.db, meta["cards"])
+        return messages
 
     def _last_assistant_message(self) -> Optional[ChatMessage]:
-        return (self.db.query(ChatMessage)
+        return (self._in_chat(self.db.query(ChatMessage))
                 .filter(ChatMessage.role == "assistant")
                 .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
                 .first())
@@ -163,15 +176,20 @@ class ChatService:
             role=role, content=content, kind=kind,
             meta=json.dumps(meta) if meta else None,
             task_id=task_id, case_id=case_id, image_path=image_path,
+            conversation_id=self.conversation_id,
         )
         self.db.add(message)
         self.db.commit()
         self.db.refresh(message)
+        from app.services import conversations
+
+        conversations.touch(self.db, self.conversation,
+                            first_user_text=content if role == "user" else None)
         return message
 
     # --------------------------------------------------------------- intent
     def handle_message(self, text: str, context: Dict[str, Any] = None,
-                       image: str = None) -> Dict[str, Any]:
+                       image: str = None, emit=None) -> Dict[str, Any]:
         """
         The front door: one message in, one reply out — everything else
         (was this a question, an instruction, or the answer to a clarifying
@@ -182,7 +200,9 @@ class ChatService:
         never mistaken for a reminder.
         """
         text = (text or "").strip()
-        context = context or {}
+        context = dict(context or {})
+        # Tools that create tasks file them under this chat.
+        context["conversation_id"] = self.conversation_id
 
         if image:
             return self._answer_with_image(text, image, context)
@@ -191,22 +211,28 @@ class ChatService:
             return {"reply": "Say something and I'll take it from there.",
                     "kind": "answer"}
 
-        # Immediate Ask tools sit between conversation and scheduled tasks.
-        # Reads execute now; external writes only create a previewable draft.
         from app.services.ask_tools import AskToolService
+        from app.services.llm_service import LLMService
 
-        tool_result = AskToolService(self.db).try_execute(text, context)
+        tools = AskToolService(self.db)
+
+        # "Approve" / "discard" act on the pending draft card. That is a
+        # button press typed out, so it is handled exactly, never interpreted.
+        decision = tools.try_decision(text)
+        if decision is not None:
+            return self._store_tool_result(text, decision, context)
+
+        # With an AI provider, every other message goes to the agent, which
+        # decides for itself whether to answer, look something up, draft a
+        # reply or create a task. Keyword routing below is only the no-AI
+        # fallback: it used to catch ordinary questions ("how do I send a
+        # Teams message?") and answer them with fixed templates.
+        if LLMService().enabled:
+            return self.answer_with_agent(text, context, emit=emit)
+
+        tool_result = tools.try_execute(text, context)
         if tool_result is not None:
-            self._store("user", text, kind="instruction")
-            meta = {
-                key: tool_result[key] for key in
-                ("tool", "cards", "sources", "images", "action", "notify")
-                if tool_result.get(key) not in (None, [], {})
-            }
-            self._store("assistant", tool_result.get("reply") or "Done.",
-                        kind=tool_result.get("kind") or "tool_result", meta=meta,
-                        case_id=context.get("crm_case"))
-            return tool_result
+            return self._store_tool_result(text, tool_result, context)
 
         pending = self._pending_clarification()
         if pending:
@@ -227,6 +253,40 @@ class ChatService:
             return self._create_or_clarify(text, text, context, allow_clarify=True)
 
         return self._answer_question(text, context)
+
+    def _store_tool_result(self, text: str, tool_result: Dict[str, Any],
+                           context: Dict[str, Any]) -> Dict[str, Any]:
+        self._store("user", text, kind="instruction")
+        meta = {
+            key: tool_result[key] for key in
+            ("tool", "cards", "sources", "images", "action", "notify")
+            if tool_result.get(key) not in (None, [], {})
+        }
+        self._store("assistant", tool_result.get("reply") or "Done.",
+                    kind=tool_result.get("kind") or "tool_result", meta=meta,
+                    case_id=context.get("crm_case"))
+        return tool_result
+
+    def answer_with_agent(self, text: str, context: Dict[str, Any],
+                          emit=None) -> Dict[str, Any]:
+        """Answer through the tool-using agent (AI provider required)."""
+        from app.services.agent import loop
+
+        history = loop._history(self.db, self.conversation_id)
+        self._store("user", text, kind="question")
+        result = loop.run(self.db, text, context, emit=emit, history=history,
+                          instructions=self.conversation.instructions)
+        images = self._document_images_for_answer(text, context)
+        if images:
+            result["images"] = images
+        meta = {key: result[key] for key in
+                ("tool", "cards", "sources", "images", "action", "tools_used")
+                if result.get(key) not in (None, [], {})}
+        stored = self._store("assistant", result["reply"], kind=result.get("kind") or "answer",
+                             meta=meta, task_id=(result.get("task") or {}).get("id"),
+                             case_id=context.get("crm_case"))
+        result["id"] = stored.id
+        return result
 
     def _pending_clarification(self):
         last = self._last_assistant_message()
@@ -256,64 +316,16 @@ class ChatService:
             return {"reply": question, "kind": "clarification"}
 
         task = TaskService(self.db).create_from_instruction(
-            instruction, context=context, source="chat", extra_spec=extra_spec)
+            instruction, context=context, source="chat", extra_spec=extra_spec,
+            conversation_id=self.conversation_id)
         confirmation = describe_confirmation(task)
         self._store("assistant", confirmation, kind="confirmation", task_id=task.id,
                    case_id=context.get("crm_case"))
         return {"reply": confirmation, "kind": "confirmation", "task": task.to_dict()}
 
-    def _ambient_snippets(self, limit: int = 5) -> List[Dict[str, str]]:
-        """
-        What Cerebro has *seen* recently but never indexed.
-
-        Two sources, both already collected elsewhere for other reasons:
-        ``TrackedDocument`` (the desktop watcher / browser extension noticing
-        a document is open) and ``Event`` rows of type ``PAGE_CAPTURED`` (the
-        browser extension's opt-in readable-page-text capture). Neither
-        requires the deliberate "index this" step — that stays reserved for
-        material someone wants permanently searchable.
-        """
-        from app.models.event import Event
-        from app.models.tracked_document import TrackedDocument
-
-        snippets: List[Dict[str, str]] = []
-
-        try:
-            recent_docs = (self.db.query(TrackedDocument)
-                          .filter(TrackedDocument.text_preview.isnot(None))
-                          .order_by(TrackedDocument.last_seen.desc())
-                          .limit(limit).all())
-            for doc in recent_docs:
-                snippets.append({
-                    "label": f"open document — {doc.name}",
-                    "excerpt": (doc.text_preview or "")[:500],
-                })
-        except Exception as exc:  # noqa: BLE001
-            logger.warn("chat", "Tracked-document lookup failed", {"error": str(exc)})
-
-        try:
-            cutoff = datetime.utcnow() - timedelta(minutes=30)
-            recent_pages = (self.db.query(Event)
-                           .filter(Event.event_type == "PAGE_CAPTURED",
-                                   Event.ocr_text.isnot(None),
-                                   Event.created_at >= cutoff)
-                           .order_by(Event.created_at.desc())
-                           .limit(limit).all())
-            for event in recent_pages:
-                data = event.data or {}
-                title = data.get("title") or data.get("url") or "a captured page"
-                snippets.append({
-                    "label": f"webpage — {title}",
-                    "excerpt": (event.ocr_text or "")[:500],
-                })
-        except Exception as exc:  # noqa: BLE001
-            logger.warn("chat", "Page-capture lookup failed", {"error": str(exc)})
-
-        return snippets[: limit * 2]
-
     def _recent_answer_image_names(self, limit: int = 12) -> set:
         """Images already shown recently, so a follow-up does not repeat them."""
-        rows = (self.db.query(ChatMessage)
+        rows = (self._in_chat(self.db.query(ChatMessage))
                 .filter(ChatMessage.role == "assistant",
                         ChatMessage.meta.isnot(None))
                 .order_by(ChatMessage.id.desc()).limit(limit).all())
@@ -421,95 +433,66 @@ class ChatService:
         return {"reply": answer, "kind": "answer"}
 
     def _answer_question(self, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        from app.services.llm_service import LLMService
+        """Answer without an AI provider: say so, and list what is relevant.
+
+        Only sources that clear the relevance floor are listed. Previously the
+        most recent document was listed for every question, so this reply was
+        the same whatever was asked.
+        """
+        from app.core.config import settings
         from app.services.rag_service import RAGService
         from app.services.source_service import SourceService
 
         self._store("user", text, kind="question")
+        floor = float(settings.ASK_MIN_SOURCE_SCORE or 0.0)
 
-        rag = RAGService(self.db)
         try:
-            hits = rag.search(text, limit=3)
+            hits = RAGService(self.db).search(text, limit=3, min_score=floor)
         except Exception as exc:  # noqa: BLE001 - a search failure must not block a reply
             logger.warn("chat", "Knowledge search failed", {"error": str(exc)})
             hits = []
-
-        sources = SourceService(self.db).context_for_query(text, limit=6)
+        sources = SourceService(self.db).context_for_query(text, limit=4, min_score=floor)
         images = self._document_images_for_answer(text, context)
-        indexed_sources = [{
+        citations = [{
             "ref": hit.get("citation") or f"K{index}",
             "title": hit.get("title"), "kind": "knowledge",
             "uri": hit.get("url"), "locator": hit.get("locator"),
             "excerpt": hit.get("excerpt", ""),
-        } for index, hit in enumerate(hits, start=1)]
-        citations = indexed_sources + sources
+        } for index, hit in enumerate(hits, start=1)] + sources
 
-        llm = LLMService()
-        if not llm.enabled:
-            reply = ("AI generation is off, so I can't answer that directly — "
-                     "open Settings → AI Provider to connect one. ")
-            related = [f"- [{item['ref']}] {item['title']} · {item.get('locator') or 'source'}"
-                       for item in citations]
-            if related:
-                reply += "These looked related:\n" + "\n".join(related)
-            else:
-                reply += "I didn't find anything indexed or recently seen about it either."
-            cards = [{
-                "type": "progress", "status": "complete",
-                "title": "Searched connected sources",
-                "detail": f"{len(citations)} relevant source(s)",
-            }]
-            meta = {"images": images, "sources": citations, "cards": cards,
-                    "tool": "search_sources"}
-            self._store("assistant", reply, kind="answer", meta=meta)
-            return {"reply": reply, "kind": "answer", "images": images,
-                    "sources": citations, "cards": cards, "tool": "search_sources"}
-
-        doc_block = "\n".join(
-            f"- [{hit.get('citation') or f'K{index}'}] {hit['title']} "
-            f"({hit.get('locator') or 'section'}): "
-            f"{hit.get('excerpt', hit.get('content', ''))[:1000]}"
-            for index, hit in enumerate(hits, start=1)) or "(none found)"
-        source_block = "\n".join(
-            f"- [{item['ref']}] {item['title']} ({item.get('locator') or 'source'}): "
-            f"{item['excerpt']}" for item in sources) or "(none)"
-        conversation = self._conversation_context(exclude_latest=True)
-        prompt = f"""Continue the conversation and answer the latest user message.
-Use the supplied sources when relevant. When a factual claim comes from a
-source, cite its bracketed ID exactly, such as [K1] or [S2]. Never invent a
-citation. If the sources do not support an answer, say that plainly or answer
-from general knowledge without a citation. Be concise and direct.
-
-Conversation so far:
-{conversation or '(new conversation)'}
-
-Latest message: {text}
-
-Open case: {context.get('crm_case') or 'none'}
-Customer: {context.get('customer') or 'none'}
-Indexed knowledge sections:
-{doc_block}
-
-Current and recently approved sources:
-{source_block}"""
-
-        prompt = llm.with_memory(prompt, query=text, db=self.db,
-                                 case_id=context.get("crm_case"))
-        answer = llm._call_llm(prompt)
+        reply = ("AI generation is off, so I can't answer that directly — "
+                 "open Settings → AI Provider to connect one.")
+        if citations:
+            reply += "\n\nThese look relevant to “" + text[:80] + "”:\n" + "\n".join(
+                f"- [{item['ref']}] {item['title']} · {item.get('locator') or 'source'}"
+                for item in citations)
+        else:
+            reply += " Nothing indexed or recently seen is about that either."
         cards = [{
             "type": "progress", "status": "complete",
             "title": "Searched connected sources",
             "detail": f"{len(citations)} relevant source(s)",
-        }, {
-            "type": "completion", "status": "complete",
-            "title": "Answer ready",
-            "detail": "Based on connected context" if citations else "No matching source required",
         }]
         meta = {"images": images, "sources": citations, "cards": cards,
                 "tool": "search_sources"}
-        self._store("assistant", answer, kind="answer", meta=meta)
-        return {"reply": answer, "kind": "answer", "images": images,
+        self._store("assistant", reply, kind="answer", meta=meta)
+        return {"reply": reply, "kind": "answer", "images": images,
                 "sources": citations, "cards": cards, "tool": "search_sources"}
+
+    def handle_change(self, action_id: int, decision: str) -> Dict[str, Any]:
+        """Approve or discard a proposed change to an external system."""
+        from app.services.agent import actions
+
+        handler = {"approve": actions.approve, "discard": actions.discard,
+                   "undo": actions.undo}[decision]
+        result = handler(self.db, action_id)
+        self._store("user", {"approve": "Approve change", "discard": "Discard change",
+                             "undo": "Undo change"}[decision], kind="instruction")
+        meta = {key: result[key] for key in ("cards", "notify", "agent_action")
+                if result.get(key) not in (None, [], {})}
+        self._store("assistant", result.get("reply") or "Done.",
+                    kind=result.get("kind") or "completion", meta=meta)
+        return result
 
     def handle_action(self, action_id: int, decision: str) -> Dict[str, Any]:
         """Approve or discard a preview shown in Ask and record the outcome."""
@@ -527,15 +510,3 @@ Current and recently approved sources:
         self._store("assistant", result.get("reply") or "Done.",
                     kind=result.get("kind") or "completion", meta=meta)
         return result
-
-    def _conversation_context(self, limit: int = 12,
-                              exclude_latest: bool = False) -> str:
-        """Compact real chat history for follow-ups, not merely UI history."""
-        rows = (self.db.query(ChatMessage)
-                .order_by(ChatMessage.id.desc()).limit(limit + 1).all())
-        rows = list(reversed(rows))
-        if exclude_latest and rows:
-            rows = rows[:-1]
-        return "\n".join(
-            f"{row.role.title()}: {(row.content or '')[:1200]}" for row in rows
-            if row.content)

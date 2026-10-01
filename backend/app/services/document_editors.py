@@ -322,7 +322,7 @@ EDITORS = {"docx": _edit_docx, "xlsx": _edit_xlsx}
 
 
 def apply(path: Path, operations: List[Dict[str, Any]],
-          dry_run: bool = False) -> Dict[str, Any]:
+          dry_run: bool = False, keep_backup: bool = True) -> Dict[str, Any]:
     """
     Apply operations to a document.
 
@@ -330,6 +330,9 @@ def apply(path: Path, operations: List[Dict[str, Any]],
     real content — an out-of-range paragraph or a misspelled sheet name fails
     here — but nothing is written. That makes "show me what you would change"
     genuinely trustworthy rather than a guess.
+
+    ``keep_backup=False`` skips the timestamped copy — for working copies of
+    files whose real home (SharePoint) keeps its own version history.
     """
     path = Path(path)
     _require_writable(path)
@@ -344,7 +347,7 @@ def apply(path: Path, operations: List[Dict[str, Any]],
         raise DocumentError("No operations given — nothing to do.")
 
     saved_backup = None
-    if not dry_run:
+    if not dry_run and keep_backup:
         saved_backup = backup(path)
 
     try:
