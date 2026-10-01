@@ -1,9 +1,11 @@
 """
 API for chat — the real conversation with Cerebro.
 
-``POST /api/chat/message`` is the front door: general questions get an answer,
-instructions become tasks (asking for missing detail first, if any), and a
-reply to a clarifying question completes the instruction it belongs to.
+``POST /api/chat/message`` is the front door. With an AI provider, the model
+answers and decides for itself when to search, read, draft or create a task;
+without one, questions get an honest reply listing relevant sources and
+instructions become tasks. ``POST /api/chat/stream`` is the same, streamed as
+Server-Sent Events with progress as it happens.
 ``GET /api/chat/history`` returns the thread so a client can render it.
 
 ``POST /api/chat/upload-image`` and ``GET /api/chat/image/{name}`` are the two
@@ -41,6 +43,60 @@ def send_message(request: MessageIn, db: Session = Depends(get_db)) -> Dict[str,
         raise HTTPException(status_code=400, detail="Say something first.")
     return ChatService(db).handle_message(request.message, context=_context(db),
                                           image=request.image)
+
+
+@router.post("/stream", dependencies=[Depends(require_local_origin)])
+def stream_message(request: MessageIn):
+    """
+    The same as ``/message``, delivered as Server-Sent Events.
+
+    ``event: card`` arrives as each step happens ("Searching knowledge
+    base…", then its result), so the UI can show the work while the answer is
+    still being put together. ``event: message`` carries the final reply —
+    exactly what ``/message`` returns — and ends the stream. ``event: error``
+    replaces it if something unexpected fails.
+    """
+    import json
+    import queue
+    import threading
+
+    from fastapi.responses import StreamingResponse
+
+    from app.core.database import SessionLocal
+
+    if not request.message.strip() and not request.image:
+        raise HTTPException(status_code=400, detail="Say something first.")
+
+    events: "queue.Queue" = queue.Queue()
+
+    def work():
+        db = SessionLocal()
+        try:
+            result = ChatService(db).handle_message(
+                request.message, context=_context(db), image=request.image,
+                emit=lambda card: events.put(("card", card)))
+            events.put(("message", result))
+        except Exception as exc:  # noqa: BLE001 - reported to the client
+            events.put(("error", {"detail": str(exc)}))
+        finally:
+            db.close()
+
+    threading.Thread(target=work, daemon=True, name="cerebro-ask").start()
+
+    def sse():
+        while True:
+            try:
+                kind, payload = events.get(timeout=15)
+            except queue.Empty:
+                yield ": still working\n\n"
+                continue
+            yield f"event: {kind}\ndata: {json.dumps(payload, default=str)}\n\n"
+            if kind in ("message", "error"):
+                return
+
+    return StreamingResponse(sse(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 
 @router.get("/history", dependencies=[Depends(require_local_origin)])

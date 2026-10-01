@@ -2193,16 +2193,17 @@ def test_chat_service():
     import app.services.llm_service as llm_module
 
     original_enabled = llm_module.LLMService.enabled
-    original_call = llm_module.LLMService._call_llm
+    original_chat = llm_module.LLMService.chat
     llm_module.LLMService.enabled = property(lambda self: True)
-    llm_module.LLMService._call_llm = lambda self, prompt: "Restart the print spooler."
+    llm_module.LLMService.chat = lambda self, messages, **kwargs: {
+        "content": "Restart the print spooler.", "tool_calls": [], "mode": "native"}
     try:
         result = chat.handle_message("Why is the printer stuck?")
         check("An answer is generated when AI is on", result["reply"] == "Restart the print spooler.")
         check("It is still filed as an answer, not a task", result["kind"] == "answer")
     finally:
         llm_module.LLMService.enabled = original_enabled
-        llm_module.LLMService._call_llm = original_call
+        llm_module.LLMService.chat = original_chat
 
     db.close()
 
@@ -2432,6 +2433,236 @@ def test_llm_chat_protocol():
         llm_service._NO_NATIVE_TOOLS.clear()
 
 
+ONBOARDING_DOC = (
+    "Quarterly onboarding guide for new support engineers. This document explains how the "
+    "team handles escalations, the on-call rotation, and how to request access to the CRM, "
+    "the knowledge base and the VPN. New engineers should shadow two calls per day during "
+    "their first week and review the escalation matrix with their lead. Access requests go "
+    "through the service portal; approvals typically take two business days. Complete the "
+    "security training before your first customer call. The rotation schedule is published "
+    "in the team calendar every Monday. Questions about payroll or benefits go to HR."
+)
+
+
+class ScriptedLLM:
+    """Stands in for LLMService.chat: replays scripted turns, records requests."""
+
+    def __init__(self, turns):
+        self.turns = list(turns)
+        self.requests = []
+
+    def __call__(self, llm_self, messages, tools=None, system=None, **kwargs):
+        self.requests.append({"messages": [dict(m) for m in messages],
+                              "tools": [t["name"] for t in (tools or [])],
+                              "system": system})
+        turn = self.turns.pop(0) if self.turns else "Done."
+        if isinstance(turn, dict):
+            return {"content": "", "tool_calls": [{"id": f"call_{len(self.requests)}",
+                                                   **turn}], "mode": "native"}
+        return {"content": turn, "tool_calls": [], "mode": "native"}
+
+
+def _with_ai(script):
+    from unittest import mock
+
+    import app.services.llm_service as llm_module
+
+    return (mock.patch.object(llm_module.LLMService, "enabled",
+                              new=property(lambda self: True)),
+            mock.patch.object(llm_module.LLMService, "chat",
+                              new=lambda self, messages, **kwargs: script(self, messages, **kwargs)))
+
+
+def test_ask_relevance():
+    """An open document is not evidence for an unrelated question."""
+    print("\nAsk — source relevance")
+    from app.services.rag_service import RAGService
+    from app.services.source_service import SourceService
+    from app.services.chat_service import ChatService
+    from app.services import text_chunks
+
+    db = session()
+    SourceService(db).observe("document", "C:/docs/onboarding.docx", "Onboarding guide.docx",
+                              local_path="C:/docs/onboarding.docx", content=ONBOARDING_DOC)
+    RAGService(db).index_document({
+        "title": "Outlook 0x80040115", "source": "RightAnswers", "content": (
+            "Outlook error 0x80040115 means Outlook cannot reach Exchange. Repair the "
+            "Outlook profile in Control Panel > Mail, then disable cached mode.")})
+
+    sources = SourceService(db)
+    floor = 0.12
+    check("An unrelated question gets no excerpts from the open document",
+          sources.context_for_query("What's the capital of France?", min_score=floor) == [])
+    check("A question about the open document still finds it",
+          bool(sources.context_for_query("how do I request VPN access?", min_score=floor)))
+    check("Without a floor the old behaviour is unchanged",
+          isinstance(sources.context_for_query("capital of France"), list))
+
+    hits = RAGService(db).search("How do I fix Outlook error 0x80040115?", min_score=floor)
+    check("A relevant knowledge article clears the floor",
+          any(hit["title"] == "Outlook 0x80040115" for hit in hits))
+    unrelated = RAGService(db).search("What's the capital of France?", min_score=floor)
+    check("An unrelated question gets no knowledge citations", unrelated == [],
+          [hit["title"] for hit in unrelated])
+
+    scored = [(0.5, "a"), (0.3, "b"), (0.1, "c")]
+    check("Weak hits riding along with a strong one are dropped",
+          [item for _, item in text_chunks.relevant(scored, 0.12)] == ["a", "b"])
+
+    # No AI provider: the fallback reply depends on the question.
+    chat = ChatService(db)
+    first = chat.handle_message("What's the capital of France?")
+    second = chat.handle_message("How do I fix Outlook error 0x80040115?")
+    check("The no-AI reply does not list the open document for an unrelated question",
+          "Onboarding" not in first["reply"] and not first.get("sources"))
+    check("Different questions get different no-AI replies", first["reply"] != second["reply"])
+    db.close()
+
+
+def test_ask_agent_loop():
+    """The model can look things up, and its answer is about the new question."""
+    print("\nAsk — agent loop")
+    from app.services.chat_service import ChatService
+    from app.services.source_service import SourceService
+    from app.models.task import Task
+    from app.models.enterprise import EnterpriseAction
+
+    db = session()
+    SourceService(db).observe("document", "C:/docs/onboarding.docx", "Onboarding guide.docx",
+                              local_path="C:/docs/onboarding.docx", content=ONBOARDING_DOC)
+    chat = ChatService(db)
+
+    # 1. A tool call, then an answer that cites what the tool found.
+    script = ScriptedLLM([
+        {"name": "search_knowledge", "arguments": {"query": "outlook 0x80040115"}},
+        "Repair the Outlook profile, then turn off cached mode [K1].",
+    ])
+    events = []
+    enabled, patched = _with_ai(script)
+    with enabled, patched:
+        result = chat.handle_message("How do I fix Outlook error 0x80040115?", emit=events.append)
+    check("The model was offered tools", "search_knowledge" in script.requests[0]["tools"])
+    check("The tool result is fed back to the model",
+          any(m["role"] == "tool" and "0x80040115" in m["content"]
+              for m in script.requests[1]["messages"]))
+    check("Cited sources are returned", [s["ref"] for s in result["sources"]] == ["K1"])
+    check("Progress is reported while the tool runs",
+          any(e.get("status") == "running" for e in events)
+          and any(e.get("status") == "complete" for e in events))
+    check("The answer records which tools it used", result["tools_used"] == ["search_knowledge"])
+
+    # 2. The next, unrelated question: the previous answer is a separate
+    # assistant turn, the new question comes last, no stale document.
+    script = ScriptedLLM(["Paris."])
+    enabled, patched = _with_ai(script)
+    with enabled, patched:
+        result = chat.handle_message("What's the capital of France?")
+    messages = script.requests[0]["messages"]
+    check("History is sent as real turns",
+          any(m["role"] == "assistant" and "cached mode" in m["content"] for m in messages[:-1]))
+    check("The new question is the last thing the model reads",
+          messages[-1]["role"] == "user" and messages[-1]["content"].endswith("What's the capital of France?"))
+    check("An unrelated open document is not attached to the question",
+          "Onboarding" not in messages[-1]["content"])
+    check("An answer without sources cites nothing", result["sources"] == [] and result["reply"] == "Paris.")
+
+    # 3. A draft that just repeats the previous answer is sent back once.
+    script = ScriptedLLM(["Paris.", "Berlin is the capital of Germany."])
+    previous = "Paris is the capital of France and has been for a very long time, " \
+               "since the early medieval period; it is also its largest city."
+    script.turns = [previous, "Berlin is the capital of Germany."]
+    chat._store("assistant", previous, kind="answer")
+    enabled, patched = _with_ai(script)
+    with enabled, patched:
+        result = chat.handle_message("And Germany?")
+    check("A repeated answer is caught and re-asked", len(script.requests) == 2)
+    check("The final answer is about the new question", result["reply"].startswith("Berlin"))
+
+    # 4. Ordinary questions that used to trip keyword shortcuts reach the model.
+    drafts_before = db.query(EnterpriseAction).count()
+    tasks_before = db.query(Task).count()
+    for question in ("How do I send a message in Teams?",
+                     "Any update on the dialog backlog?",
+                     "How do I find files in SharePoint?"):
+        script = ScriptedLLM([f"Answer to: {question}"])
+        enabled, patched = _with_ai(script)
+        with enabled, patched:
+            result = chat.handle_message(question)
+        check(f"“{question}” is answered by the model", result["reply"] == f"Answer to: {question}")
+    check("No drafts were created by keyword matching",
+          db.query(EnterpriseAction).count() == drafts_before)
+    check("No tasks were created by keyword matching", db.query(Task).count() == tasks_before)
+
+    # 5. When the user does want a task, the model creates it through a tool.
+    script = ScriptedLLM([
+        {"name": "create_task", "arguments": {"instruction": "Remind me tomorrow at 9am to call Contoso"}},
+        "Done — I'll remind you tomorrow at 9am.",
+    ])
+    enabled, patched = _with_ai(script)
+    with enabled, patched:
+        result = chat.handle_message("remind me tomorrow at 9 to call Contoso")
+    check("A task is created through the create_task tool",
+          db.query(Task).count() == tasks_before + 1 and result.get("task"))
+
+    # 6. Typed approval still works exactly, without the model.
+    from app.services.ask_tools import AskToolService
+    action = AskToolService(db).enterprise.create_action(
+        "send_email", body="Hi", source="outlook", to=["a@example.com"], send=False)
+    script = ScriptedLLM([])
+    enabled, patched = _with_ai(script)
+    with enabled, patched:
+        result = chat.handle_message("approve")
+    check("Typed approval is handled without the model", not script.requests)
+    check("Typed approval queues the draft", db.query(EnterpriseAction).get(action.id).status != "draft")
+
+    # 7. A failing provider is explained, not raised.
+    def broken(self, messages, **kwargs):
+        raise RuntimeError("connection refused")
+    enabled, _ = _with_ai(script)
+    from unittest import mock
+    import app.services.llm_service as llm_module
+    with enabled, mock.patch.object(llm_module.LLMService, "chat", new=broken):
+        result = chat.handle_message("Why is VPN slow?")
+    check("Provider failures are explained in the reply", "connection refused" in result["reply"])
+
+    from app.services.agent import catalog
+    modes = {item["name"]: item["mode"] for item in catalog()}
+    check("Every external write is approval-gated or a draft",
+          modes["send_email"] == "approval" and modes["draft_reply"] == "draft")
+    db.close()
+
+
+def test_chat_stream():
+    """Ask progress and the final answer arrive as Server-Sent Events."""
+    print("\nAsk — streaming")
+    import json as _json
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    script = ScriptedLLM([
+        {"name": "search_sources", "arguments": {"query": "vpn access"}},
+        "Request it through the service portal [S1].",
+    ])
+    enabled, patched = _with_ai(script)
+    with enabled, patched, TestClient(app) as client:
+        response = client.post("/api/chat/stream", json={"message": "How do I get VPN access?"})
+        body = response.text
+    events = []
+    for block in body.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line
+                     and not line.startswith(":"))
+        if "event" in lines:
+            events.append((lines["event"], _json.loads(lines["data"])))
+    kinds = [kind for kind, _ in events]
+    check("The stream is served as Server-Sent Events",
+          response.headers["content-type"].startswith("text/event-stream"))
+    check("Progress cards arrive before the answer",
+          "card" in kinds and kinds.index("card") < kinds.index("message"))
+    check("The stream ends with the final message",
+          kinds[-1] == "message" and "service portal" in events[-1][1]["reply"])
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -2465,7 +2696,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

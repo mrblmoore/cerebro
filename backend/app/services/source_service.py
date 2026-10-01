@@ -85,7 +85,25 @@ class SourceService:
         self.db.commit()
         return True
 
-    def context_for_query(self, query: str, limit: int = 6) -> List[Dict[str, Any]]:
+    def in_view(self, minutes: int = None, limit: int = 5) -> List[Source]:
+        """Sources seen in the last few minutes — what the user is looking at."""
+        from app.core.config import settings
+
+        window = minutes or settings.ASK_ACTIVE_DOCUMENT_MINUTES
+        cutoff = datetime.utcnow() - timedelta(minutes=window)
+        return (self.db.query(Source)
+                .filter(Source.readable.is_(True), Source.excluded.is_(False),
+                        Source.last_seen >= cutoff)
+                .order_by(Source.last_seen.desc()).limit(limit).all())
+
+    def context_for_query(self, query: str, limit: int = 6,
+                          min_score: float = 0.0) -> List[Dict[str, Any]]:
+        """Excerpts from recent sources that bear on ``query``.
+
+        With ``min_score`` set, a source that is merely recent but unrelated
+        contributes nothing — a document opened an hour ago is not evidence
+        for a question about something else.
+        """
         cutoff = datetime.utcnow() - timedelta(hours=8)
         sources = (self.db.query(Source)
                    .filter(Source.readable.is_(True), Source.content.isnot(None))
@@ -99,7 +117,7 @@ class SourceService:
             for chunk in text_chunks.split(source.content or ""):
                 candidates.append({**chunk, "source_id": source.id})
 
-        ranked = text_chunks.rank(query, candidates, limit=limit)
+        ranked = text_chunks.rank(query, candidates, limit=limit, min_score=min_score)
         results = []
         for index, item in enumerate(ranked, start=1):
             source = by_id[item["source_id"]]

@@ -85,6 +85,8 @@ hiddenimports = [
     "app.services.style_service", "app.services.task_executors",
     "app.services.task_service", "app.services.watchers",
     "app.services.ask_tools", "app.core.activity_state",
+    "app.services.agent", "app.services.agent.registry",
+    "app.services.agent.tools", "app.services.agent.loop",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
 

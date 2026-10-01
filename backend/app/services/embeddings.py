@@ -28,6 +28,19 @@ _STOPWORDS = {
 
 LOCAL_DIM = 512
 
+# Question and filler words. They are stripped from *queries* only (stored
+# vectors are untouched, so no re-embedding is needed): left in, "what is …"
+# or "how do I …" matched every long document on those words alone, which is
+# how an unrelated open document kept being offered as a source.
+_QUERY_FILLER = {
+    "about", "all", "also", "am", "any", "been", "can", "could", "did", "do",
+    "does", "get", "had", "he", "her", "his", "how", "i", "if", "into", "just",
+    "know", "me", "my", "need", "no", "not", "our", "please", "she", "should",
+    "so", "some", "tell", "than", "their", "them", "then", "there", "these",
+    "they", "those", "us", "want", "we", "what", "where", "who", "why", "will",
+    "would",
+}
+
 
 def _tokenize(text: str) -> List[str]:
     tokens = [t for t in _TOKEN_RE.findall((text or "").lower()) if t not in _STOPWORDS]
@@ -38,6 +51,17 @@ def _tokenize(text: str) -> List[str]:
         if len(token) >= 6 and any(ch.isdigit() for ch in token):
             extra.extend(token[i:i + 3] for i in range(len(token) - 2))
     return tokens + extra
+
+
+def focus_query(text: str) -> str:
+    """The words of a question that carry retrieval signal.
+
+    Falls back to the original text when nothing is left, so a query made only
+    of filler ("what do you know?") still searches for something.
+    """
+    words = [w for w in _TOKEN_RE.findall((text or "").lower())
+             if w not in _STOPWORDS and w not in _QUERY_FILLER]
+    return " ".join(words) or (text or "")
 
 
 def _bucket(token: str) -> int:

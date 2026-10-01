@@ -36,22 +36,22 @@ old-document excerpts *after* the question and flattened the previous answer
 into the same message, and keyword shortcuts sent ordinary questions to fixed
 template replies.
 
-- [ ] **B1.1 Retrieval relevance.** Minimum score (`ASK_MIN_SOURCE_SCORE`) and
+- [x] **B1.1 Retrieval relevance.** Minimum score (`ASK_MIN_SOURCE_SCORE`) and
   a relative cutoff in `text_chunks.rank` / `RAGService` search; documents are
   "active" only for `ASK_ACTIVE_DOCUMENT_MINUTES` after last being seen.
-- [ ] **B1.2 Prompt structure.** Ask-specific system prompt; history as real
+- [x] **B1.2 Prompt structure.** Ask-specific system prompt; history as real
   turns; sources in their own context block before the question, only when
   relevant.
-- [ ] **B1.3 Agent tool loop.** `app/services/agent/` — a tool registry and a
+- [x] **B1.3 Agent tool loop.** `app/services/agent/` — a tool registry and a
   bounded loop (`ASK_MAX_STEPS`). The model decides when to search knowledge,
   sources, local files and the database, read a document, check the inbox,
   draft a reply or create a task.
-- [ ] **B1.4 No keyword hijacks.** Only approve/discard and image questions are
+- [x] **B1.4 No keyword hijacks.** Only approve/discard and image questions are
   routed deterministically; everything else reaches the model. The no-AI
   fallback cites only genuinely relevant sources.
-- [ ] **B1.5 Streaming.** `POST /api/chat/stream` (SSE) streams tool progress,
+- [x] **B1.5 Streaming.** `POST /api/chat/stream` (SSE) streams tool progress,
   approval cards and the answer.
-- [ ] **B1.6 Tests.** Off-topic questions ignore stale documents; different
+- [x] **B1.6 Tests.** Off-topic questions ignore stale documents; different
   questions get different prompts; the tool loop runs against a scripted
   provider; keyword false positives reach the model.
 
