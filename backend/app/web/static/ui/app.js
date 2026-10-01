@@ -20,6 +20,7 @@ const api = {
   },
   get: path => api.request('GET', path),
   post: (path, body) => api.request('POST', path, body || {}),
+  patch: (path, body) => api.request('PATCH', path, body || {}),
   del: path => api.request('DELETE', path),
 };
 
@@ -43,6 +44,21 @@ function relTime(iso) {
   return then.toLocaleDateString();
 }
 
+/** "in 20 min", "today 16:00", "tomorrow 08:45", "Mon 08:45" — for times ahead. */
+function untilTime(iso) {
+  if (!iso) return '';
+  const then = new Date(iso);            // task times are local, without a zone
+  const minutes = Math.round((then - Date.now()) / 60000);
+  if (minutes <= 1) return 'starting';
+  if (minutes < 60) return `in ${minutes} min`;
+  const time = then.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const today = new Date();
+  const days = Math.round((new Date(then.toDateString()) - new Date(today.toDateString())) / 86400000);
+  if (days === 0) return `today ${time}`;
+  if (days === 1) return `tomorrow ${time}`;
+  return `${then.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+}
+
 function openExternal(url) {
   if (!url) return;
   if (shell()?.open_external) shell().open_external(url);
@@ -58,12 +74,21 @@ const ICONS = {
   call: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"/></svg>',
   doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
   app: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.8V4h6v6.8l3 3.2v2H6v-2Z"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l10.5-6.5Z"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
 };
 
 // -------------------------------------------------------------------- state
 const state = {
   history: [],
-  busy: false,
+  chatId: null,         // the chat on screen
+  chat: null,           // its record: title, instructions, working…
+  chats: [],
+  chatTasks: [],
+  showArchived: false,
+  sending: new Set(),   // chats with an answer on its way from this window
   image: null,          // {name, preview}
   context: {},
   activity: { state: 'idle', detail: 'Idle', active: [] },
@@ -109,7 +134,7 @@ $('#menu-btn').addEventListener('click', event => {
   showMenu(event.currentTarget, [
     ['Open dashboard', () => openExternal(`${location.origin}/`)],
     ['Settings', () => openExternal(`${location.origin}/settings`)],
-    ['Clear conversation view', () => { state.history = []; renderThread(); }],
+    ['New chat', () => { selectTab('ask'); newChat(); }],
   ]);
 });
 
@@ -136,7 +161,7 @@ let currentPopover = null;
 function closePopover() { currentPopover?.remove(); currentPopover = null; }
 document.addEventListener('click', e => {
   if (currentPopover && !currentPopover.contains(e.target) &&
-      !e.target.closest('.cite, #menu-btn, .source-pill')) closePopover();
+      !e.target.closest('.cite, #menu-btn, #chat-menu-btn, [data-chat-menu], .source-pill')) closePopover();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closePopover(); });
 
@@ -231,12 +256,28 @@ function scrollToEnd(smooth = true) {
   requestAnimationFrame(() => scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }));
 }
 
+const busy = () => state.sending.has(state.chatId);
+
 async function loadHistory() {
+  const query = state.chatId ? `&conversation_id=${state.chatId}` : '';
+  let data;
   try {
-    const data = await api.get('/api/chat/history?limit=60');
-    state.history = data.messages || [];
-  } catch { state.history = []; }
+    data = await api.get(`/api/chat/history?limit=60${query}`);
+  } catch {
+    // The remembered chat is gone (deleted elsewhere): fall back to the latest.
+    if (state.chatId) { state.chatId = null; return loadHistory(); }
+    data = { messages: [] };
+  }
+  state.history = data.messages || [];
+  if (data.conversation) {
+    state.chat = data.conversation;
+    state.chatId = data.conversation.id;
+    try { localStorage.setItem('cerebro.chat', String(state.chatId)); } catch { /* ignore */ }
+  }
   renderThread();
+  paintChatBar();
+  loadChatTasks();
+  if (state.chat?.working || busy()) showStillWorking();
   scrollToEnd(false);
 }
 
@@ -257,8 +298,14 @@ function renderEmpty() {
         ${SUGGESTIONS.map(([title, text]) => `
           <button class="suggestion" data-text="${esc(text)}"><b>${esc(title)}</b><span>${esc(text)}</span></button>`).join('')}
       </div>
+      <div class="hero-actions">
+        <button class="btn ghost sm" data-hero="instructions">${state.chat?.instructions ? 'Edit' : 'Set'} this chat's instructions</button>
+        <button class="btn ghost sm" data-hero="task">Assign this chat a task</button>
+      </div>
     </div>`;
   setBrainState(thread, state.activity.state);
+  $('[data-hero="instructions"]', thread).addEventListener('click', editInstructions);
+  $('[data-hero="task"]', thread).addEventListener('click', assignTask);
   $$('.suggestion', thread).forEach(button => button.addEventListener('click', () => {
     input.value = button.dataset.text;
     send();
@@ -284,9 +331,12 @@ function messageNode(message) {
   (meta.sources || []).forEach(source => source.ref && state.sources.set(source.ref, source));
   const short = (message.content || '').length < 60 && !(meta.cards || []).some(c => c.type !== 'progress' && c.type !== 'completion');
   if (short) node.classList.add('short');
+  const fromTask = message.kind === 'task_result' && meta.task;
   node.innerHTML = `
     <div class="avatar">${mascot(34, 'thinking').replace('class="mascot"', 'class="mascot still"')}</div>
     <div class="bubble glass">
+      ${fromTask ? `<div class="task-tag">${ICONS.clock}<span>${esc(meta.task.title)}</span>
+        <span class="meta">${message.created_at ? relTime(message.created_at) : ''}</span></div>` : ''}
       ${message.steps ? stepsHTML(message.steps) : ''}
       <div class="md">${renderMarkdown(message.content || '')}</div>
       ${imagesHTML(meta.images)}
@@ -480,7 +530,7 @@ function signinCard(card) {
 async function decide(node, path) {
   $$('button', node).forEach(button => { button.disabled = true; });
   try {
-    const result = await api.post(path);
+    const result = await api.post(`${path}?conversation_id=${state.chatId || ''}`);
     toast(result.reply || 'Done', result.cards?.some(c => c.status === 'error') ? 'err' : 'ok');
   } catch (error) {
     toast(error.message, 'err');
@@ -492,7 +542,7 @@ async function decide(node, path) {
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
-  $('#send').disabled = state.busy || (!input.value.trim() && !state.image);
+  $('#send').disabled = busy() || (!input.value.trim() && !state.image);
 });
 input.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -523,7 +573,7 @@ async function attach(file) {
     $('#attachment').innerHTML = `<div class="attachment glass"><img src="${state.image.preview}" alt="">
       <button class="btn sm ghost" id="drop-image">Remove</button></div>`;
     $('#drop-image').addEventListener('click', clearImage);
-    $('#send').disabled = state.busy;
+    $('#send').disabled = busy();
     input.focus();
   } catch (error) {
     toast(`Couldn't attach that image: ${error.message}`, 'err');
@@ -533,14 +583,16 @@ async function attach(file) {
 function clearImage() {
   state.image = null;
   $('#attachment').innerHTML = '';
-  $('#send').disabled = state.busy || !input.value.trim();
+  $('#send').disabled = busy() || !input.value.trim();
 }
 
 async function send() {
   const text = input.value.trim();
-  if (state.busy || (!text && !state.image)) return;
+  if (busy() || (!text && !state.image)) return;
   const image = state.image?.name || null;
-  state.busy = true;
+  const chatId = state.chatId;
+  state.sending.add(chatId);
+  paintChatList();
   input.value = '';
   input.style.height = 'auto';
   $('#send').disabled = true;
@@ -563,7 +615,7 @@ async function send() {
   };
 
   try {
-    const final = await streamChat({ message: text, image }, card => {
+    const final = await streamChat({ message: text, image, conversation_id: chatId }, card => {
       if (card.type !== 'progress') return;
       const running = steps.findLast?.(s => s.title === card.title && s.status === 'running')
         ?? [...steps].reverse().find(s => s.title === card.title && s.status === 'running');
@@ -576,22 +628,407 @@ async function send() {
       const caption = $('.pending-caption', pending);
       if (caption) caption.textContent = card.status === 'running' ? `${card.title}…` : 'Thinking…';
     });
-    pending.remove();
-    const message = {
-      role: 'assistant', content: final.reply, kind: final.kind, steps: steps.filter(s => s.status !== 'running'),
-      meta: { sources: final.sources, cards: final.cards, images: final.images },
-    };
-    state.history.push({ role: 'user', content: text, image_path: image }, message);
-    thread.append(messageNode(message));
+    state.sending.delete(chatId);
+    if (pending.isConnected) {
+      pending.remove();
+      const message = {
+        role: 'assistant', content: final.reply, kind: final.kind, steps: steps.filter(s => s.status !== 'running'),
+        meta: { sources: final.sources, cards: final.cards, images: final.images },
+      };
+      state.history.push({ role: 'user', content: text, image_path: image }, message);
+      thread.append(messageNode(message));
+      if (final.conversation) { state.chat = { ...state.chat, ...final.conversation }; paintChatBar(); }
+      if (final.task) loadChatTasks();
+    } else if (state.chatId === chatId) {
+      await loadHistory();       // switched away and back while it worked
+    } else {
+      toast(`Answer ready in “${final.conversation?.title || 'another chat'}”`, 'ok');
+    }
   } catch (error) {
-    pending.remove();
-    thread.append(messageNode({ role: 'assistant', content: `I couldn't do that: ${error.message}` }));
+    state.sending.delete(chatId);
+    if (pending.isConnected) {
+      pending.remove();
+      thread.append(messageNode({ role: 'assistant', content: `I couldn't do that: ${error.message}` }));
+    }
   } finally {
-    state.busy = false;
-    $('#send').disabled = !input.value.trim();
+    $('#send').disabled = busy() || !input.value.trim();
+    loadChats();
     scrollToEnd();
   }
 }
+
+// ================================================================== chats
+// Separate conversations, like Copilot or Grok: each has its own thread and
+// memory, optional standing instructions, and tasks that post back into it.
+const chatsPanel = $('#chats');
+const wide = () => matchMedia('(min-width: 760px)').matches;
+
+function openChatList(open = true) {
+  chatsPanel.classList.toggle('open', open);
+  $('#chats-scrim').classList.toggle('open', open && !wide());
+  if (open) { loadChats(); if (!wide()) setTimeout(() => $('#chats-search').focus(), 60); }
+}
+
+async function loadChats() {
+  const params = new URLSearchParams();
+  if (state.showArchived) params.set('archived', 'true');
+  const q = $('#chats-search').value.trim();
+  if (q) params.set('q', q);
+  try {
+    state.chats = (await api.get(`/api/chat/conversations?${params}`)).conversations || [];
+  } catch { state.chats = []; }
+  paintChatList();
+}
+
+function paintChatList() {
+  const list = $('#chats-list');
+  if (!state.chats.length) {
+    list.innerHTML = `<div class="empty-note">${state.showArchived ? 'No archived chats.' : 'No chats yet.'}</div>`;
+    return;
+  }
+  const pinned = state.chats.filter(c => c.pinned);
+  const rest = state.chats.filter(c => !c.pinned);
+  const row = chat => `
+    <div class="chat-row${chat.id === state.chatId ? ' current' : ''}" data-chat="${chat.id}" tabindex="0" role="button">
+      <div class="line">
+        ${(chat.working || state.sending.has(chat.id)) ? '<span class="working-dot on"></span>' : ''}
+        <span class="name">${esc(chat.title)}</span>
+        <span class="when">${relTime(chat.last_message_at || chat.created_at).replace(' ago', '')}</span>
+      </div>
+      <div class="line">
+        <span class="preview">${esc(chat.preview || (chat.instructions ? `Instructions: ${chat.instructions}` : 'Empty'))}</span>
+        ${chat.has_tasks ? `<span class="flag" title="Has scheduled tasks">${ICONS.clock}</span>` : ''}
+      </div>
+      <button class="icon-btn row-menu" data-chat-menu="${chat.id}" title="Options" aria-label="Chat options">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
+    </div>`;
+  list.innerHTML = (pinned.length ? `<div class="chats-group">Pinned</div>${pinned.map(row).join('')}` : '')
+    + (rest.length ? `${pinned.length ? '<div class="chats-group">Recent</div>' : ''}${rest.map(row).join('')}` : '');
+}
+
+$('#chats-list').addEventListener('click', event => {
+  const menu = event.target.closest('[data-chat-menu]');
+  if (menu) {
+    event.stopPropagation();
+    const chat = state.chats.find(c => c.id === Number(menu.dataset.chatMenu));
+    return chatMenu(menu, chat);
+  }
+  const row = event.target.closest('[data-chat]');
+  if (row) openChat(Number(row.dataset.chat));
+});
+$('#chats-list').addEventListener('keydown', event => {
+  const row = event.target.closest('[data-chat]');
+  if (row && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openChat(Number(row.dataset.chat)); }
+});
+
+async function openChat(id) {
+  if (!wide()) openChatList(false);
+  if (id === state.chatId && state.history.length) return;
+  state.chatId = id;
+  clearImage();
+  await loadHistory();
+  paintChatList();
+  input.focus();
+}
+
+async function newChat() {
+  // An empty chat is reused rather than piling up blank ones.
+  if (state.chatId && !state.history.length && !state.chat?.archived && !busy()) {
+    if (!wide()) openChatList(false);
+    input.focus();
+    return;
+  }
+  try {
+    const chat = await api.post('/api/chat/conversations');
+    state.showArchived = false;
+    $('#chats-archived').setAttribute('aria-pressed', 'false');
+    $('#chats-archived').textContent = 'Show archived';
+    await openChat(chat.id);
+    loadChats();
+  } catch (error) { toast(error.message, 'err'); }
+}
+
+function paintChatBar() {
+  const chat = state.chat || {};
+  $('#chat-title-text').textContent = chat.title || 'New chat';
+  $('#chat-working').classList.toggle('on', Boolean(chat.working) || busy());
+  $('#chat-title').classList.toggle('archived', Boolean(chat.archived));
+  paintChatExtras();
+}
+
+function paintChatExtras() {
+  const chat = state.chat || {};
+  const host = $('#chat-extras');
+  const parts = [];
+  if (chat.archived) {
+    parts.push(`<div class="extra-chip warn">This chat was ended. <button class="link" data-extra="restore">Restore it</button> or <button class="link" data-extra="new">start a new chat</button>.</div>`);
+  }
+  if (chat.instructions) {
+    parts.push(`<button class="extra-chip" data-extra="instructions" title="Edit this chat's instructions">
+      <b>Instructions</b><span>${esc(chat.instructions)}</span></button>`);
+  }
+  state.chatTasks.forEach(task => {
+    const when = task.status === 'needs_review' ? 'needs your review'
+      : task.status === 'failed' ? 'last run failed'
+      : task.next_run ? `next ${untilTime(task.next_run)}`.replace('next starting', 'starting')
+      : task.schedule === 'manual' ? 'when you run it' : (task.run_count ? 'done' : '');
+    parts.push(`<div class="extra-chip task" data-task="${task.id}">${ICONS.clock}
+      <span class="grow"><b>${esc(task.title)}</b><span>${esc(SCHEDULE_LABEL[task.schedule] || task.schedule)}${task.at_time ? ` ${esc(task.at_time)}` : ''} · ${esc(when)}</span></span>
+      <button class="icon-btn" data-task-run="${task.id}" title="Run now">${ICONS.play}</button>
+      <button class="icon-btn" data-task-stop="${task.id}" title="Stop this task">${ICONS.stop}</button></div>`);
+  });
+  host.innerHTML = parts.join('');
+  host.hidden = !parts.length;
+}
+
+const SCHEDULE_LABEL = { once: 'Once', hourly: 'Hourly', daily: 'Daily', weekdays: 'Weekdays',
+  weekly: 'Weekly', manual: 'On demand' };
+
+$('#chat-extras').addEventListener('click', async event => {
+  const action = event.target.closest('[data-extra]')?.dataset.extra;
+  if (action === 'instructions') return editInstructions();
+  if (action === 'new') return newChat();
+  if (action === 'restore') return updateChat(state.chatId, { archived: false }, 'Chat restored');
+  const run = event.target.closest('[data-task-run]')?.dataset.taskRun;
+  if (run) {
+    try {
+      await api.post(`/api/chat/conversations/${state.chatId}/tasks/${run}/run`);
+      toast('Running — the result will appear here', 'ok');
+      state.chat = { ...state.chat, working: true };
+      paintChatBar();
+      showStillWorking();
+    } catch (error) { toast(error.message, 'err'); }
+    return;
+  }
+  const stop = event.target.closest('[data-task-stop]')?.dataset.taskStop;
+  if (stop) {
+    try {
+      await api.post(`/api/tasks/${stop}/cancel`);
+      toast('Task stopped', 'ok');
+      loadChatTasks();
+      loadChats();
+    } catch (error) { toast(error.message, 'err'); }
+  }
+});
+
+async function loadChatTasks() {
+  if (!state.chatId) return;
+  try {
+    state.chatTasks = (await api.get(`/api/chat/conversations/${state.chatId}/tasks`)).tasks || [];
+  } catch { state.chatTasks = []; }
+  paintChatExtras();
+}
+
+/** A task or an answer started elsewhere is still running in this chat. */
+let watchTimer = null;
+function showStillWorking() {
+  if (!$('.msg.still-working', thread)) {
+    if (!state.history.length) thread.innerHTML = '';
+    const node = document.createElement('div');
+    node.className = 'msg assistant short still-working';
+    node.innerHTML = `<div class="avatar"></div><div class="bubble glass"><div class="pending-mascot">
+      ${mascot(96, 'thinking')}<span class="pending-caption">Working on it…</span></div></div>`;
+    thread.append(node);
+    setPose(node, 'working');
+    scrollToEnd();
+  }
+  clearInterval(watchTimer);
+  const watching = state.chatId;
+  watchTimer = setInterval(async () => {
+    if (state.chatId !== watching) return clearInterval(watchTimer);
+    const chat = await api.get(`/api/chat/conversations/${watching}`).catch(() => null);
+    if (chat && !chat.working) {
+      clearInterval(watchTimer);
+      await loadHistory();
+      loadChats();
+    }
+  }, 2500);
+}
+
+async function updateChat(id, fields, done) {
+  try {
+    const chat = await api.patch(`/api/chat/conversations/${id}`, fields);
+    if (id === state.chatId) { state.chat = { ...state.chat, ...chat }; paintChatBar(); }
+    if (done) toast(done, 'ok');
+    loadChats();
+    return chat;
+  } catch (error) { toast(error.message, 'err'); return null; }
+}
+
+function chatMenu(anchor, chat = state.chat) {
+  if (!chat) return;
+  const id = chat.id;
+  const items = [
+    ['Rename…', () => renameChat(chat)],
+    [chat.instructions ? 'Edit instructions…' : 'Set instructions…', () => editInstructions(chat)],
+    ['Assign a task…', () => assignTask(chat)],
+    [chat.pinned ? 'Unpin' : 'Pin to top', () => updateChat(id, { pinned: !chat.pinned })],
+  ];
+  if (chat.archived) items.push(['Restore', () => updateChat(id, { archived: false }, 'Chat restored')]);
+  else items.push(['End conversation', () => endChat(chat)]);
+  items.push(['Delete…', () => deleteChat(chat)]);
+  showMenu(anchor, items);
+}
+
+async function renameChat(chat = state.chat) {
+  const values = await sheet({
+    title: 'Rename chat', ok: 'Rename',
+    body: `<label class="field"><span>Name</span><input name="title" maxlength="120" value="${esc(chat.title || '')}" required></label>`,
+  });
+  if (values) updateChat(chat.id, { title: values.title }, 'Renamed');
+}
+
+async function editInstructions(chat = state.chat) {
+  if (!chat || chat instanceof Event) chat = state.chat;
+  const values = await sheet({
+    title: 'Instructions for this chat', ok: 'Save',
+    body: `<p class="sheet-note">Cerebro follows these for every message in “${esc(chat.title || 'New chat')}” — e.g. “Answer in Spanish”, “This chat is about case CAS-01234 for Contoso”, “Keep replies to three bullet points”.</p>
+      <label class="field"><span>Instructions</span><textarea name="instructions" rows="5" placeholder="Leave empty for none">${esc(chat.instructions || '')}</textarea></label>`,
+  });
+  if (values) updateChat(chat.id, { instructions: values.instructions }, values.instructions.trim() ? 'Instructions saved' : 'Instructions cleared');
+}
+
+async function assignTask(chat = state.chat) {
+  if (!chat || chat instanceof Event) chat = state.chat;
+  const values = await sheet({
+    title: 'Assign a task to this chat', ok: 'Assign',
+    body: `<p class="sheet-note">Cerebro does this with the same tools as Ask — your knowledge base, Dynamics, RightAnswers, SharePoint and inbox — and posts the result in this chat. Anything it would change waits here for your approval.</p>
+      <label class="field"><span>What should it do?</span><textarea name="instruction" rows="3" required placeholder="List new Dynamics cases assigned to me and flag any that mention data loss"></textarea></label>
+      <div class="field-row">
+        <label class="field"><span>When</span><select name="when">
+          <option value="now">Now, once</option>
+          <option value="once">Once, later today</option>
+          <option value="daily">Every day</option>
+          <option value="weekdays">Every weekday</option>
+          <option value="weekly">Every week</option>
+          <option value="hourly">Every hour</option>
+          <option value="manual">Only when I run it</option>
+        </select></label>
+        <label class="field" data-time><span>At</span><input name="at_time" type="time" value="09:00"></label>
+      </div>
+      <label class="check-row"><input type="checkbox" name="run_now"> Also run it once right now</label>`,
+    setup: form => {
+      const when = $('[name="when"]', form);
+      const sync = () => {
+        $('[data-time]', form).hidden = ['now', 'hourly', 'manual'].includes(when.value);
+        $('.check-row', form).hidden = when.value === 'now';
+      };
+      when.addEventListener('change', sync);
+      sync();
+    },
+  });
+  if (!values) return;
+  const now = values.when === 'now';
+  try {
+    const result = await api.post(`/api/chat/conversations/${chat.id}/tasks`, {
+      instruction: values.instruction,
+      schedule: now ? 'once' : values.when,
+      at_time: ['now', 'hourly', 'manual'].includes(values.when) ? null : values.at_time || null,
+      run_now: now || values.run_now === 'on',
+    });
+    toast(result.confirmation || 'Task assigned', 'ok');
+    if (chat.id !== state.chatId) await openChat(chat.id);
+    loadChatTasks();
+    loadChats();
+    if (now || values.run_now === 'on') {
+      state.chat = { ...state.chat, working: true };
+      paintChatBar();
+      showStillWorking();
+    }
+  } catch (error) { toast(error.message, 'err'); }
+}
+
+async function endChat(chat = state.chat) {
+  const scheduled = chat.id === state.chatId ? state.chatTasks.some(t => t.status === 'active') : chat.has_tasks;
+  if (scheduled && !await sheet({
+    title: 'End this conversation?', ok: 'End conversation',
+    body: `<p class="sheet-note">“${esc(chat.title || 'New chat')}” moves to Archived, where you can still read or restore it. Its scheduled tasks will stop.</p>`,
+  })) return;
+  try {
+    const result = await api.post(`/api/chat/conversations/${chat.id}/end`);
+    toast(`Ended “${result.ended.title}” — it's under Archived`
+      + (result.tasks_stopped ? ` and its ${result.tasks_stopped} task(s) stopped` : ''), 'ok');
+    if (chat.id === state.chatId) await openChat(result.conversation.id);
+    loadChats();
+  } catch (error) { toast(error.message, 'err'); }
+}
+
+async function deleteChat(chat = state.chat) {
+  const values = await sheet({
+    title: 'Delete this chat?', ok: 'Delete', danger: true,
+    body: `<p class="sheet-note">“${esc(chat.title || 'New chat')}” and its messages will be deleted, and its tasks stopped. This can't be undone — <b>End conversation</b> keeps it in Archived instead.</p>`,
+  });
+  if (!values) return;
+  try {
+    await api.del(`/api/chat/conversations/${chat.id}`);
+    toast('Chat deleted', 'ok');
+    if (chat.id === state.chatId) { state.chatId = null; await loadHistory(); }
+    loadChats();
+  } catch (error) { toast(error.message, 'err'); }
+}
+
+/** A small modal form. Resolves to its values, or null when cancelled. */
+function sheet({ title, body, ok = 'Save', danger = false, setup }) {
+  const host = $('#sheet-host');
+  const form = $('#sheet');
+  $('#sheet-title').textContent = title;
+  $('#sheet-body').innerHTML = body;
+  const okButton = $('#sheet-ok');
+  okButton.textContent = ok;
+  okButton.classList.toggle('danger-fill', danger);
+  host.hidden = false;
+  setup?.(form);
+  setTimeout(() => $('input, textarea, select', $('#sheet-body'))?.focus(), 30);
+  return new Promise(resolve => {
+    const close = value => {
+      host.hidden = true;
+      form.removeEventListener('submit', submit);
+      $('#sheet-cancel').removeEventListener('click', cancel);
+      host.removeEventListener('mousedown', outside);
+      document.removeEventListener('keydown', escape, true);
+      resolve(value);
+    };
+    const submit = event => { event.preventDefault(); close(Object.fromEntries(new FormData(form))); };
+    const cancel = () => close(null);
+    const outside = event => { if (event.target === host) close(null); };
+    const escape = event => { if (event.key === 'Escape') { event.stopPropagation(); close(null); } };
+    form.addEventListener('submit', submit);
+    $('#sheet-cancel').addEventListener('click', cancel);
+    host.addEventListener('mousedown', outside);
+    document.addEventListener('keydown', escape, true);
+  });
+}
+
+$('#chats-btn').addEventListener('click', () => openChatList(!chatsPanel.classList.contains('open')));
+$('#chats-close').addEventListener('click', () => openChatList(false));
+$('#chats-scrim').addEventListener('click', () => openChatList(false));
+$('#chats-new').addEventListener('click', newChat);
+$('#new-chat-btn').addEventListener('click', newChat);
+$('#chat-title').addEventListener('click', () => state.chat && renameChat());
+$('#chat-menu-btn').addEventListener('click', event => chatMenu(event.currentTarget));
+let chatSearchTimer = null;
+$('#chats-search').addEventListener('input', () => {
+  clearTimeout(chatSearchTimer);
+  chatSearchTimer = setTimeout(loadChats, 200);
+});
+$('#chats-archived').addEventListener('click', event => {
+  state.showArchived = !state.showArchived;
+  event.currentTarget.setAttribute('aria-pressed', String(state.showArchived));
+  event.currentTarget.textContent = state.showArchived ? 'Back to chats' : 'Show archived';
+  loadChats();
+});
+document.addEventListener('keydown', event => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || !$('#sheet-host').hidden) return;
+  const key = event.key.toLowerCase();
+  if (key === 'n') { event.preventDefault(); selectTab('ask'); newChat(); }
+  if (key === 'k') {
+    event.preventDefault();
+    selectTab('ask');
+    if (wide()) $('#chats-search').focus(); else openChatList(!chatsPanel.classList.contains('open'));
+  }
+  if (event.key === 'Escape') openChatList(false);
+});
+addEventListener('resize', () => { if (wide()) $('#chats-scrim').classList.remove('open'); });
 
 /** POST /api/chat/stream and parse its Server-Sent Events. */
 async function streamChat(body, onCard) {
@@ -858,7 +1295,17 @@ selectTab('ask');
 connectActivity();
 loadInfo();
 loadContext();
-loadHistory();
+try { state.chatId = Number(localStorage.getItem('cerebro.chat')) || null; } catch { /* ignore */ }
+loadHistory().then(loadChats);
 setInterval(loadContext, 6000);
+// Scheduled tasks post into chats on their own; keep the list (and an idle
+// open chat) current.
+setInterval(async () => {
+  if (document.hidden) return;
+  const before = state.chats.find(c => c.id === state.chatId)?.last_message_at;
+  await loadChats();
+  const after = state.chats.find(c => c.id === state.chatId)?.last_message_at;
+  if (after && before && after !== before && !busy() && state.tab === 'ask') loadHistory();
+}, 20000);
 setInterval(() => { if (state.tab === 'activity') loadActivity(); }, 15000);
 setInterval(loadInfo, 60000);

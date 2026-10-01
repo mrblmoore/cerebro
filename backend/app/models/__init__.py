@@ -4,6 +4,7 @@ from app.models.audio import AudioRecording, Transcription
 from app.models.case import Case
 from app.models.chat import ChatMessage
 from app.models.context_state import ContextState
+from app.models.conversation import Conversation
 from app.models.document import Document
 from app.models.enterprise import EnterpriseAction, EnterpriseMessage
 from app.models.event import Event
@@ -34,4 +35,5 @@ __all__ = [
     "Task",
     "Nudge",
     "ChatMessage",
+    "Conversation",
 ]

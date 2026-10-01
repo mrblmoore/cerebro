@@ -338,11 +338,14 @@ def send_teams_message(ctx: ToolContext, channel: str = "", body: str = "", **_)
       "Create a reminder or scheduled task from a plain-language instruction, "
       "e.g. 'every weekday at 9 summarise my inbox' or 'remind me at 3pm to "
       "call Contoso'. Only use when the user asks for something to happen "
-      "later or repeatedly.",
+      "later or repeatedly. Work that needs looking things up (cases, KB, "
+      "SharePoint, inbox) runs with these same tools and posts its result "
+      "back into this chat.",
       schema(["instruction"], instruction=string_param("The full instruction, including timing."),
              document=string_param("Document path or name, for document-update tasks.")),
       mode="write", label="Create a task", activity="writing",
-      available=lambda ctx: settings.TASKS_ENABLED)
+      # A task that is running must not schedule itself again.
+      available=lambda ctx: settings.TASKS_ENABLED and not ctx.context.get("task_run"))
 def create_task(ctx: ToolContext, instruction: str = "", document: str = "", **_) -> dict:
     from app.services.task_service import TaskService, describe_confirmation
 
@@ -350,7 +353,8 @@ def create_task(ctx: ToolContext, instruction: str = "", document: str = "", **_
         return {"content": "No instruction given.", "summary": "Needs details"}
     extra = {"document": document} if document else None
     task = TaskService(ctx.db).create_from_instruction(
-        instruction, context=ctx.context, source="chat", extra_spec=extra)
+        instruction, context=ctx.context, source="chat", extra_spec=extra,
+        conversation_id=ctx.context.get("conversation_id"))
     confirmation = describe_confirmation(task)
     return {"content": f"Task #{task.id} created: {confirmation}",
             "summary": confirmation, "task": task.to_dict()}

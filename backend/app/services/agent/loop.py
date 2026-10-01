@@ -49,10 +49,14 @@ OLDER_ANSWER_CHARS = 500
 REPEAT_SIMILARITY = 0.85
 
 
-def _history(db, limit: int = HISTORY_TURNS) -> List[dict]:
+def _history(db, conversation_id: int = None, limit: int = HISTORY_TURNS) -> List[dict]:
+    """The recent turns of one chat (or of every chat, when none is named)."""
     from app.models.chat import ChatMessage
 
-    rows = (db.query(ChatMessage).order_by(ChatMessage.id.desc()).limit(limit).all())
+    query = db.query(ChatMessage)
+    if conversation_id:
+        query = query.filter(ChatMessage.conversation_id == conversation_id)
+    rows = query.order_by(ChatMessage.id.desc()).limit(limit).all()
     rows = list(reversed(rows))
     messages: List[dict] = []
     last_assistant = max((i for i, r in enumerate(rows) if r.role == "assistant"), default=-1)
@@ -179,17 +183,19 @@ def _run_tool(ctx: ToolContext, name: str, arguments: Dict[str, Any],
 
 def run(db, text: str, context: Dict[str, Any] = None,
         emit: Callable[[dict], None] = None,
-        history: List[dict] = None) -> Dict[str, Any]:
+        history: List[dict] = None,
+        instructions: str = None) -> Dict[str, Any]:
     """Answer one Ask message. Returns the reply payload; never raises.
 
     ``history`` is the conversation *before* this message; it is read from
-    the database when not given.
+    the database when not given. ``instructions`` are the chat's standing
+    instructions, followed for every message in that chat.
     """
     from app.services.llm_service import LLMService
 
     llm = LLMService()
     ctx = ToolContext(db=db, context=dict(context or {}), emit=emit)
-    history = _history(db) if history is None else history
+    history = _history(db, ctx.context.get("conversation_id")) if history is None else history
     previous_answer = next((m["content"] for m in reversed(history)
                             if m["role"] == "assistant"), None)
 
@@ -204,6 +210,9 @@ def run(db, text: str, context: Dict[str, Any] = None,
     messages = history + [{"role": "user", "content": _user_turn(text, note, prefetched)}]
     tool_specs = [item.spec() for item in available_tools(ctx)]
     system = ASK_SYSTEM_PROMPT.format(today=datetime.now().strftime("%A %d %B %Y"))
+    if (instructions or "").strip():
+        system += ("\n\nThis chat's standing instructions from the user (follow them unless "
+                   "they conflict with the rules above):\n" + instructions.strip())
     memory = _memory_block(db, text, ctx.context)
     if memory:
         system += "\n\n" + memory

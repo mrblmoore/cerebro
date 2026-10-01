@@ -18,7 +18,10 @@ Without an AI provider the older deterministic path still applies:
 3. **The next message answers that question** rather than starting over.
 
 Every turn — both sides — is stored in :class:`~app.models.chat.ChatMessage` so
-the widget can show a real thread instead of one reply at a time.
+the widget can show a real thread instead of one reply at a time. Each turn
+belongs to one chat (:class:`~app.models.conversation.Conversation`): history,
+"what did I just say" and clarifications are all scoped to it, and the chat's
+standing instructions go to the agent with every message.
 """
 
 import json
@@ -131,8 +134,16 @@ def _clarifying_question(missing: str) -> str:
 
 
 class ChatService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, conversation_id: int = None):
+        from app.services import conversations
+
         self.db = db
+        #: Raises LookupError for a chat id that does not exist.
+        self.conversation = conversations.resolve(db, conversation_id)
+        self.conversation_id = self.conversation.id
+
+    def _in_chat(self, query):
+        return query.filter(ChatMessage.conversation_id == self.conversation_id)
 
     # -------------------------------------------------------------- history
     def history(self, limit: int = 50) -> list:
@@ -140,13 +151,13 @@ class ChatService:
         # ``CURRENT_TIMESTAMP``, which only has one-second resolution, and a
         # fast exchange of several messages can land in the same second. ``id``
         # breaks the tie in true insertion order.
-        rows = (self.db.query(ChatMessage)
+        rows = (self._in_chat(self.db.query(ChatMessage))
                 .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
                 .limit(limit).all())
         return [row.to_dict() for row in reversed(rows)]
 
     def _last_assistant_message(self) -> Optional[ChatMessage]:
-        return (self.db.query(ChatMessage)
+        return (self._in_chat(self.db.query(ChatMessage))
                 .filter(ChatMessage.role == "assistant")
                 .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
                 .first())
@@ -158,10 +169,15 @@ class ChatService:
             role=role, content=content, kind=kind,
             meta=json.dumps(meta) if meta else None,
             task_id=task_id, case_id=case_id, image_path=image_path,
+            conversation_id=self.conversation_id,
         )
         self.db.add(message)
         self.db.commit()
         self.db.refresh(message)
+        from app.services import conversations
+
+        conversations.touch(self.db, self.conversation,
+                            first_user_text=content if role == "user" else None)
         return message
 
     # --------------------------------------------------------------- intent
@@ -177,7 +193,9 @@ class ChatService:
         never mistaken for a reminder.
         """
         text = (text or "").strip()
-        context = context or {}
+        context = dict(context or {})
+        # Tools that create tasks file them under this chat.
+        context["conversation_id"] = self.conversation_id
 
         if image:
             return self._answer_with_image(text, image, context)
@@ -247,9 +265,10 @@ class ChatService:
         """Answer through the tool-using agent (AI provider required)."""
         from app.services.agent import loop
 
-        history = loop._history(self.db)
+        history = loop._history(self.db, self.conversation_id)
         self._store("user", text, kind="question")
-        result = loop.run(self.db, text, context, emit=emit, history=history)
+        result = loop.run(self.db, text, context, emit=emit, history=history,
+                          instructions=self.conversation.instructions)
         images = self._document_images_for_answer(text, context)
         if images:
             result["images"] = images
@@ -290,7 +309,8 @@ class ChatService:
             return {"reply": question, "kind": "clarification"}
 
         task = TaskService(self.db).create_from_instruction(
-            instruction, context=context, source="chat", extra_spec=extra_spec)
+            instruction, context=context, source="chat", extra_spec=extra_spec,
+            conversation_id=self.conversation_id)
         confirmation = describe_confirmation(task)
         self._store("assistant", confirmation, kind="confirmation", task_id=task.id,
                    case_id=context.get("crm_case"))
@@ -298,7 +318,7 @@ class ChatService:
 
     def _recent_answer_image_names(self, limit: int = 12) -> set:
         """Images already shown recently, so a follow-up does not repeat them."""
-        rows = (self.db.query(ChatMessage)
+        rows = (self._in_chat(self.db.query(ChatMessage))
                 .filter(ChatMessage.role == "assistant",
                         ChatMessage.meta.isnot(None))
                 .order_by(ChatMessage.id.desc()).limit(limit).all())

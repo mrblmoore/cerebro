@@ -3750,6 +3750,198 @@ def test_desktop_buddy():
     check("Turning it off in the tray keeps it away", not logic.visible())
 
 
+def test_chats():
+    """Separate chats: own history, own instructions, own tasks."""
+    print("\nAsk — multiple chats")
+    from fastapi.testclient import TestClient
+
+    from app.core.database import _adopt_unfiled_messages
+    from app.main import app
+    from app.models.chat import ChatMessage
+    from app.models.conversation import Conversation
+    from app.models.task import Task
+    from app.services import conversations
+    from app.services.agent import loop
+    from app.services.chat_service import ChatService
+
+    db = session()
+
+    # Messages from before chats existed are kept, gathered into one chat.
+    db.add(ChatMessage(role="user", content="An old question from last month"))
+    db.commit()
+    _adopt_unfiled_messages()
+    earlier = db.query(Conversation).filter(Conversation.title == "Earlier chat").first()
+    check("Older messages are filed under “Earlier chat”",
+          earlier is not None and db.query(ChatMessage)
+          .filter(ChatMessage.conversation_id.is_(None)).count() == 0)
+
+    with TestClient(app) as client:
+        first = client.post("/api/chat/conversations", json={}).json()
+        second = client.post("/api/chat/conversations", json={
+            "instructions": "Always answer in French."}).json()
+        check("A new chat starts untitled", first["title"] == "New chat" and not first["archived"])
+
+        script = ScriptedLLM(["Restart the spooler.", "Redémarrez le service VPN.",
+                              "Clear the queue first."])
+        enabled, patched = _with_ai(script)
+        with enabled, patched:
+            one = client.post("/api/chat/message", json={
+                "message": "Why is the printer stuck on every job?",
+                "conversation_id": first["id"]}).json()
+            client.post("/api/chat/message", json={
+                "message": "Why does the VPN drop?", "conversation_id": second["id"]})
+            client.post("/api/chat/message", json={
+                "message": "And after that?", "conversation_id": first["id"]})
+
+        check("The reply says which chat it belongs to",
+              one["conversation"]["id"] == first["id"])
+        check("A chat is titled from its first message",
+              one["conversation"]["title"].startswith("Why is the printer stuck"))
+        check("Per-chat instructions reach the model",
+              "Always answer in French." in script.requests[1]["system"]
+              and "Always answer in French." not in script.requests[0]["system"])
+        third_turns = " ".join(m["content"] for m in script.requests[2]["messages"])
+        check("A chat only remembers its own conversation",
+              "printer" in third_turns and "VPN" not in third_turns)
+
+        history = client.get("/api/chat/history",
+                             params={"conversation_id": second["id"]}).json()
+        check("History is per chat",
+              [m["content"] for m in history["messages"]]
+              == ["Why does the VPN drop?", "Redémarrez le service VPN."])
+        check("An unknown chat is a 404",
+              client.get("/api/chat/history", params={"conversation_id": 99999}).status_code == 404)
+
+        listing = client.get("/api/chat/conversations").json()["conversations"]
+        check("The most recently used chat is listed first", listing[0]["id"] == first["id"])
+        check("The list shows a preview of the last message",
+              listing[0]["preview"] == "Clear the queue first.")
+        found = client.get("/api/chat/conversations", params={"q": "spooler"}).json()
+        found_ids = [c["id"] for c in found["conversations"]]
+        check("Chats can be searched by what was said",
+              first["id"] in found_ids and second["id"] not in found_ids)
+
+        renamed = client.patch(f"/api/chat/conversations/{second['id']}", json={
+            "title": "VPN drops", "pinned": True}).json()
+        check("A chat can be renamed and pinned", renamed["title"] == "VPN drops" and renamed["pinned"])
+        listing = client.get("/api/chat/conversations").json()["conversations"]
+        check("Pinned chats come first", listing[0]["id"] == second["id"])
+        with enabled, patched:
+            client.post("/api/chat/message", json={
+                "message": "One more thing", "conversation_id": second["id"]})
+        check("A renamed chat keeps its name",
+              client.get(f"/api/chat/conversations/{second['id']}").json()["title"] == "VPN drops")
+
+        ended = client.post(f"/api/chat/conversations/{first['id']}/end").json()
+        check("Ending a chat archives it and opens a new one",
+              ended["ended"]["archived"] and ended["conversation"]["id"] != first["id"]
+              and not ended["conversation"]["archived"])
+        check("A chat's preview is plain text, not markdown",
+              conversations._preview("**Restart** the [spooler](http://x) [K1]") == "Restart the spooler")
+        open_ids = [c["id"] for c in client.get("/api/chat/conversations").json()["conversations"]]
+        archived = [c["id"] for c in client.get("/api/chat/conversations",
+                                                params={"archived": True}).json()["conversations"]]
+        check("An ended chat moves to Archived", first["id"] in archived and first["id"] not in open_ids)
+        check("An ended chat is still readable", client.get(
+            "/api/chat/history", params={"conversation_id": first["id"]}).json()["count"] == 4)
+        restored = client.patch(f"/api/chat/conversations/{first['id']}",
+                                json={"archived": False}).json()
+        check("…and can be restored", restored["archived"] is False)
+
+        # Messages without a chat go to the most recently active one.
+        fresh = ChatService(db)
+        check("A message with no chat named goes to the latest one",
+              fresh.conversation_id == second["id"])
+
+        # Assigned tasks: run with the agent, post back into the chat.
+        assigned = client.post(f"/api/chat/conversations/{second['id']}/tasks", json={
+            "instruction": "List new Dynamics cases assigned to me",
+            "schedule": "weekdays", "at_time": "08:45"}).json()
+        task = db.query(Task).get(assigned["task"]["id"])
+        check("A task can be assigned to a chat",
+              task.kind == "agent" and task.conversation_id == second["id"]
+              and task.schedule == "weekdays" and task.next_run is not None)
+        check("A bad time is refused", client.post(
+            f"/api/chat/conversations/{second['id']}/tasks",
+            json={"instruction": "x", "schedule": "daily", "at_time": "noon"}).status_code == 422)
+
+        script = ScriptedLLM([
+            {"name": "search_knowledge", "arguments": {"query": "new cases"}},
+            "Two new cases: CAS-1 and CAS-2."])
+        enabled, patched = _with_ai(script)
+        from app.services.task_service import TaskService
+        with enabled, patched:
+            TaskService(db).run(task)
+        db.refresh(task)
+        posted = (db.query(ChatMessage).filter(ChatMessage.conversation_id == second["id"])
+                  .order_by(ChatMessage.id.desc()).first())
+        check("The task's result is posted into its chat",
+              posted.kind == "task_result" and posted.content.startswith("Two new cases")
+              and posted.task_id == task.id)
+        check("The task runs with the chat's instructions",
+              "Always answer in French." in script.requests[0]["system"])
+        check("A running task cannot schedule itself again",
+              "create_task" not in script.requests[0]["tools"])
+        check("A recurring task stays scheduled after a run",
+              task.status == "active" and task.next_run is not None and task.run_count == 1)
+
+        strip = client.get(f"/api/chat/conversations/{second['id']}/tasks").json()
+        check("The chat lists its tasks", [t["id"] for t in strip["tasks"]] == [task.id])
+        check("Chats with tasks are marked in the list", next(
+            c for c in client.get("/api/chat/conversations").json()["conversations"]
+            if c["id"] == second["id"])["has_tasks"])
+
+        # Asking for a task in plain language files it under the current chat.
+        script = ScriptedLLM([
+            {"name": "create_task", "arguments": {
+                "instruction": "Every weekday at 9am check SharePoint for new release notes"}},
+            "Done — I'll check every weekday at 9."])
+        enabled, patched = _with_ai(script)
+        from unittest import mock
+        with enabled, patched, mock.patch("app.services.task_service.parse_instruction",
+                                          return_value={"title": "Check release notes",
+                                                        "kind": "agent", "schedule": "weekdays",
+                                                        "at_time": "09:00", "spec": {}}):
+            result = client.post("/api/chat/message", json={
+                "message": "check sharepoint for release notes every weekday at 9",
+                "conversation_id": first["id"]}).json()
+        made = db.query(Task).get(result["task"]["id"])
+        check("A task asked for in a chat belongs to that chat",
+              made.conversation_id == first["id"] and made.kind == "agent")
+
+        # Ending a chat stops its scheduled tasks.
+        throwaway = client.post("/api/chat/conversations", json={}).json()
+        doomed = client.post(f"/api/chat/conversations/{throwaway['id']}/tasks", json={
+            "instruction": "Check the queue", "schedule": "hourly"}).json()["task"]
+        ended = client.post(f"/api/chat/conversations/{throwaway['id']}/end").json()
+        db.expire_all()
+        check("Ending a chat stops its scheduled tasks",
+              ended["tasks_stopped"] == 1 and db.query(Task).get(doomed["id"]).status == "cancelled")
+
+        # Deleting a chat removes its messages and stops its tasks.
+        client.delete(f"/api/chat/conversations/{first['id']}")
+        db.expire_all()
+        check("Deleting a chat removes its messages", db.query(ChatMessage)
+              .filter(ChatMessage.conversation_id == first["id"]).count() == 0)
+        check("…and stops its tasks", db.query(Task).get(made.id).status == "cancelled")
+
+        # A task whose chat is gone gets a chat of its own rather than failing.
+        made.status, made.conversation_id = "active", first["id"]
+        db.commit()
+        script = ScriptedLLM(["Nothing new today."])
+        enabled, patched = _with_ai(script)
+        with enabled, patched:
+            TaskService(db).run(made)
+        db.refresh(made)
+        home = conversations.get(db, made.conversation_id)
+        check("An orphaned task posts into a new chat named after it",
+              home is not None and home.title == "Check release notes")
+
+    check("Agent history can be read for one chat",
+          all(m["role"] in ("user", "assistant") for m in loop._history(db, second["id"])))
+    db.close()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -3783,7 +3975,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
