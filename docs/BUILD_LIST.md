@@ -114,11 +114,8 @@ template replies.
   Start with Windows, Quit. Quit stops the server too
   (`POST /api/system/shutdown`). Single instance. Start with Windows launches
   straight to the tray.
-- [x] **B6.2 Brain animation.** Frames drawn at runtime by
-  `desktop/brain_frames.py`, so no image assets ship. One loop per state — breathing
-  (idle), sparkling neurons (thinking), scanning eyes (browsing), bouncing "!"
-  (approval), sound waves (listening), orbit (syncing), dizzy (error),
-  sleeping (offline). The same brain animates in the app header.
+- [x] **B6.2 Brain animation.** One loop per state, in the tray and the app
+  header. Replaced by the pixel mascot in B8.1.
 
 ---
 
@@ -139,3 +136,29 @@ template replies.
   preview.
 - [ ] **B7.5 Real-tenant check** on a work machine: Connect all three, run Teach
   for RightAnswers, and try one read and one approved change in each.
+
+---
+
+## Phase 8 — Pixel mascot, desktop buddy, chats and Bedrock
+
+- [x] **B8.1 Pixel mascot.** The two pixel-art brains (laptop = working,
+  graduation cap and book = studying) are animated by
+  `packaging/make_mascot.py`. Dozing, alert, dizzy and asleep poses are
+  derived from the same art. They are used in the tray, the app header, the
+  hero, the answer-in-progress bubble and the Activity card, which picks
+  studying for research steps and working for the rest.
+- [x] **B8.2 Desktop buddy** (`desktop/buddy.py`). A small, closable animated
+  brain on the desktop while Cerebro works, with a caption of what it is
+  doing. × hides it until the next task; the tray toggles it.
+- [x] **B8.3 Chats.** Separate conversations in Ask with their own history,
+  titles, pin, search, end (archive) and delete. Older messages are moved
+  to "Earlier chat".
+- [x] **B8.4 Per-chat instructions** reach the agent with every message in
+  that chat.
+- [x] **B8.5 Tasks assigned to a chat.** The `agent` task kind runs Ask's loop
+  on a schedule and posts the result into its chat; approvals wait there.
+- [x] **B8.6 Bedrock.** Models that refuse tool use or system prompts fall back
+  automatically instead of failing as a "bad model ID". Nova uses temperature
+  0 when choosing tools.
+- [ ] **B8.7 Check on Windows** with the user's Bedrock models: the buddy's
+  transparency, a scheduled chat task, and tool use with Nova and Llama.

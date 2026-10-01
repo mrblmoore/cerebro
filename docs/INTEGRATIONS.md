@@ -43,6 +43,76 @@ It does this through a **hidden browser** driven by
 [Playwright](https://playwright.dev/python/). The browser uses *your* sign-in.
 Cerebro never sees or stores your password.
 
+## How the AI uses the browser
+
+The AI model never moves a mouse, looks at screenshots or types into pages.
+It works with **tools**, and Cerebro's own code does the browsing:
+
+1. With each message, Cerebro sends the model your question plus a list of
+   tools it may use. Each tool has a name, a one-line description and the
+   arguments it takes, for example
+   `dynamics_get_case(case)` — "Read a Dynamics case: status, owner, notes".
+2. The model replies with a request instead of an answer, for example
+   "call `dynamics_get_case` with `{"case": "CAS-01234"}`".
+3. Cerebro runs that tool in the hidden, signed-in browser:
+
+   | System | How the tool talks to it |
+   |---|---|
+   | Dynamics 365 | The Dataverse Web API (`/api/data/v9.2/…`), called from inside the signed-in page, so it uses your session and your permissions. Labels such as priority names come from your org's own metadata. |
+   | SharePoint | SharePoint's REST API, called the same way. Edits check the file out, change it, and check it back in. |
+   | RightAnswers | The portal's own pages: search box, result list, article and editor. Cerebro learns their layout with **Teach**. |
+
+4. Cerebro gives the result back to the model as plain text. The model may
+   call more tools (search, then read the best match, then check a case),
+   up to **6** steps per message. Then it writes the answer and cites what it
+   used, e.g. `[S1]`.
+5. A tool that would change something does not change it. It prepares the
+   change and returns "proposed — waiting for approval". You see the card,
+   with before/after, and only **Approve** runs it. The model cannot approve
+   on your behalf.
+
+The progress lines under an answer ("Reading CAS-01234…") are these tool
+calls happening. The tray brain and the desktop buddy show the laptop pose
+while Cerebro works in a browser, and the studying pose while it searches.
+
+### Which AI models work
+
+Every provider gets the same tools. Only the format on the wire differs:
+
+| Provider | How tools are sent |
+|---|---|
+| Amazon Bedrock | The Converse API's `toolConfig` |
+| OpenAI, Qwen, Ollama | Their function-calling format |
+| Models without tool calling | Cerebro's JSON protocol: the tools are described in the prompt, and the model answers with a small JSON request that Cerebro runs the same way |
+
+On **Amazon Bedrock**:
+
+| Model family | Works as |
+|---|---|
+| Amazon Nova (Micro, Lite, Pro, Premier) | Native tools. Cerebro uses temperature 0 when tools are offered, as Amazon recommends for reliable tool choice. |
+| Meta Llama 3.1, 3.2, 3.3, 4 | Native tools. |
+| Mistral Large, Mistral Small | Native tools. |
+| Anthropic Claude, Cohere Command R/R+ | Native tools. |
+| Llama 3 (3.0), Llama 2, Mistral 7B, Mixtral, Titan Text | JSON protocol, automatically. The first time Bedrock says a model doesn't support tool use, Cerebro switches that model to the JSON protocol and remembers it. A model that rejects system prompts has them folded into the conversation instead. |
+
+Model support changes as AWS adds features. Whatever the table says, a model
+that refuses tools gets the JSON protocol automatically, so no model is shut
+out. Inference-profile IDs (`us.meta.llama3-3-70b-instruct-v1:0`, ARNs) work
+the same as plain model IDs.
+
+**Settings → AI Provider → Tool use in Ask** overrides the automatic choice:
+
+| Setting | Behaviour |
+|---|---|
+| Auto (default) | Native tools, with the JSON protocol as fallback. |
+| Native | Native tools only. |
+| JSON | Always use the JSON protocol. Try this if a model calls tools badly. |
+| Off | Answer in one step from what is already in view, with no lookups. |
+
+Smaller models choose tools less reliably. For work in Dynamics and
+SharePoint, Nova Pro, Llama 3.3 70B and Mistral Large are good choices;
+Nova Micro and 8B models are fine for plain questions.
+
 ## How it works
 
 - Cerebro keeps its **own browser profile** in
@@ -111,6 +181,11 @@ Every proposed and completed change is listed at `GET /api/chat/changes`.
 
 When the browser extension sees you open a Dynamics case, Cerebro reads it in
 the background. By the time you ask about it, Ask already has it.
+
+These tools also work in **tasks assigned to a chat** (see
+[WIDGET.md](WIDGET.md#chats)), for example "every weekday at 8:45, list new
+cases assigned to me". A task's changes wait in its chat as approval cards,
+just like in Ask.
 
 ## Dynamics 365 details
 
@@ -203,4 +278,5 @@ needed; the file is read on each use.
 | Works visibly, fails hidden | Set **Window** to **Off-screen window**. Some single sign-on pages refuse headless browsers. |
 | A RightAnswers search finds nothing | Run **Teach** on the Connect tab. If it still fails, send the capture bundle described above. |
 | A SharePoint change says the file changed | Someone edited it after the preview. Ask again so the change is based on the current version. |
+| Bedrock: "doesn't support tool use" | Nothing to do. Cerebro switches that model to the JSON protocol by itself. If answers still skip lookups, set **Tool use in Ask** to **JSON**, or pick a larger model. |
 | Something failed mid-way | A screenshot of the page is saved in `%LOCALAPPDATA%\Cerebro\browser_screenshots`. |
