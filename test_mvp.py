@@ -3625,6 +3625,80 @@ def test_sharepoint_links():
         db.close()
 
 
+def test_bedrock_tool_fallbacks():
+    """Bedrock models without tool use or system prompts still work in Ask."""
+    print("\nBedrock — Nova, Llama and Mistral behaviour")
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import llm_service
+
+    class ValidationException(Exception):
+        pass
+
+    class FakeClient:
+        def __init__(self, behaviour):
+            self.behaviour, self.requests = behaviour, []
+
+        def converse(self, **kwargs):
+            self.requests.append(kwargs)
+            if "toolConfig" in kwargs and "no_tools" in self.behaviour:
+                raise ValidationException("An error occurred (ValidationException) when calling "
+                                          "the Converse operation: This model doesn't support tool use.")
+            if "system" in kwargs and "no_system" in self.behaviour:
+                raise ValidationException("An error occurred (ValidationException) when calling the "
+                                          "Converse operation: This model doesn't support system messages.")
+            blocks = [{"reasoningContent": {"reasoningText": {"text": "secret thoughts"}}},
+                      {"text": '{"tool": "search_knowledge", "arguments": {"query": "vpn"}}'
+                       if "toolConfig" not in kwargs else "Native answer"}]
+            return {"output": {"message": {"content": blocks}}}
+
+    tools = [{"name": "search_knowledge", "description": "Search",
+              "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}]
+
+    def run(model, behaviour):
+        client = FakeClient(behaviour)
+        session = mock.MagicMock()
+        session.client.return_value = client
+        llm_service._NO_NATIVE_TOOLS.clear()
+        llm_service._NO_SYSTEM_PROMPT.clear()
+        with mock.patch.object(settings, "LLM_PROVIDER", "bedrock"), \
+                mock.patch.object(settings, "BEDROCK_REGION", "us-east-1"), \
+                mock.patch.object(settings, "BEDROCK_MODEL_ID", model), \
+                mock.patch.object(settings, "LLM_TOOL_MODE", "auto"), \
+                mock.patch.object(type(settings), "llm_configured", new=property(lambda self: True)), \
+                mock.patch.object(llm_service, "bedrock_session", return_value=session):
+            result = LLMService().chat([{"role": "user", "content": "vpn?"}], tools=tools,
+                                       system="You are Cerebro.")
+        return result, client
+
+    result, client = run("us.amazon.nova-pro-v1:0", set())
+    check("Nova uses native tool calling", result["mode"] == "native"
+          and "toolConfig" in client.requests[0])
+    check("Nova chooses tools with temperature 0",
+          client.requests[0]["inferenceConfig"]["temperature"] == 0.0)
+    check("Reasoning blocks are not shown as the answer", result["content"] == "Native answer")
+
+    result, client = run("meta.llama3-70b-instruct-v1:0", {"no_tools"})
+    check("A model without tool use falls back instead of failing",
+          result["mode"] == "json" and result["tool_calls"]
+          and result["tool_calls"][0]["name"] == "search_knowledge", result)
+
+    result, client = run("mistral.mistral-7b-instruct-v0:2", {"no_tools", "no_system"})
+    last = client.requests[-1]
+    check("A model without system prompts gets them folded into the chat",
+          "system" not in last and "You are Cerebro." in last["messages"][0]["content"][0]["text"])
+    check("…and still reaches a tool call", result["tool_calls"]
+          and result["tool_calls"][0]["name"] == "search_knowledge", result)
+
+    error = llm_service._bedrock_error(ValidationException(
+        "ValidationException: The provided model identifier is invalid."))
+    check("A genuinely wrong model ID is still explained",
+          isinstance(error, llm_service.LLMNotConfigured) and "model ID" in str(error))
+    llm_service._NO_NATIVE_TOOLS.clear()
+    llm_service._NO_SYSTEM_PROMPT.clear()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -3658,7 +3732,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

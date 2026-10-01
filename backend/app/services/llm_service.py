@@ -65,7 +65,15 @@ def _bedrock_error(exc: Exception) -> Exception:
             "bedrock:InvokeModel, and the model must be enabled for your account "
             "under Model access in the Amazon Bedrock console."
         )
-    if "validationexception" in lowered and "model" in lowered:
+    # "This model doesn't support tool use / system messages" are also
+    # ValidationExceptions that mention "model". They are not configuration
+    # problems: chat() recovers from them (JSON tool protocol, system prompt
+    # folded into the conversation), so they must reach it untranslated.
+    if any(hint in lowered for hint in _TOOL_UNSUPPORTED_HINTS + _SYSTEM_UNSUPPORTED_HINTS):
+        return exc
+    if "validationexception" in lowered and (
+            "model identifier" in lowered or "invalid model" in lowered
+            or "model id" in lowered):
         return LLMNotConfigured(
             f"Amazon Bedrock rejected the model ID '{settings.BEDROCK_MODEL_ID}'. "
             "Pick one from the list in Settings — that list comes from your own "
@@ -376,10 +384,26 @@ Answer in 1-2 sentences."""
         elif mode == "auto" and key in _NO_NATIVE_TOOLS:
             mode = "json"
 
+        def call(turns, offered, prompt):
+            """One request, folding the system prompt in for models that refuse it."""
+            if key in _NO_SYSTEM_PROMPT:
+                return backend(_fold_system(turns, prompt), offered, "", max_tokens, temperature)
+            try:
+                return backend(turns, offered, prompt, max_tokens, temperature)
+            except LLMNotConfigured:
+                raise
+            except Exception as exc:  # noqa: BLE001 - retried once without a system prompt
+                if not any(h in str(exc).lower() for h in _SYSTEM_UNSUPPORTED_HINTS):
+                    raise
+                logger.warn("llm_service", "System prompt unsupported; folding it into the chat",
+                            {"provider": self.provider, "model": self.model})
+                _NO_SYSTEM_PROMPT.add(key)
+                return backend(_fold_system(turns, prompt), offered, "", max_tokens, temperature)
+
         with activity("thinking", f"Thinking with {self.model or self.provider}"):
             if mode in ("auto", "native"):
                 try:
-                    result = backend(messages, tools, system, max_tokens, temperature)
+                    result = call(messages, tools, system)
                     return {**result, "mode": "native"}
                 except LLMNotConfigured:
                     raise
@@ -394,14 +418,13 @@ Answer in 1-2 sentences."""
 
             if mode == "json":
                 protocol_system = f"{system}\n\n{_json_protocol_instructions(tools)}"
-                result = backend(_to_json_protocol(messages), [], protocol_system,
-                                 max_tokens, temperature)
+                result = call(_to_json_protocol(messages), [], protocol_system)
                 call = _extract_json_tool_call(result["content"], {t["name"] for t in tools})
                 if call:
                     return {"content": "", "tool_calls": [call], "mode": "json"}
                 return {"content": result["content"], "tool_calls": [], "mode": "json"}
 
-            result = backend(_merge_same_role(messages), [], system, max_tokens, temperature)
+            result = call(_merge_same_role(messages), [], system)
             return {"content": result["content"], "tool_calls": [], "mode": "none"}
 
 
@@ -599,6 +622,15 @@ import uuid as _uuid
 #: protocol is used straight away instead of failing once per message.
 _NO_NATIVE_TOOLS: set = set()
 
+#: Models that reject a system prompt (e.g. Mistral 7B / Mixtral Instruct and
+#: Titan Text on Bedrock): their system prompt is folded into the first turn.
+_NO_SYSTEM_PROMPT: set = set()
+
+_SYSTEM_UNSUPPORTED_HINTS = (
+    "doesn't support system", "does not support system", "system messages are not supported",
+    "system message is not supported", "system prompt is not supported",
+)
+
 _TOOL_UNSUPPORTED_HINTS = (
     "does not support tools", "tool use is not supported", "tools is not supported",
     "unsupported parameter", "unknown field", "extra inputs are not permitted",
@@ -656,6 +688,18 @@ def _extract_json_tool_call(text: str, tool_names: set):
         return None
     return {"id": _new_call_id(), "name": name,
             "arguments": _parse_arguments(data.get("arguments") or data.get("args"))}
+
+
+def _fold_system(messages: list, system: str) -> list:
+    """Put the system prompt at the start of the first user turn instead."""
+    if not system:
+        return messages
+    folded = [dict(message) for message in messages]
+    for message in folded:
+        if message["role"] == "user":
+            message["content"] = f"[Instructions]\n{system}\n\n[Message]\n{message.get('content') or ''}"
+            return folded
+    return [{"role": "user", "content": f"[Instructions]\n{system}"}] + folded
 
 
 def _to_json_protocol(messages: list) -> list:
@@ -842,9 +886,14 @@ def _chat_bedrock(messages, tools, system, max_tokens, temperature) -> dict:
         else:
             converted.append({"role": role, "content": content})
 
-    kwargs = {"modelId": settings.BEDROCK_MODEL_ID, "system": [{"text": system}],
-              "messages": converted,
+    if tools and "nova" in (settings.BEDROCK_MODEL_ID or "").lower():
+        # Amazon recommends greedy decoding for Nova when it chooses tools;
+        # sampled tool calls are noticeably less reliable.
+        temperature = 0.0
+    kwargs = {"modelId": settings.BEDROCK_MODEL_ID, "messages": converted,
               "inferenceConfig": {"temperature": temperature, "maxTokens": max_tokens}}
+    if system:
+        kwargs["system"] = [{"text": system}]
     if tools:
         kwargs["toolConfig"] = {"tools": [{"toolSpec": {
             "name": tool["name"], "description": tool.get("description", "") or tool["name"],
