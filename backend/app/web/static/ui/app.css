@@ -496,6 +496,7 @@ main { position: relative; min-height: 0; }
 }
 .logo.dynamics { background: linear-gradient(135deg, #0b53ce, #2aa0f0); }
 .logo.rightanswers { background: linear-gradient(135deg, #f97316, #f43f5e); }
+.logo.sharepoint { background: linear-gradient(135deg, #036c70, #1a9ba1 60%, #37c6d0); }
 .logo.browser { background: linear-gradient(135deg, #334155, #64748b); }
 
 .toast-host { position: fixed; z-index: 60; left: 50%; bottom: 18px; transform: translateX(-50%); display: grid; gap: 8px; }

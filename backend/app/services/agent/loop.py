@@ -83,6 +83,15 @@ def _context_note(ctx: ToolContext) -> str:
     return "; ".join(notes)
 
 
+def _sharepoint_links(text: str) -> List[str]:
+    from app.services.agent.registry import REGISTRY as tools
+    from app.services.browser.sharepoint import find_links
+
+    if "sharepoint_read" not in tools:
+        return []
+    return find_links(text)[:5]
+
+
 def _prefetch(ctx: ToolContext, text: str) -> str:
     """Up-front context, offered only when it is genuinely about the question.
 
@@ -185,8 +194,14 @@ def run(db, text: str, context: Dict[str, Any] = None,
                             if m["role"] == "assistant"), None)
 
     prefetched = _prefetch(ctx, text)
-    messages = history + [{"role": "user",
-                           "content": _user_turn(text, _context_note(ctx), prefetched)}]
+    note = _context_note(ctx)
+    links = _sharepoint_links(text)
+    if links:
+        # Pasted links are the most direct evidence there is: point the model
+        # straight at them rather than hoping it notices.
+        note = "; ".join(filter(None, [note, "SharePoint link(s) in the message — open with "
+                                             "sharepoint_read: " + ", ".join(links)]))
+    messages = history + [{"role": "user", "content": _user_turn(text, note, prefetched)}]
     tool_specs = [item.spec() for item in available_tools(ctx)]
     system = ASK_SYSTEM_PROMPT.format(today=datetime.now().strftime("%A %d %B %Y"))
     memory = _memory_block(db, text, ctx.context)

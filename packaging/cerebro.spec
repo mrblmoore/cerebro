@@ -91,6 +91,7 @@ hiddenimports = [
     "app.services.browser", "app.services.browser.engine",
     "app.services.browser.connector", "app.services.browser.dynamics",
     "app.services.browser.rightanswers", "app.services.browser.teach",
+    "app.services.browser.sharepoint",
     "app.api.integrations",
     "app.models.agent_action",
 ]

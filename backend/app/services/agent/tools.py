@@ -196,7 +196,10 @@ def read_document(ctx: ToolContext, name: str = "", question: str = "", **_) -> 
       "Search SharePoint and OneDrive for files by name or content.",
       schema(["query"], query=string_param("What to search for.")),
       label="Search SharePoint",
-      available=lambda ctx: settings.SHAREPOINT_GRAPH_ENABLED)
+      # The hidden-browser connector has its own, fuller SharePoint tools;
+      # offering both would only make the model choose between duplicates.
+      available=lambda ctx: settings.SHAREPOINT_GRAPH_ENABLED
+      and not (settings.BROWSER_AUTOMATION_ENABLED and settings.SHAREPOINT_BROWSER_ENABLED))
 def search_sharepoint(ctx: ToolContext, query: str = "", **_) -> dict:
     from app.services.sharepoint_service import SharePointService
 

@@ -81,11 +81,13 @@ triages what is urgent, links it to the right case, and drafts replies that go
 back out through a second flow. No Microsoft credentials live in Cerebro.
 See [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md).
 
-**RightAnswers & Dynamics 365**
+**RightAnswers, Dynamics 365 & SharePoint**
 A hidden browser that uses your own sign-in lets Ask search and read
-RightAnswers articles and Dynamics cases. With your approval, it can also post
-case notes, update tickets and edit articles. Every change is shown as a
-before/after card first. See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+RightAnswers articles, Dynamics cases, and any SharePoint document or page you
+paste a link to. With your approval, it can also post case notes, update
+tickets, edit articles, and change Word and Excel files and pages. Every change
+is shown as a before/after card first. See
+[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 **Documents**
 Reads Word, Excel, PowerPoint and PDF files you have open, with local OCR for

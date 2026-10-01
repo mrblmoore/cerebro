@@ -364,7 +364,7 @@ function actionCard(card) {
   return null;
 }
 
-const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers' };
+const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint' };
 
 function changeCard(card) {
   const node = document.createElement('div');
@@ -747,7 +747,7 @@ $('#kb-search').addEventListener('input', e => {
 });
 
 // ================================================================= Connect
-const LOGO = { dynamics: 'D365', rightanswers: 'RA' };
+const LOGO = { dynamics: 'D365', rightanswers: 'RA', sharepoint: 'SP' };
 
 async function loadConnect() {
   const body = $('#connect-body');

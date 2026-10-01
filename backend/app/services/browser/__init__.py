@@ -26,8 +26,17 @@ def get(name: str) -> BrowserConnector:
     return _CONNECTORS[name]
 
 
+_LOADED = False
+
+
 def _load() -> None:
-    """Import the built-in connectors once (they register themselves)."""
-    if _CONNECTORS:
+    """Import the built-in connectors once (they register themselves).
+
+    A flag rather than "is the registry empty?": importing one connector
+    module directly registers just that one.
+    """
+    global _LOADED
+    if _LOADED:
         return
-    from app.services.browser import dynamics, rightanswers  # noqa: F401
+    from app.services.browser import dynamics, rightanswers, sharepoint  # noqa: F401
+    _LOADED = True

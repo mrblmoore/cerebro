@@ -141,7 +141,7 @@ class BrowserEngine:
         if not settings.BROWSER_AUTOMATION_ENABLED:
             raise BrowserUnavailable(
                 "The hidden browser is switched off. Turn it on in Settings → "
-                "RightAnswers & Dynamics.")
+                "RightAnswers, Dynamics & SharePoint.")
         if not playwright_installed():
             raise BrowserUnavailable(
                 "The browser automation component (Playwright) is not installed. "

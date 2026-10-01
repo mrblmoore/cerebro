@@ -52,7 +52,7 @@ OPTIONAL_PACKAGES = {
     "pypdf": ("PDF documents", "backend/requirements-documents.txt"),
     "mss": ("Activity screenshots", "desktop/requirements-capture.txt"),
     "pynput": ("Typed-text capture", "desktop/requirements-capture.txt"),
-    "playwright": ("RightAnswers & Dynamics (hidden browser)", "backend/requirements-browser.txt"),
+    "playwright": ("RightAnswers, Dynamics & SharePoint (hidden browser)", "backend/requirements-browser.txt"),
 }
 
 

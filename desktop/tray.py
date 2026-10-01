@@ -83,7 +83,7 @@ class BrainTray:
             Item(lambda item: f"{self.pending} change(s) waiting for approval",
                  act("open", "activity"), visible=lambda item: self.pending > 0),
             Menu.SEPARATOR,
-            Item("RightAnswers & Dynamics…", act("open", "connect")),
+            Item("RightAnswers, Dynamics & SharePoint…", act("open", "connect")),
             Item("Dashboard", act("dashboard")),
             Item("Settings", act("settings")),
             Item("Start with Windows", self._toggle_startup,

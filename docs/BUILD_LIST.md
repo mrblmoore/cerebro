@@ -122,8 +122,20 @@ template replies.
 
 ---
 
-## Needed from the team
+## Phase 7 — Company setup and SharePoint
 
-- RightAnswers base URL, and whether sign-in is SSO or a username/password form.
-- Dynamics org URL (`https://<org>.crm.dynamics.com`).
-- One session on a real machine to calibrate RightAnswers selectors.
+- [x] **B7.1 Addresses.** `dental.crm.dynamics.com`, `dexis.rightanswers.com`
+  and `envistaconnect.sharepoint.com` are pre-filled. Addresses are reduced to
+  their site, and **Connect** switches a system on and signs in with one click.
+- [x] **B7.2 Dynamics metadata.** Priority, severity and status labels come from
+  the org's own option sets. The connection check shows who is signed in.
+- [x] **B7.3 RightAnswers Teach.** Learns the portal's search, article, result
+  and editor layout from one search by the user. It saves a diagnostic bundle,
+  and searches fall back to article-looking links.
+- [x] **B7.4 SharePoint connector.** Opens pasted links (files, sharing links,
+  Office Online links, site pages, OneDrive), reads and cites them, and
+  searches the site. It changes Word and Excel files and pages, with approval
+  and before/after previews, refusing a change if the file moved on since the
+  preview.
+- [ ] **B7.5 Real-tenant check** on a work machine: Connect all three, run Teach
+  for RightAnswers, and try one read and one approved change in each.

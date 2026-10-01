@@ -3041,7 +3041,8 @@ def test_browser_integrations():
         with TestClient(app) as client:
             listed = client.get("/api/integrations").json()
         check("Integrations are listed over the API",
-              {item["name"] for item in listed["integrations"]} == {"dynamics", "rightanswers"})
+              {item["name"] for item in listed["integrations"]}
+              == {"dynamics", "rightanswers", "sharepoint"})
     finally:
         browser.engine().shutdown()
         for patch in reversed(patches):
@@ -3360,6 +3361,270 @@ def test_rightanswers_teach():
             server.shutdown()
 
 
+def _fake_sharepoint():
+    """A local stand-in for SharePoint's REST API, signed in by cookie."""
+    import http.server
+    import io
+    import json as _json
+    import re as _re
+    import threading
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    import docx
+
+    guid = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+    document = docx.Document()
+    document.add_paragraph("Escalation contacts: call the Tier 2 desk on extension 4410.")
+    document.add_paragraph("Review this list every quarter.")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    state = {
+        "files": {"/sites/Support/Shared Documents/Escalation Plan.docx": {
+            "bytes": buffer.getvalue(), "etag": '"{A1},1"'}},
+        "pages": {"/sites/Support/SitePages/Onboarding.aspx": {
+            "id": 7, "title": "Onboarding",
+            "canvas": ('<div data-sp-canvascontrol="" data-sp-controldata="{&quot;x&quot;:1}">'
+                       '<div data-sp-rte=""><p>New starters shadow two calls a day.</p>'
+                       '<p>Ask the Tier 2 desk for VPN access.</p></div></div>')}},
+        "calls": [],
+    }
+    by_guid = {guid: "/sites/Support/Shared Documents/Escalation Plan.docx"}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, body=b"", kind="application/json", headers=None):
+            data = body if isinstance(body, bytes) else body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _json(self, payload, code=200):
+            self._send(code, _json.dumps(payload))
+
+        def _signed_in(self):
+            return "session=ok" in (self.headers.get("Cookie") or "")
+
+        def _target(self, path):
+            found = _re.search(r"decodedurl='(.*?)'\)", path)
+            if found:
+                return found.group(1).replace("''", "'")
+            found = _re.search(r"GetFileById\('([^']+)'\)", path)
+            return by_guid.get(found.group(1)) if found else None
+
+        def _meta(self, target):
+            if target in state["files"]:
+                item = state["files"][target]
+                return {"Name": target.rsplit("/", 1)[-1], "ServerRelativeUrl": target,
+                        "Length": len(item["bytes"]), "TimeLastModified": "2026-10-01T09:00:00Z",
+                        "ETag": item["etag"]}
+            if target in state["pages"]:
+                return {"Name": target.rsplit("/", 1)[-1], "ServerRelativeUrl": target,
+                        "Length": 100, "ETag": '"{P7},3"'}
+            return None
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            path = unquote(parsed.path)
+            if path == "/login":
+                if parse_qs(parsed.query).get("done"):
+                    return self._send(302, "", "text/html", {"Set-Cookie": "session=ok; Path=/",
+                                                              "Location": "/"})
+                return self._send(200, "<a href='/login?done=1'>Sign in</a>", "text/html")
+            if not self._signed_in():
+                return self._send(302, "", "text/html", {"Location": "/login"})
+            if path.startswith("/:w:/s/Support/"):
+                return self._send(302, "", "text/html", {"Location": (
+                    f"/sites/Support/_layouts/15/Doc.aspx?sourcedoc=%7B{guid}%7D"
+                    "&file=Escalation%20Plan.docx&action=default")})
+            if path.endswith("/_layouts/15/Doc.aspx"):
+                return self._send(200, "<html>Word Online</html>", "text/html")
+            if path in ("/", "/_api/web") or path.endswith("/_api/web"):
+                return self._json({"Title": "Support"})
+            if path.endswith("/_api/web/currentuser"):
+                return self._json({"Title": "Sam Agent", "Email": "sam@envista.example"})
+            if path.endswith("/_api/search/query"):
+                return self._json({"PrimaryQueryResult": {"RelevantResults": {"Table": {"Rows": [
+                    {"Cells": [{"Key": "Title", "Value": "Escalation Plan"},
+                               {"Key": "Path", "Value": "http://x/sites/Support/Shared Documents/Escalation Plan.docx"},
+                               {"Key": "HitHighlightedSummary", "Value": "<c0>Tier 2</c0> desk"},
+                               {"Key": "FileType", "Value": "docx"}]}]}}}})
+            target = self._target(path)
+            if target and path.endswith("/$value"):
+                return self._send(200, state["files"][target]["bytes"],
+                                  "application/octet-stream")
+            if target and path.endswith("/ListItemAllFields"):
+                page = state["pages"][target]
+                return self._json({"Id": page["id"], "Title": page["title"],
+                                   "CanvasContent1": page["canvas"]})
+            if target:
+                meta = self._meta(target)
+                return self._json(meta) if meta else self._json(
+                    {"error": {"message": {"value": "File Not Found."}}}, 404)
+            return self._json({"error": {"message": {"value": "Not found"}}}, 404)
+
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            path = unquote(parsed.path)
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if not self._signed_in():
+                return self._json({"error": {"message": {"value": "Access denied"}}}, 401)
+            if path.endswith("/_api/contextinfo"):
+                return self._json({"FormDigestValue": "digest-1"})
+            if self.headers.get("X-RequestDigest") != "digest-1":
+                return self._json({"error": {"message": {"value": "The security validation "
+                                                                  "for this page is invalid."}}}, 403)
+            state["calls"].append(path.rsplit("/", 1)[-1])
+            target = self._target(path)
+            if target and path.endswith("/$value") and self.headers.get("X-HTTP-Method") == "PUT":
+                item = state["files"][target]
+                item["bytes"] = body
+                item["etag"] = item["etag"].replace(",1", ",2").replace(",2\"", ",3\"")
+                return self._send(204)
+            found = _re.search(r"/sitepages/pages\((\d+)\)/(\w+)", path)
+            if found:
+                page = next(p for p in state["pages"].values() if p["id"] == int(found.group(1)))
+                if found.group(2) == "savepage":
+                    page["canvas"] = _json.loads(body)["CanvasContent1"]
+                return self._send(204)
+            return self._json({"error": {"message": {"value": "Not found"}}}, 404)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, state
+
+
+def test_sharepoint_links():
+    """Pasted SharePoint links are opened, read and (after approval) updated."""
+    print("\nSharePoint — links through the hidden browser")
+    import importlib
+    import io
+    import sys as _sys
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import browser
+    from app.services.agent import actions
+    from app.services.agent.loop import _sharepoint_links
+    from app.services.agent.registry import REGISTRY, ToolContext
+    from app.services.browser.engine import playwright_installed
+    from app.services.browser.sharepoint import SharePointError, find_links
+
+    check("The company SharePoint is pre-filled",
+          settings.SHAREPOINT_SITE_URL == "https://envistaconnect.sharepoint.com")
+    message = ("Can you update https://envistaconnect.sharepoint.com/:w:/s/Support/EabcXYZ?e=k2 "
+               "and check https://envistaconnect.sharepoint.com/sites/Support/SitePages/Home.aspx.")
+    check("SharePoint links are found in a message", len(find_links(message)) == 2)
+    sharepoint = browser.get("sharepoint")
+    try:
+        sharepoint.check_link("https://contoso.sharepoint.com/sites/x/a.docx")
+        refused = False
+    except SharePointError:
+        refused = True
+    check("Links on another company's SharePoint are refused", refused)
+    check("OneDrive links of the same company are accepted",
+          "envistaconnect-my.sharepoint.com" in sharepoint.tenant_hosts)
+
+    try:
+        import docx  # noqa: F401
+    except ImportError:
+        print("  - skipped browser part: python-docx is not installed")
+        return
+    if not playwright_installed():
+        print("  - skipped browser part: Playwright is not installed")
+        return
+
+    server, state = _fake_sharepoint()
+    base = f"http://127.0.0.1:{server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    sharepoint_module = importlib.import_module("app.services.browser.sharepoint")
+    overrides = {"BROWSER_AUTOMATION_ENABLED": True, "SHAREPOINT_BROWSER_ENABLED": True,
+                 "SHAREPOINT_SITE_URL": base, "BROWSER_MODE": "headless",
+                 "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium",
+                 "BROWSER_TIMEOUT_SECONDS": 15}
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches += [mock.patch.object(engine_module, "BROWSER_PROFILE_DIR", Path(_TEMP_DIR) / "sp_profile"),
+                mock.patch.object(sharepoint_module, "CACHE_DIR", Path(_TEMP_DIR) / "sp_cache")]
+    for patch in patches:
+        patch.start()
+    engine = browser.engine()
+    db = session()
+    try:
+        try:
+            engine.submit(lambda eng: eng.page("signin").goto(f"{base}/login?done=1"))
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+        check("The check says who is signed in", sharepoint.check().get("account") == "Sam Agent")
+
+        direct = f"{base}/sites/Support/Shared%20Documents/Escalation%20Plan.docx"
+        sharing = f"{base}/:w:/s/Support/EabcXYZ?e=k2"
+        office = (f"{base}/sites/Support/_layouts/15/Doc.aspx?sourcedoc=%7B6f1c2d3e-4a5b-4c6d-"
+                  "8e9f-0a1b2c3d4e5f%7D&file=Escalation%20Plan.docx&action=default")
+        for label, link in (("a direct link", direct), ("a sharing link", sharing),
+                            ("an Office Online link", office)):
+            item = sharepoint.read(link)
+            check(f"A document opens from {label}", "extension 4410" in item["text"]
+                  and item["name"] == "Escalation Plan.docx", item.get("text"))
+        page = sharepoint.read(f"{base}/sites/Support/SitePages/Onboarding.aspx")
+        check("A site page is read from its content", page["kind"] == "page"
+              and "shadow two calls" in page["text"] and "data-sp" not in page["text"])
+        check("SharePoint search returns results",
+              sharepoint.search("tier 2")[0]["title"] == "Escalation Plan")
+
+        ctx = ToolContext(db=db, context={})
+        result = REGISTRY["sharepoint_read"].handler(ctx, link=sharing)
+        check("Ask's read tool cites the document", "[SP1]" in result["content"])
+        check("The model is pointed at pasted links", _sharepoint_links(message) == find_links(message))
+
+        REGISTRY["sharepoint_update_document"].handler(
+            ctx, link=direct, operations=[{"op": "replace_text", "find": "extension 4410",
+                                           "replace": "extension 5520"}])
+        REGISTRY["sharepoint_update_page"].handler(
+            ctx, link=f"{base}/sites/Support/SitePages/Onboarding.aspx",
+            changes=[{"find": "two calls", "replace": "three calls"}])
+        cards = [card for card in ctx.drafts if card["type"] == "approval"]
+        check("Proposing SharePoint changes writes nothing", not state["calls"] and len(cards) == 2)
+        doc_card = next(c for c in cards if c["tool"] == "sharepoint_update_document")
+        field = doc_card["preview"]["fields"][0]
+        check("The document card shows the text before and after",
+              "4410" in field["before"] and "5520" in field["after"])
+
+        for card in cards:
+            outcome = actions.approve(db, card["action_id"])
+            check(f"Approved {card['tool']} runs", outcome.get("notify") is True, outcome.get("reply"))
+        import docx
+        saved = docx.Document(io.BytesIO(
+            state["files"]["/sites/Support/Shared Documents/Escalation Plan.docx"]["bytes"]))
+        check("The document in SharePoint now has the change",
+              "extension 5520" in "\n".join(p.text for p in saved.paragraphs))
+        check("The page was checked out, saved and published",
+              state["calls"][-3:] == ["checkoutpage", "savepage", "publish"])
+        canvas = state["pages"]["/sites/Support/SitePages/Onboarding.aspx"]["canvas"]
+        check("Only the page text changed, not its markup",
+              "three calls" in canvas and 'data-sp-controldata="{&quot;x&quot;:1}"' in canvas)
+
+        # Someone edits the file between the preview and the approval.
+        ctx = ToolContext(db=db, context={})
+        REGISTRY["sharepoint_update_document"].handler(
+            ctx, link=direct, operations=[{"op": "append_paragraph", "text": "Owner: Sam"}])
+        state["files"]["/sites/Support/Shared Documents/Escalation Plan.docx"]["etag"] = '"{A1},9"'
+        outcome = actions.approve(db, ctx.drafts[0]["action_id"])
+        check("A change is refused if the file changed after the preview",
+              "changed in SharePoint" in outcome["reply"])
+    finally:
+        engine.shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        server.shutdown()
+        db.close()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -3393,7 +3658,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

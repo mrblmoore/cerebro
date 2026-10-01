@@ -318,6 +318,161 @@ def rightanswers_create_article(ctx: ToolContext, title: str = "", body: str = "
             "summary": "Waiting for approval"}
 
 
+# ============================================================== SharePoint
+def _sharepoint():
+    from app.services.browser import get
+
+    return get("sharepoint")
+
+
+def _sharepoint_on(ctx: ToolContext) -> bool:
+    return _sharepoint().enabled
+
+
+_DOC_OPERATIONS = {
+    "type": "array", "description": (
+        "Edits, in order. Word: {op: replace_text, find, replace} · {op: append_paragraph, text} · "
+        "{op: append_heading, text, level} · {op: insert_paragraph, index, text} · "
+        "{op: set_paragraph, index, text} · {op: delete_paragraph, index}. "
+        "Excel: {op: set_cell, sheet, cell, value} · {op: set_range, sheet, start, values} · "
+        "{op: append_row, sheet, values} · {op: clear_cell, sheet, cell} · "
+        "{op: add_sheet, title} · {op: rename_sheet, sheet, title}."),
+    "items": {"type": "object", "additionalProperties": True},
+}
+
+
+@tool("sharepoint_read",
+      "Open a SharePoint or OneDrive link (document, sharing link or site page) and read "
+      "it. Use whenever the user pastes a sharepoint.com link or refers to one. Word, "
+      "Excel, PowerPoint, PDF and pages are supported.",
+      schema(["link"], link=string_param("The full SharePoint link."),
+             remember={"type": "boolean", "description": "Also add it to the knowledge base."}),
+      label="Open SharePoint link", activity="browsing", available=_sharepoint_on)
+def sharepoint_read(ctx: ToolContext, link: str = "", remember: bool = False, **_) -> dict:
+    connector = _sharepoint()
+
+    def run():
+        item = connector.read(link)
+        text = item.get("text") or ""
+        from app.services.source_service import SourceService
+
+        SourceService(ctx.db).observe("sharepoint", item["url"], item["title"], uri=item["url"],
+                                      local_path=item.get("local_path"), content=text,
+                                      metadata={"site": item["site"], "path": item["path"],
+                                                "kind": item["kind"], "etag": item.get("etag")})
+        if remember and text.strip():
+            from app.services.rag_service import RAGService
+
+            RAGService(ctx.db).upsert_document({"title": item["title"], "content": text,
+                                                "source": "SharePoint", "url": item["url"],
+                                                "tags": ["sharepoint"]})
+        ref = ctx.cite({"title": item["title"], "kind": "sharepoint", "uri": item["url"],
+                        "locator": item["path"], "excerpt": text[:1000]}, "SP")
+        kind = "page" if item["kind"] == "page" else (item.get("doc_kind") or "document")
+        return {"content": f"[{ref}] {item['title']} ({kind}, modified {item.get('modified')})\n"
+                           f"{text}", "summary": item["title"]}
+
+    return _guard(ctx, connector, run)
+
+
+@tool("sharepoint_search",
+      "Search the company SharePoint (documents, pages, lists) by keywords.",
+      schema(["query"], query=string_param("What to look for.")),
+      label="Search SharePoint", activity="browsing", available=_sharepoint_on)
+def sharepoint_search(ctx: ToolContext, query: str = "", **_) -> dict:
+    connector = _sharepoint()
+
+    def run():
+        results = connector.search(query)
+        if not results:
+            return {"content": f"Nothing in SharePoint matched “{query}”.", "summary": "No matches"}
+        lines = []
+        for item in results:
+            ref = ctx.cite({"title": item["title"], "kind": "sharepoint", "uri": item["url"],
+                            "locator": item.get("type") or "SharePoint",
+                            "excerpt": item.get("snippet") or ""}, "SP")
+            lines.append(f"[{ref}] {item['title']} — {item['url']}: {item.get('snippet') or ''}")
+        return {"content": "\n".join(lines) + "\nUse sharepoint_read with a link to open one.",
+                "summary": f"{len(results)} result(s)"}
+
+    return _guard(ctx, connector, run)
+
+
+@tool("sharepoint_update_document",
+      "Propose changes to a Word or Excel file in SharePoint. Cerebro applies them to a "
+      "copy and shows the user a before/after comparison; the file in SharePoint changes "
+      "only after they approve.",
+      schema(["link", "operations"], link=string_param("The document's SharePoint link."),
+             operations=_DOC_OPERATIONS),
+      mode="approval", label="Prepare a SharePoint document change", activity="writing",
+      available=_sharepoint_on)
+def sharepoint_update_document(ctx: ToolContext, link: str = "", operations: list = None,
+                               **_) -> dict:
+    connector = _sharepoint()
+    if not operations:
+        return {"content": "No edits given.", "summary": "Needs details"}
+
+    def run():
+        from app.services.browser.sharepoint import SharePointError
+
+        try:
+            preview = connector.preview_document_edit(link, operations)
+        except SharePointError as exc:
+            return {"content": str(exc), "summary": "Not possible"}
+        item = preview["item"]
+        action = actions.propose(
+            ctx.db, "sharepoint_update_document", "sharepoint", f"Update {item['name']}",
+            {"link": link, "operations": operations, "etag": item.get("etag")},
+            preview={"fields": [{"name": "Document text", "before": preview["before"],
+                                 "after": preview["after"]}],
+                     "target": item["name"], "url": item["url"]},
+            summary=f"{len(operations)} edit(s) to {item['name']}")
+        ctx.drafts.append(actions.card(action))
+        return {"content": f"Change to {item['name']} prepared as change #{action.id}; it is "
+                           "applied in SharePoint when the user approves it.",
+                "summary": "Waiting for approval"}
+
+    return _guard(ctx, connector, run)
+
+
+@tool("sharepoint_update_page",
+      "Propose text changes on a SharePoint site page (SitePages/…aspx): each change "
+      "replaces some text on the page. The page is republished only after the user "
+      "approves a before/after comparison.",
+      schema(["link", "changes"], link=string_param("The page's link."),
+             changes={"type": "array", "description": "Each {find, replace}: exact text on "
+                      "the page and what it becomes.",
+                      "items": {"type": "object", "properties": {
+                          "find": {"type": "string"}, "replace": {"type": "string"}}}}),
+      mode="approval", label="Prepare a SharePoint page change", activity="writing",
+      available=_sharepoint_on)
+def sharepoint_update_page(ctx: ToolContext, link: str = "", changes: list = None, **_) -> dict:
+    connector = _sharepoint()
+    if not changes:
+        return {"content": "No changes given.", "summary": "Needs details"}
+
+    def run():
+        from app.services.browser.sharepoint import SharePointError
+
+        try:
+            preview = connector.preview_page_edit(link, changes)
+        except SharePointError as exc:
+            return {"content": str(exc), "summary": "Not possible"}
+        item = preview["item"]
+        action = actions.propose(
+            ctx.db, "sharepoint_update_page", "sharepoint", f"Update page “{item['title']}”",
+            {"link": link, "changes": changes},
+            preview={"fields": [{"name": "Page text", "before": preview["before"],
+                                 "after": preview["after"]}],
+                     "target": item["title"], "url": item["url"]},
+            summary=f"{preview['changes']} replacement(s)")
+        ctx.drafts.append(actions.card(action))
+        return {"content": f"Page change prepared as change #{action.id}; it is published when "
+                           "the user approves it.", "summary": "Waiting for approval"}
+
+    return _guard(ctx, connector, run)
+
+
 _PREFETCHED: Dict[str, float] = {}
 PREFETCH_COOLDOWN_SECONDS = 300
 
@@ -383,3 +538,14 @@ def _run_update_article(db, args: dict) -> dict:
 @actions.executor("rightanswers_create_article")
 def _run_create_article(db, args: dict) -> dict:
     return _rightanswers().create_article(args["title"], args["body"])
+
+
+@actions.executor("sharepoint_update_document")
+def _run_update_document(db, args: dict) -> dict:
+    return _sharepoint().update_document(args["link"], args["operations"],
+                                         expected_etag=args.get("etag"))
+
+
+@actions.executor("sharepoint_update_page")
+def _run_update_page(db, args: dict) -> dict:
+    return _sharepoint().update_page(args["link"], args["changes"])

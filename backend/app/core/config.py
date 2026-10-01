@@ -169,6 +169,11 @@ class Settings(BaseSettings):
     DYNAMICS_ENABLED: bool = False
     #: The company's Dynamics 365 organisation (host only, as above).
     DYNAMICS_URL: Optional[str] = "https://dental.crm.dynamics.com"
+    #: SharePoint through the same hidden browser and sign-in: open pasted
+    #: links, read documents and pages, and change them with approval. Needs
+    #: no app registration (unlike SHAREPOINT_GRAPH_ENABLED below).
+    SHAREPOINT_BROWSER_ENABLED: bool = False
+    SHAREPOINT_SITE_URL: Optional[str] = "https://envistaconnect.sharepoint.com"
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 

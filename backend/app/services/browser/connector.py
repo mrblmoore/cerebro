@@ -149,13 +149,13 @@ class BrowserConnector:
     def require_enabled(self) -> None:
         if not settings.BROWSER_AUTOMATION_ENABLED:
             raise NotConfigured("The hidden browser is switched off (Settings → "
-                                "RightAnswers & Dynamics).")
+                                "RightAnswers, Dynamics & SharePoint).")
         if not getattr(settings, self.enabled_setting, False):
             raise NotConfigured(f"{self.label} is switched off (Settings → "
-                                "RightAnswers & Dynamics).")
+                                "RightAnswers, Dynamics & SharePoint).")
         if not self.base_url:
             raise NotConfigured(f"Enter your {self.label} address in Settings → "
-                                "RightAnswers & Dynamics.")
+                                "RightAnswers, Dynamics & SharePoint.")
 
     def selectors(self) -> Dict[str, Any]:
         merged = dict(self.default_selectors)

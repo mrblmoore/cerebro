@@ -111,9 +111,9 @@ GROUPS = [
     },
     {
         "id": "integrations",
-        "title": "RightAnswers & Dynamics",
+        "title": "RightAnswers, Dynamics & SharePoint",
         "icon": "🌐",
-        "description": "Let Cerebro work in RightAnswers and Dynamics 365 through a hidden "
+        "description": "Let Cerebro work in RightAnswers, Dynamics 365 and SharePoint through a hidden "
                        "browser that uses your own sign-in. Reads happen straight away; "
                        "every change is shown to you for approval first.",
     },
@@ -415,6 +415,15 @@ FIELDS: List[Field] = [
     Field("DYNAMICS_ENABLED", "Dynamics 365", "integrations",
           "Search and read cases; post notes and update tickets with your approval.",
           type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("SHAREPOINT_BROWSER_ENABLED", "SharePoint", "integrations",
+          "Open SharePoint links you paste into Ask, read documents and pages, and update them "
+          "with your approval — signed in as you, no app registration.",
+          type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("SHAREPOINT_SITE_URL", "SharePoint address", "integrations",
+          "Your SharePoint. Pre-filled with envistaconnect.sharepoint.com; its OneDrive "
+          "(-my) links work too.",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("SHAREPOINT_BROWSER_ENABLED", [True])]),
     Field("DYNAMICS_URL", "Dynamics 365 address", "integrations",
           "Your organisation's address. Pre-filled with dental.crm.dynamics.com; a pasted "
           "case link works too — only the host is used.",
