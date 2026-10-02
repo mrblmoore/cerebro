@@ -28,7 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import widget_config  # noqa: E402
 
 COMPACT_HEIGHT = 74
-DEFAULT_SIZE = (440, 760)
+DEFAULT_SIZE = (440, 720)
+#: Smallest the full window can be dragged to (the collapsed strip is smaller).
+MIN_SIZE = (360, 420)
+#: "Window size" presets in the ⋯ menu; "tall" is the full screen height.
+SIZE_PRESETS = {"small": (380, 560), "medium": (440, 720), "large": (560, 860)}
 SHOW_REQUEST = widget_config.config_dir() / "show.request"
 LOCK_PATH = widget_config.config_dir() / "shell.lock"
 
@@ -87,6 +91,22 @@ class ShellApi:
         self._shell.set_compact(bool(compact))
         return bool(compact)
 
+    # Sizes are in the page's CSS pixels, which are the units pywebview uses,
+    # so they stay right at 125% or 150% Windows scaling.
+    def set_bounds(self, x, y, width, height):
+        """Move and resize in one step — the page's resize handles call this."""
+        self._shell.set_bounds(x, y, width, height)
+
+    def toggle_maximize(self):
+        return self._shell.toggle_maximize()
+
+    def set_size(self, preset, area=None):
+        return self._shell.set_size(str(preset), area)
+
+    def fit(self, area, bounds=None):
+        """Keep the window on the screen it is on (``area`` = that screen's work area)."""
+        return self._shell.fit(area, bounds)
+
     def toggle_on_top(self):
         return self._shell.toggle_on_top()
 
@@ -111,6 +131,7 @@ class Shell:
         self._quitting = False
         self._save_timer = None
         self._full_height = None
+        self.maximized = False
 
     # -------------------------------------------------------- window
     def create_window(self):
@@ -118,13 +139,18 @@ class Shell:
 
         width = int(self.config.get("width") or 0)
         height = int(self.config.get("height") or 0)
-        if width < 360 or height < 480:      # sizes from the old, smaller widget
+        if width < MIN_SIZE[0] or height < MIN_SIZE[1]:   # sizes from the old, smaller widget
             width, height = DEFAULT_SIZE
+        x, y = self.config.get("x"), self.config.get("y")
+        # A size or place saved on a bigger (or now unplugged) screen must not
+        # leave part of the window below the taskbar or off the edge.
+        area = _primary_work_area()
+        if area:
+            x, y, width, height = clamp_bounds(x, y, width, height, area)
         self.window = webview.create_window(
             "Cerebro", url=f"{self.api_url}/app?shell=1", js_api=ShellApi(self),
-            width=width, height=height,
-            x=self.config.get("x"), y=self.config.get("y"),
-            min_size=(360, COMPACT_HEIGHT), frameless=True, easy_drag=False,
+            width=width, height=height, x=x, y=y,
+            min_size=(MIN_SIZE[0], COMPACT_HEIGHT), frameless=True, easy_drag=False,
             on_top=bool(self.config.get("always_on_top", True)),
             background_color="#07080E", hidden=self.start_hidden, text_select=True,
         )
@@ -150,7 +176,7 @@ class Shell:
 
     def _on_resized(self, *args):
         width, height = [value for value in args if isinstance(value, (int, float))][-2:]
-        if not self.compact and height > COMPACT_HEIGHT + 20:
+        if not self.compact and not self.maximized and height > COMPACT_HEIGHT + 20:
             self.config["width"], self.config["height"] = int(width), int(height)
             self._save_soon()
 
@@ -184,6 +210,66 @@ class Shell:
             self.window.resize(width, COMPACT_HEIGHT)
         else:
             self.window.resize(width, self._full_height or DEFAULT_SIZE[1])
+
+    # ---------------------------------------------------------- size
+    def set_bounds(self, x, y, width, height) -> None:
+        if self.window is None or self.compact:
+            return
+        width, height = max(int(width), MIN_SIZE[0]), max(int(height), MIN_SIZE[1])
+        x, y = int(x), int(y)
+        if (x, y) != (self.config.get("x"), self.config.get("y")):
+            self.window.move(x, y)
+        self.window.resize(width, height)
+        self.maximized = False
+        self.config.update(x=x, y=y, width=width, height=height)
+        self._save_soon()
+
+    def toggle_maximize(self) -> bool:
+        if self.window is None:
+            return False
+        if self.compact:
+            self.set_compact(False)
+        if self.maximized:
+            self.window.restore()
+        else:
+            self.window.maximize()
+        self.maximized = not self.maximized
+        return self.maximized
+
+    def set_size(self, preset: str, area: dict = None) -> dict:
+        """Apply a "Window size" preset, keeping the window on screen."""
+        area = _area(area) or _primary_work_area()
+        if preset == "tall" and area:
+            width = int(self.config.get("width") or DEFAULT_SIZE[0])
+            size = (width, area[3] - 2 * EDGE_GAP)
+            y = area[1] + EDGE_GAP
+        else:
+            size = SIZE_PRESETS.get(preset, DEFAULT_SIZE)
+            y = self.config.get("y")
+        x = self.config.get("x")
+        if area:
+            x, y, *size = clamp_bounds(x, y, size[0], size[1], area)
+        if self.maximized:
+            self.window.restore()
+            self.maximized = False
+        self.set_bounds(x if x is not None else 0, y if y is not None else 0, *size)
+        return {"x": x, "y": y, "width": size[0], "height": size[1]}
+
+    def fit(self, area, bounds=None) -> dict:
+        """Pull the window back inside ``area`` if it hangs off it."""
+        area = _area(area)
+        if not area or self.window is None or self.compact or self.maximized:
+            return {"moved": False}
+        bounds = bounds or {}
+        x = bounds.get("x", self.config.get("x"))
+        y = bounds.get("y", self.config.get("y"))
+        width = int(bounds.get("width") or self.config.get("width") or DEFAULT_SIZE[0])
+        height = int(bounds.get("height") or self.config.get("height") or DEFAULT_SIZE[1])
+        fitted = clamp_bounds(x, y, width, height, area)
+        if fitted == (x, y, width, height):
+            return {"moved": False}
+        self.set_bounds(*fitted)
+        return {"moved": True, "bounds": fitted}
 
     def toggle_on_top(self) -> bool:
         value = not bool(self.config.get("always_on_top", True))
@@ -293,6 +379,53 @@ class Shell:
                       private_mode=False, storage_path=str(storage))
         if self.tray is not None:
             self.tray.stop()
+
+
+# ----------------------------------------------------------- geometry
+EDGE_GAP = 8
+
+
+def clamp_bounds(x, y, width, height, area):
+    """
+    ``(x, y, width, height)`` adjusted to fit ``area`` = (left, top, width, height).
+
+    The window is shrunk to the area if it is bigger, then moved so no part
+    of it is off screen. A missing position (first run) is placed near the
+    bottom-right corner, where the widget lives.
+    """
+    left, top, area_w, area_h = (int(v) for v in area)
+    width = max(MIN_SIZE[0], min(int(width), area_w - 2 * EDGE_GAP))
+    height = max(MIN_SIZE[1], min(int(height), area_h - 2 * EDGE_GAP))
+    if x is None or y is None:
+        x = left + area_w - width - 24
+        y = top + area_h - height - 24
+    x = min(max(int(x), left), left + area_w - width)
+    y = min(max(int(y), top), top + area_h - height)
+    return x, y, width, height
+
+
+def _area(area):
+    """A work area from the page: {left, top, width, height} → a tuple."""
+    if not isinstance(area, dict):
+        return None
+    try:
+        values = tuple(int(area[key]) for key in ("left", "top", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return values if values[2] > 0 and values[3] > 0 else None
+
+
+def _primary_work_area():
+    """The main screen, less a taskbar's worth, as (left, top, width, height)."""
+    try:
+        import webview
+
+        screen = webview.screens[0]
+        # pywebview reports whole screens; keep clear of a bottom taskbar.
+        return (int(getattr(screen, "x", 0) or 0), int(getattr(screen, "y", 0) or 0),
+                int(screen.width), int(screen.height) - 48)
+    except Exception:  # noqa: BLE001 - no screen info: the page fits it once loaded
+        return None
 
 
 def _project_root() -> Path:

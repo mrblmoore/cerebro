@@ -3271,7 +3271,8 @@ def test_rightanswers_teach():
           == "https://dental.crm.dynamics.com")
     check("The company addresses are pre-filled",
           settings.DYNAMICS_URL == "https://dental.crm.dynamics.com"
-          and settings.RIGHTANSWERS_URL == "https://dexis.rightanswers.com")
+          and settings.RIGHTANSWERS_URL
+          == "https://dexis.rightanswers.com/solutionmanger/controller/workspace/")
 
     from fastapi.testclient import TestClient
     from app.main import app as fastapi_app
@@ -4093,6 +4094,271 @@ def test_sharepoint_auto_apply():
         db.close()
 
 
+def test_window_sizing():
+    """The desktop window can be resized, expanded and is kept on screen."""
+    print("\nDesktop window — size and fit")
+    sys.path.insert(0, str(ROOT / "desktop"))
+    from unittest import mock
+
+    import shell
+    import widget_config
+
+    area = (0, 0, 1366, 720)                      # a small laptop screen, taskbar excluded
+    check("A window taller than the screen is shrunk to fit",
+          shell.clamp_bounds(900, 10, 440, 900, area)[3] <= 720 - 2 * shell.EDGE_GAP)
+    x, y, w, h = shell.clamp_bounds(1200, 500, 440, 600, area)
+    check("A window hanging off the edge is pulled back on screen",
+          x + w <= 1366 and y + h <= 720, (x, y, w, h))
+    check("A first run is placed near the bottom-right corner",
+          shell.clamp_bounds(None, None, 440, 600, area)[:2] == (1366 - 440 - 24, 720 - 600 - 24))
+    check("It is never made smaller than usable",
+          shell.clamp_bounds(0, 0, 100, 100, area)[2:] == shell.MIN_SIZE)
+    x, y, w, h = shell.clamp_bounds(-1500, 100, 440, 600, (-1920, 0, 1920, 1040))
+    check("A second screen to the left works too", x == -1500 and w == 440)
+
+    with mock.patch.object(widget_config, "load", return_value=dict(widget_config.DEFAULTS)), \
+            mock.patch.object(widget_config, "save"):
+        app = shell.Shell("http://127.0.0.1:1")
+        app.window = mock.MagicMock()
+        app.config.update(x=100, y=100, width=440, height=720)
+        api = shell.ShellApi(app)
+        api.set_bounds(100, 100, 600, 800)
+        check("Dragging a handle resizes the window", app.window.resize.call_args[0] == (600, 800)
+              and app.config["width"] == 600)
+        api.set_bounds(60, 100, 200, 200)
+        check("…but not below the minimum size",
+              app.window.resize.call_args[0] == shell.MIN_SIZE and app.window.move.called)
+        check("Expand maximizes", api.toggle_maximize() is True and app.window.maximize.called)
+        app._on_resized(1920, 1040)
+        check("An expanded window doesn't overwrite the remembered size", app.config["width"] == 360)
+        check("…and expanding again restores it", api.toggle_maximize() is False and app.window.restore.called)
+        result = api.set_size("tall", {"left": 0, "top": 0, "width": 1366, "height": 720})
+        check("'Full height' fills the screen's height", result["height"] == 720 - 2 * shell.EDGE_GAP)
+        result = api.set_size("large", {"left": 0, "top": 0, "width": 1366, "height": 720})
+        check("A preset bigger than the screen is fitted to it", result["height"] <= 720)
+        app.config.update(x=1200, y=600, width=440, height=600)
+        fitted = api.fit({"left": 0, "top": 0, "width": 1366, "height": 720})
+        check("A window that ended up off screen is brought back", fitted["moved"]
+              and fitted["bounds"][0] + 440 <= 1366)
+        check("A window that fits is left alone",
+              api.fit({"left": 0, "top": 0, "width": 2560, "height": 1400})["moved"] is False)
+
+    # The page's resize handles, against a stand-in for the desktop bridge.
+    from app.services.browser.engine import playwright_installed
+    if not playwright_installed():
+        print("  - skipped page part: Playwright is not installed")
+        return
+    import threading
+    from playwright.sync_api import sync_playwright
+    import uvicorn
+    from app.main import app as fastapi_app
+
+    config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=0, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    import time as _time
+    for _ in range(100):
+        if server.started:
+            break
+        _time.sleep(0.05)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    bridge = """
+      window.__calls = [];
+      window.pywebview = { api: new Proxy({}, { get: (_, name) => (...args) => {
+        window.__calls.push([name, ...args]);
+        return Promise.resolve(name === 'toggle_maximize' ? true : null); } }) };
+    """
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 440, "height": 640},
+                                    screen={"width": 1920, "height": 1080})
+            page.add_init_script(bridge)
+            page.goto(f"http://127.0.0.1:{port}/app?shell=1")
+            page.wait_for_timeout(800)
+            check("The resize grip is shown in the desktop window",
+                  page.locator(".resize-grip").is_visible())
+            box = page.locator(".resize-grip").bounding_box()
+            page.mouse.move(box["x"] + 8, box["y"] + 8)
+            page.mouse.down()
+            page.mouse.move(box["x"] + 108, box["y"] + 158, steps=6)
+            page.mouse.up()
+            page.wait_for_timeout(200)
+            sizes = [c for c in page.evaluate("window.__calls") if c[0] == "set_bounds"]
+            check("Dragging the corner grip resizes the window",
+                  bool(sizes) and sizes[-1][3] > 440 and sizes[-1][4] > 640, sizes[-1:] or sizes)
+            page.dblclick(".brand-name")
+            page.wait_for_timeout(200)
+            check("Double-clicking the title bar expands the window",
+                  any(c[0] == "toggle_maximize" for c in page.evaluate("window.__calls"))
+                  and page.evaluate("document.body.classList.contains('maximized')"))
+            check("…and hides the resize handles while expanded",
+                  not page.locator(".resize-grip").is_visible())
+            check("The window is fitted to the screen when it opens",
+                  any(c[0] == "fit" for c in page.evaluate("window.__calls")))
+            page.keyboard.press("Control+=")
+            check("Ctrl + makes the text bigger",
+                  page.evaluate("document.documentElement.style.zoom") == "1.1")
+            page.keyboard.press("Control+0")
+            page.close()
+
+            plain = browser.new_page(viewport={"width": 360, "height": 480})
+            plain.goto(f"http://127.0.0.1:{port}/app")
+            plain.wait_for_timeout(600)
+            check("A plain browser tab has no resize handles",
+                  not plain.locator(".resize-grip").is_visible())
+            composer = plain.locator("#composer").bounding_box()
+            check("At the smallest size the message box is still on screen",
+                  composer and composer["y"] + composer["height"] <= 480, composer)
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def _fake_solution_manager():
+    """A RightAnswers SolutionManager workspace: search box and articles in a frame.
+
+    Only the "solutionmanager" spelling exists here, so the address the user
+    gave ("solutionmanger") has to fall back to it.
+    """
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    articles = {"KB900": ("Sensor not detected after Windows update",
+                          "Reinstall the DEXIS sensor driver, then restart the imaging service.")}
+    root = "/solutionmanager/controller"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, status, body):
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            query = parse_qs(url.query)
+            if url.path == f"{root}/workspace/":
+                return self._send(200, "<title>SolutionManager</title><h1>Workspace</h1>"
+                                       f"<iframe name='work' src='{root}/frame/search' "
+                                       "width=600 height=400></iframe>")
+            if url.path == f"{root}/frame/search":
+                return self._send(200, f"<form action='{root}/frame/results'>"
+                                       "<input id='smSearch' name='q' placeholder='Search knowledge'>"
+                                       "</form>")
+            if url.path == f"{root}/frame/results":
+                text = (query.get("q") or [""])[0].lower()
+                hits = [f"<li class='sm-hit'><a href='{root}/viewsolution?solutionid={key}'>"
+                        f"{title}</a><p>{body[:60]}</p></li>"
+                        for key, (title, body) in articles.items()
+                        if any(word in (title + body).lower() for word in text.split())]
+                return self._send(200, f"<ul>{''.join(hits)}</ul>")
+            if url.path == f"{root}/viewsolution":
+                key = (query.get("solutionid") or [""])[0]
+                if key in articles:
+                    title, body = articles[key]
+                    return self._send(200, f"<h1 class='solution-title'>{title}</h1>"
+                                           f"<div class='solution-body'><p>{body}</p></div>")
+            return self._send(404, "<title>404 Not Found</title>Not found")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_rightanswers_workspace():
+    """RightAnswers starts from the SolutionManager workspace, frames and all."""
+    print("\nRightAnswers — SolutionManager workspace")
+    import importlib
+    import sys as _sys
+    from unittest import mock
+
+    from app.core.config import Settings, settings
+    from app.services import browser
+    from app.services.browser.connector import normalise_page
+    from app.services.browser.engine import playwright_installed
+    from app.services.browser.teach import Teacher
+
+    check("The workspace is the pre-filled address",
+          settings.RIGHTANSWERS_URL.endswith("/solutionmanger/controller/workspace/"))
+    check("An address saved by 0.4.0 is upgraded to the workspace",
+          Settings(RIGHTANSWERS_URL="https://dexis.rightanswers.com/").RIGHTANSWERS_URL
+          == settings.RIGHTANSWERS_URL)
+    check("A different address is kept as typed",
+          Settings(RIGHTANSWERS_URL="https://kb.example.com/x/").RIGHTANSWERS_URL
+          == "https://kb.example.com/x/")
+    check("The page path is kept, not just the site",
+          normalise_page("dexis.rightanswers.com/solutionmanger/controller/workspace/")
+          == "https://dexis.rightanswers.com/solutionmanger/controller/workspace/")
+    rightanswers = browser.get("rightanswers")
+    with mock.patch.object(settings, "RIGHTANSWERS_URL",
+                           "https://dexis.rightanswers.com/solutionmanger/controller/workspace/"):
+        check("RightAnswers starts from the workspace",
+              rightanswers.sign_in_url().endswith("/controller/workspace/")
+              and rightanswers.base_url == "https://dexis.rightanswers.com")
+    with mock.patch.object(settings, "DYNAMICS_URL",
+                           "https://dental.crm.dynamics.com/main.aspx?pagetype=entityrecord"):
+        check("A pasted Dynamics link still means just the site",
+              browser.get("dynamics").start_url == "https://dental.crm.dynamics.com")
+
+    # Teach recognises a search typed into the workspace, whose address doesn't change.
+    teacher = Teacher(rightanswers)
+    snap = {"url": "https://x/workspace/", "html": "<iframe></iframe>", "frames": [
+        {"url": "https://x/workspace/", "html": "", "inputs": []},
+        {"url": "https://x/frame/results", "html": "<a href='a'>1</a><a href='b'>2</a>",
+         "inputs": [{"value": "password", "selector": "#smSearch"}]}]}
+    found = teacher._search_in(snap, "password")
+    check("Teach learns an in-page search box", found and found["learned"]["search_input"] == "#smSearch")
+
+    if not playwright_installed():
+        print("  - skipped browser part: Playwright is not installed")
+        return
+    server = _fake_solution_manager()
+    base = f"http://127.0.0.1:{server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    connectors_dir = Path(_TEMP_DIR) / "sm_connectors"
+    connector_module = importlib.import_module("app.services.browser.connector")
+    overrides = {"BROWSER_AUTOMATION_ENABLED": True, "RIGHTANSWERS_ENABLED": True,
+                 "RIGHTANSWERS_URL": f"{base}/solutionmanger/controller/workspace/",
+                 "BROWSER_MODE": "headless", "BROWSER_TIMEOUT_SECONDS": 15,
+                 "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium"}
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches += [mock.patch.object(engine_module, "BROWSER_PROFILE_DIR", Path(_TEMP_DIR) / "sm_profile"),
+                mock.patch.object(connector_module, "CONNECTORS_DIR", connectors_dir)]
+    for patch in patches:
+        patch.start()
+    try:
+        try:
+            results = rightanswers.search("sensor driver")
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+        check("The other spelling is tried when the given one doesn't exist",
+              rightanswers.start_url == f"{base}/solutionmanager/controller/workspace/")
+        check("…and remembered for next time",
+              "solutionmanager" in (connectors_dir / "rightanswers.json").read_text())
+        check("A search runs through the workspace's search box inside its frame",
+              [r["id"] for r in results] == ["KB900"], results)
+        article = rightanswers.get_article(results[0]["url"])
+        check("The article is read", "imaging service" in article["body"]
+              and article["title"].startswith("Sensor not detected"))
+        check("The Connect card shows the workspace", rightanswers.status()["url"].endswith(
+            "/solutionmanager/controller/workspace/"))
+    finally:
+        browser.engine().shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        server.shutdown()
+
+
 # -------------------------------------------------------------------- main
 def main() -> int:
     print("Running Cerebro tests…")
@@ -4126,7 +4392,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

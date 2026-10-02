@@ -40,6 +40,20 @@ POLL_SECONDS = 1.5
 
 #: Finds what the page shows for one result link: the repeated container
 #: around it, and a selector for that container.
+#: Every input's typed value, with a selector for it — how an in-page search
+#: (a workspace whose address doesn't change) is recognised.
+_INPUTS_JS = r"""
+() => [...document.querySelectorAll('input:not([type=hidden]):not([type=password])')]
+  .filter(el => el.value)
+  .map(el => ({
+    value: el.value,
+    selector: el.id ? `#${CSS.escape(el.id)}`
+      : el.name ? `input[name='${el.name}']`
+      : el.placeholder ? `input[placeholder='${el.placeholder.replace(/'/g, "\\'")}']`
+      : 'input[type=search], input[type=text]',
+  }))
+"""
+
 _RESULT_SHAPE_JS = r"""
 (hrefPart) => {
   const link = [...document.querySelectorAll('a[href]')].find(a => a.href.includes(hrefPart));
@@ -122,6 +136,11 @@ def _strip_hidden_values(html: str) -> str:
                   r'\1\2\2', html or "", flags=re.IGNORECASE)
 
 
+def _addresses(snap: Dict[str, Any]) -> set:
+    """The page's address and every frame's."""
+    return {snap["url"]} | {frame["url"] for frame in snap.get("frames", [])}
+
+
 class Teacher:
     """Runs one teaching session; status is read by the API while it runs."""
 
@@ -182,7 +201,17 @@ class Teacher:
                 page.wait_for_load_state("domcontentloaded", timeout=3000)
             except Exception:  # noqa: BLE001
                 pass
-            return {"url": page.url, "html": page.content(), "page": len(pages) - 1}
+            # Workspaces like SolutionManager keep the top address and work in
+            # frames, so each frame's address, markup and typed inputs count.
+            frames = []
+            for frame in page.frames:
+                try:
+                    frames.append({"url": frame.url, "html": frame.content(),
+                                   "inputs": frame.evaluate(_INPUTS_JS)})
+                except Exception:  # noqa: BLE001 - a frame mid-navigation
+                    continue
+            return {"url": page.url, "html": page.content(), "page": len(pages) - 1,
+                    "frames": frames}
 
         try:
             return engine().submit(job, "Watching RightAnswers", timeout=30)
@@ -212,30 +241,41 @@ class Teacher:
         deadline = time.time() + STEP_TIMEOUT_SECONDS
         word = TEACH_WORD
         try:
-            # Step 1 — the search results page: its address contains the word.
+            # Step 1 — the search results page: its address (or a frame's)
+            # contains the word, or the word was typed into a search box.
             while time.time() < deadline:
                 time.sleep(POLL_SECONDS)
                 snap = self._snapshot()
                 if snap is None:
                     continue
-                if word in unquote_plus(snap["url"]).lower():
-                    captures["search"] = snap
-                    learned.update(self._learn_search(snap["url"]))
+                found = self._search_in(snap, word)
+                if found:
+                    captures["search"] = found["snap"]
+                    learned.update(found["learned"])
                     self._set(status="opening", learned=dict(learned),
                               detail="Got the search page. Now open any result.")
                     break
             else:
                 return self._finish("failed", "No search was seen within 10 minutes.", captures, learned)
 
-            # Step 2 — an article: a new address that isn't the search page.
+            # Step 2 — an article: a new address (top or frame) that isn't the search page.
+            seen = _addresses(captures["search"])
             while time.time() < deadline:
                 time.sleep(POLL_SECONDS)
                 snap = self._snapshot()
-                if snap is None or snap["url"] == captures["search"]["url"]:
+                if snap is None:
                     continue
-                if word in unquote_plus(snap["url"]).lower():
+                new = [url for url in _addresses(snap) if url not in seen]
+                if not new:
+                    continue
+                if any(word in unquote_plus(url).lower() for url in new):
                     captures["search"] = snap        # a refined search; keep watching
+                    seen = _addresses(snap)
                     continue
+                if snap["url"] in seen:
+                    # The article opened inside a frame: analyse that frame.
+                    frame = next(f for f in snap.get("frames", []) if f["url"] in new)
+                    snap = {**snap, "url": frame["url"], "html": frame["html"]}
                 captures["article"] = snap
                 learned.update(self._learn_article(snap, captures["search"]))
                 self._set(status="editing", learned=dict(learned),
@@ -264,6 +304,26 @@ class Teacher:
             self._finish("failed", f"Teaching stopped: {exc}", captures, learned)
 
     # ---------------------------------------------------------- learning
+    def _search_in(self, snap: Dict[str, Any], word: str) -> Optional[Dict[str, Any]]:
+        """Where the teaching search shows up in ``snap``, and what it teaches."""
+        if word in unquote_plus(snap["url"]).lower():
+            return {"snap": snap, "learned": self._learn_search(snap["url"])}
+        for frame in snap.get("frames", []):
+            if word in unquote_plus(frame["url"]).lower():
+                return {"snap": {**snap, "url": frame["url"], "html": frame["html"]},
+                        "learned": self._learn_search(frame["url"])}
+        for frame in snap.get("frames", []):
+            for item in frame.get("inputs") or []:
+                if word in (item.get("value") or "").lower():
+                    # An in-page search: the address doesn't change, so the
+                    # search box is what is learned. Results are analysed in
+                    # whichever frame now shows the most links.
+                    best = max(snap.get("frames") or [frame],
+                               key=lambda f: f["html"].count("<a "))
+                    return {"snap": {**snap, "html": best["html"]},
+                            "learned": {"search_input": item["selector"], "search_url": ""}}
+        return None
+
     def _template(self, url: str, value: str, placeholder: str) -> str:
         """``url`` with ``value`` replaced by ``{placeholder}`` and the host by ``{base}``."""
         base = self.connector.base_url
@@ -324,7 +384,7 @@ class Teacher:
             for name, snap in captures.items():
                 archive.writestr(f"{name}.html", _strip_hidden_values(snap.get("html", "")))
 
-        if learned.get("search_url"):
+        if learned.get("search_url") or learned.get("search_input"):
             path = CONNECTORS_DIR / "rightanswers.json"
             try:
                 existing = json.loads(path.read_text(encoding="utf-8"))

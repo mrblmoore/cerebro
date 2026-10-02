@@ -408,8 +408,8 @@ FIELDS: List[Field] = [
           "Search, read and (with your approval) update knowledge articles.", type="bool",
           show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
     Field("RIGHTANSWERS_URL", "RightAnswers address", "integrations",
-          "The address you open RightAnswers at. Pre-filled with DEXIS's; only the host "
-          "matters, so a full page address works too.",
+          "The page you work in RightAnswers from — pre-filled with DEXIS's SolutionManager "
+          "workspace, where the articles are. Cerebro starts every search there.",
           type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
                                     ("RIGHTANSWERS_ENABLED", [True])]),
     Field("DYNAMICS_ENABLED", "Dynamics 365", "integrations",

@@ -131,11 +131,40 @@ $('#theme-btn').addEventListener('click', () => {
 });
 
 $('#menu-btn').addEventListener('click', event => {
-  showMenu(event.currentTarget, [
+  const items = [
     ['Open dashboard', () => openExternal(`${location.origin}/`)],
     ['Settings', () => openExternal(`${location.origin}/settings`)],
     ['New chat', () => { selectTab('ask'); newChat(); }],
-  ]);
+  ];
+  if (shell()) {
+    items.push(['Window size: small', () => setWindowSize('small')],
+               ['Window size: medium', () => setWindowSize('medium')],
+               ['Window size: large', () => setWindowSize('large')],
+               ['Window size: full height', () => setWindowSize('tall')]);
+  }
+  items.push(['Text size: larger  (Ctrl +)', () => setZoom(zoom + 0.1)],
+             ['Text size: smaller  (Ctrl −)', () => setZoom(zoom - 0.1)],
+             ['Text size: reset  (Ctrl 0)', () => setZoom(1)]);
+  showMenu(event.currentTarget, items);
+});
+
+// -------------------------------------------------------- text size
+// Ctrl + / − / 0, remembered. Everything is laid out in CSS pixels, so zoom
+// scales the whole interface rather than just the text.
+let zoom = 1;
+try { zoom = Number(localStorage.getItem('cerebro.zoom')) || 1; } catch { /* ignore */ }
+function setZoom(value) {
+  zoom = Math.min(1.6, Math.max(0.8, Math.round(value * 10) / 10));
+  document.documentElement.style.zoom = zoom === 1 ? '' : String(zoom);
+  try { localStorage.setItem('cerebro.zoom', String(zoom)); } catch { /* ignore */ }
+  moveIndicator();
+}
+setZoom(zoom);
+document.addEventListener('keydown', event => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+  if (event.key === '=' || event.key === '+') { event.preventDefault(); setZoom(zoom + 0.1); }
+  else if (event.key === '-') { event.preventDefault(); setZoom(zoom - 0.1); }
+  else if (event.key === '0') { event.preventDefault(); setZoom(1); }
 });
 
 function showMenu(anchor, items) {
@@ -178,9 +207,88 @@ function initShell() {
     const pinned = await shell()?.toggle_on_top();
     e.currentTarget.setAttribute('aria-pressed', String(Boolean(pinned)));
   });
+  $('#max-btn').addEventListener('click', toggleMaximize);
+  // Double-click the title bar to expand or restore, like any Windows app.
   $('.titlebar').addEventListener('dblclick', e => {
-    if (!e.target.closest('button')) $('#compact-btn').click();
+    if (!e.target.closest('button')) toggleMaximize();
   });
+  $$('[data-edge]').forEach(handle => handle.addEventListener('pointerdown', startResize));
+  fitToScreen();
+  // Brought back from the tray, or the screen changed (a monitor unplugged).
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) fitToScreen(); });
+  addEventListener('resize', debounce(fitToScreen, 400));
+}
+
+function workArea() {
+  const s = window.screen;
+  return { left: s.availLeft ?? 0, top: s.availTop ?? 0, width: s.availWidth, height: s.availHeight };
+}
+
+function fitToScreen() {
+  if (document.body.classList.contains('compact') || document.body.classList.contains('maximized')) return;
+  shell()?.fit(workArea(), { x: window.screenX, y: window.screenY,
+    width: window.outerWidth, height: window.outerHeight });
+}
+
+async function toggleMaximize() {
+  const maximized = await shell()?.toggle_maximize();
+  document.body.classList.toggle('maximized', Boolean(maximized));
+  document.body.classList.remove('compact');
+  $('#max-btn').setAttribute('aria-pressed', String(Boolean(maximized)));
+  $('#max-btn').title = maximized ? 'Restore' : 'Expand';
+}
+
+async function setWindowSize(preset) {
+  document.body.classList.remove('compact', 'maximized');
+  $('#max-btn')?.setAttribute('aria-pressed', 'false');
+  await shell()?.set_size(preset, workArea());
+}
+
+/** Drag an edge or the corner grip to resize the frameless window. */
+function startResize(event) {
+  if (!shell() || event.button !== 0 || document.body.classList.contains('compact')) return;
+  event.preventDefault();
+  const handle = event.currentTarget;
+  const edge = handle.dataset.edge;
+  handle.setPointerCapture(event.pointerId);
+  const start = { px: event.screenX, py: event.screenY, x: window.screenX, y: window.screenY,
+    w: window.outerWidth, h: window.outerHeight };
+  const area = workArea();
+  let pending = null;
+  let frame = 0;
+  const move = e => {
+    const dx = e.screenX - start.px;
+    const dy = e.screenY - start.py;
+    let { x, y, w, h } = start;
+    if (edge.includes('right')) w = start.w + dx;
+    if (edge.includes('bottom')) h = start.h + dy;
+    if (edge.includes('left')) { w = start.w - dx; x = start.x + dx; }
+    w = Math.max(360, Math.min(w, area.width));
+    h = Math.max(420, Math.min(h, area.height));
+    if (edge.includes('left')) x = start.x + start.w - w;
+    pending = [Math.round(x), Math.round(y), Math.round(w), Math.round(h)];
+    if (!frame) frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (pending) shell().set_bounds(...pending);
+    });
+  };
+  const end = () => {
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', end);
+    handle.removeEventListener('pointercancel', end);
+    document.body.classList.remove('resizing');
+    document.body.classList.remove('maximized');
+    $('#max-btn')?.setAttribute('aria-pressed', 'false');
+  };
+  document.body.classList.add('resizing');
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 if (window.pywebview?.api) initShell();
 else window.addEventListener('pywebviewready', initShell);
