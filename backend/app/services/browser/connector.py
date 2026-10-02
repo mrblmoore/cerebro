@@ -81,6 +81,20 @@ _READABLE_JS = """
 """
 
 
+def normalise_page(value) -> str:
+    """Like :func:`normalise_address`, but keeps the page path (and query)."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "https://" + text.lstrip("/")
+    parsed = urlparse(text)
+    if not parsed.netloc:
+        return ""
+    page = f"{parsed.scheme or 'https'}://{parsed.netloc}{parsed.path or ''}"
+    return page + (f"?{parsed.query}" if parsed.query else "")
+
+
 def normalise_address(value) -> str:
     """``dental.crm.dynamics.com/main.aspx?…`` → ``https://dental.crm.dynamics.com``."""
     text = str(value or "").strip()
@@ -117,6 +131,9 @@ class BrowserConnector:
     url_setting = ""
     #: ``settings`` attribute that lets its changes skip approval ("" = never).
     auto_apply_setting = ""
+    #: Whether the configured address is a page to start from (RightAnswers'
+    #: workspace) rather than just the site (a pasted Dynamics case link).
+    keep_path = False
     #: Default selectors; tenants override them in CONNECTORS_DIR/<name>.json.
     default_selectors: Dict[str, Any] = {}
 
@@ -173,15 +190,51 @@ class BrowserConnector:
                         {"connector": self.name, "error": str(exc)})
         return merged
 
+    def remember(self, **values) -> None:
+        """Save learned settings (e.g. a working start page) to CONNECTORS_DIR/<name>.json."""
+        path = CONNECTORS_DIR / f"{self.name}.json"
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict):
+                existing = {}
+        except (OSError, ValueError):
+            existing = {}
+        existing.update(values)
+        try:
+            CONNECTORS_DIR.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.warn("browser", "Could not save connector settings",
+                        {"connector": self.name, "error": str(exc)})
+
+    def open_start(self, page):
+        """Open the page work starts from; returns Playwright's response."""
+        response = page.goto(self.sign_in_url(), wait_until="domcontentloaded")
+        self.settle(page)
+        return response
+
+    @property
+    def start_url(self) -> str:
+        """The page work starts from: a learned working page, the configured
+        page (for connectors that keep the path), or the site itself."""
+        learned = self.selectors().get("start_url")
+        if learned:
+            return learned
+        if self.keep_path:
+            page = normalise_page(getattr(settings, self.url_setting, None))
+            if page and urlparse(page).path not in ("", "/"):
+                return page
+        return self.base_url
+
     def url(self, path: str = "") -> str:
         if not path:
-            return self.base_url
+            return self.start_url
         if path.startswith(("http://", "https://")):
             return path
         return urljoin(self.base_url + "/", path.lstrip("/"))
 
     def sign_in_url(self) -> str:
-        return self.base_url
+        return self.start_url
 
     # --------------------------------------------------------- sign-in
     @staticmethod
@@ -305,8 +358,7 @@ class BrowserConnector:
 
     def _probe_signed_in(self, eng):
         page = eng.page(self.name)
-        page.goto(self.sign_in_url(), wait_until="domcontentloaded")
-        self.settle(page)
+        self.open_start(page)
         if not self.is_signed_in(page):
             return False, None
         try:
@@ -355,7 +407,7 @@ class BrowserConnector:
             sign_in = dict(self._sign_in)
         return {
             "name": self.name, "label": self.label,
-            "enabled": self.enabled, "url": self.base_url or None,
+            "enabled": self.enabled, "url": self.start_url or None,
             "configured": bool(self.base_url),
             "signed_in": signed_in, "checked_at": checked,
             "account": self._account if signed_in else None,
@@ -370,7 +422,7 @@ class BrowserConnector:
         return bool(self.auto_apply_setting and getattr(settings, self.auto_apply_setting, False))
 
     # -------------------------------------------------------- page work
-    def run(self, fn: Callable[[Any], Any], label: str) -> Any:
+    def run(self, fn: Callable[[Any], Any], label: str, quiet: bool = False) -> Any:
         """Run ``fn(page)`` on this connector's tab in the hidden browser.
 
         Raises :class:`SignInRequired` when the site sends the browser to a
@@ -383,7 +435,7 @@ class BrowserConnector:
             return fn(page)
 
         try:
-            result = engine().submit(job, label)
+            result = engine().submit(job, label, quiet=quiet)
         except SignInRequired:
             with self._state_lock:
                 self._signed_in, self._checked_at = False, time.time()
@@ -401,8 +453,11 @@ class BrowserConnector:
 
     def goto(self, page, path: str = "") -> None:
         """Navigate on this system, raising SignInRequired on a login page."""
-        page.goto(self.url(path), wait_until="domcontentloaded")
-        self.settle(page)
+        if not path:
+            self.open_start(page)
+        else:
+            page.goto(self.url(path), wait_until="domcontentloaded")
+            self.settle(page)
         if self.looks_like_login(page.url) or not self.on_own_site(page.url):
             raise SignInRequired(self)
 

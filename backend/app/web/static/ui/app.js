@@ -131,11 +131,40 @@ $('#theme-btn').addEventListener('click', () => {
 });
 
 $('#menu-btn').addEventListener('click', event => {
-  showMenu(event.currentTarget, [
+  const items = [
     ['Open dashboard', () => openExternal(`${location.origin}/`)],
     ['Settings', () => openExternal(`${location.origin}/settings`)],
     ['New chat', () => { selectTab('ask'); newChat(); }],
-  ]);
+  ];
+  if (shell()) {
+    items.push(['Window size: small', () => setWindowSize('small')],
+               ['Window size: medium', () => setWindowSize('medium')],
+               ['Window size: large', () => setWindowSize('large')],
+               ['Window size: full height', () => setWindowSize('tall')]);
+  }
+  items.push(['Text size: larger  (Ctrl +)', () => setZoom(zoom + 0.1)],
+             ['Text size: smaller  (Ctrl −)', () => setZoom(zoom - 0.1)],
+             ['Text size: reset  (Ctrl 0)', () => setZoom(1)]);
+  showMenu(event.currentTarget, items);
+});
+
+// -------------------------------------------------------- text size
+// Ctrl + / − / 0, remembered. Everything is laid out in CSS pixels, so zoom
+// scales the whole interface rather than just the text.
+let zoom = 1;
+try { zoom = Number(localStorage.getItem('cerebro.zoom')) || 1; } catch { /* ignore */ }
+function setZoom(value) {
+  zoom = Math.min(1.6, Math.max(0.8, Math.round(value * 10) / 10));
+  document.documentElement.style.zoom = zoom === 1 ? '' : String(zoom);
+  try { localStorage.setItem('cerebro.zoom', String(zoom)); } catch { /* ignore */ }
+  moveIndicator();
+}
+setZoom(zoom);
+document.addEventListener('keydown', event => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+  if (event.key === '=' || event.key === '+') { event.preventDefault(); setZoom(zoom + 0.1); }
+  else if (event.key === '-') { event.preventDefault(); setZoom(zoom - 0.1); }
+  else if (event.key === '0') { event.preventDefault(); setZoom(1); }
 });
 
 function showMenu(anchor, items) {
@@ -178,9 +207,88 @@ function initShell() {
     const pinned = await shell()?.toggle_on_top();
     e.currentTarget.setAttribute('aria-pressed', String(Boolean(pinned)));
   });
+  $('#max-btn').addEventListener('click', toggleMaximize);
+  // Double-click the title bar to expand or restore, like any Windows app.
   $('.titlebar').addEventListener('dblclick', e => {
-    if (!e.target.closest('button')) $('#compact-btn').click();
+    if (!e.target.closest('button')) toggleMaximize();
   });
+  $$('[data-edge]').forEach(handle => handle.addEventListener('pointerdown', startResize));
+  fitToScreen();
+  // Brought back from the tray, or the screen changed (a monitor unplugged).
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) fitToScreen(); });
+  addEventListener('resize', debounce(fitToScreen, 400));
+}
+
+function workArea() {
+  const s = window.screen;
+  return { left: s.availLeft ?? 0, top: s.availTop ?? 0, width: s.availWidth, height: s.availHeight };
+}
+
+function fitToScreen() {
+  if (document.body.classList.contains('compact') || document.body.classList.contains('maximized')) return;
+  shell()?.fit(workArea(), { x: window.screenX, y: window.screenY,
+    width: window.outerWidth, height: window.outerHeight });
+}
+
+async function toggleMaximize() {
+  const maximized = await shell()?.toggle_maximize();
+  document.body.classList.toggle('maximized', Boolean(maximized));
+  document.body.classList.remove('compact');
+  $('#max-btn').setAttribute('aria-pressed', String(Boolean(maximized)));
+  $('#max-btn').title = maximized ? 'Restore' : 'Expand';
+}
+
+async function setWindowSize(preset) {
+  document.body.classList.remove('compact', 'maximized');
+  $('#max-btn')?.setAttribute('aria-pressed', 'false');
+  await shell()?.set_size(preset, workArea());
+}
+
+/** Drag an edge or the corner grip to resize the frameless window. */
+function startResize(event) {
+  if (!shell() || event.button !== 0 || document.body.classList.contains('compact')) return;
+  event.preventDefault();
+  const handle = event.currentTarget;
+  const edge = handle.dataset.edge;
+  handle.setPointerCapture(event.pointerId);
+  const start = { px: event.screenX, py: event.screenY, x: window.screenX, y: window.screenY,
+    w: window.outerWidth, h: window.outerHeight };
+  const area = workArea();
+  let pending = null;
+  let frame = 0;
+  const move = e => {
+    const dx = e.screenX - start.px;
+    const dy = e.screenY - start.py;
+    let { x, y, w, h } = start;
+    if (edge.includes('right')) w = start.w + dx;
+    if (edge.includes('bottom')) h = start.h + dy;
+    if (edge.includes('left')) { w = start.w - dx; x = start.x + dx; }
+    w = Math.max(360, Math.min(w, area.width));
+    h = Math.max(420, Math.min(h, area.height));
+    if (edge.includes('left')) x = start.x + start.w - w;
+    pending = [Math.round(x), Math.round(y), Math.round(w), Math.round(h)];
+    if (!frame) frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (pending) shell().set_bounds(...pending);
+    });
+  };
+  const end = () => {
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', end);
+    handle.removeEventListener('pointercancel', end);
+    document.body.classList.remove('resizing');
+    document.body.classList.remove('maximized');
+    $('#max-btn')?.setAttribute('aria-pressed', 'false');
+  };
+  document.body.classList.add('resizing');
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 if (window.pywebview?.api) initShell();
 else window.addEventListener('pywebviewready', initShell);
@@ -337,6 +445,12 @@ function messageNode(message) {
     <div class="bubble glass">
       ${fromTask ? `<div class="task-tag">${ICONS.clock}<span>${esc(meta.task.title)}</span>
         <span class="meta">${message.created_at ? relTime(message.created_at) : ''}</span></div>` : ''}
+      ${meta.incoming ? `<div class="incoming">
+        <div class="incoming-head"><span class="logo sm ${esc(meta.incoming.source)}">${LOGO[meta.incoming.source] || '✉'}</span>
+          <b>${esc(meta.incoming.sender || '')}</b>${meta.incoming.chat ? `<span class="meta">${esc(meta.incoming.chat)}</span>` : ''}
+          <span class="meta">#${esc(meta.incoming.id)}</span></div>
+        ${meta.incoming.subject ? `<div class="incoming-subject">${esc(meta.incoming.subject)}</div>` : ''}
+        <div class="incoming-preview">${esc((meta.incoming.preview || '').slice(0, 280))}</div></div>` : ''}
       ${message.steps ? stepsHTML(message.steps) : ''}
       <div class="md">${renderMarkdown(message.content || '')}</div>
       ${imagesHTML(meta.images)}
@@ -450,7 +564,7 @@ function statusBadge(status) {
   const map = {
     awaiting_approval: ['warn', 'Needs approval'], done: ['ok', 'Done'], running: ['accent', 'Running'],
     failed: ['err', 'Failed'], discarded: ['', 'Discarded'], queued: ['ok', 'Queued'],
-    undone: ['', 'Undone'],
+    undone: ['', 'Undone'], sent: ['ok', 'Sent'],
   };
   const [kind, label] = map[status] || ['', status];
   return `<span class="badge ${kind}">${esc(label)}</span>`;
@@ -508,11 +622,13 @@ function wordDiff(a, b) {
 function draftCard(card) {
   const node = document.createElement('div');
   const awaiting = card.status === 'awaiting_approval';
-  node.className = `action-card ${awaiting ? 'awaiting' : 'done'}`;
+  node.className = `action-card ${awaiting ? 'awaiting' : card.status === 'failed' ? 'failed' : 'done'}`;
   const to = card.chat_or_channel || (card.to || []).join(', ');
+  const via = card.via === 'browser' ? (card.source === 'teams' ? 'Teams' : 'Outlook') : 'Power Automate';
   node.innerHTML = `
     <div class="action-head"><span class="title">${esc(card.title || 'Draft')}</span>
-      <span class="badge accent">Power Automate</span>${statusBadge(card.status || 'awaiting_approval')}</div>
+      <span class="badge accent">${esc(via)}</span>${card.automatic && card.status === 'sent'
+        ? '<span class="badge ok">Sent automatically</span>' : statusBadge(card.status || 'awaiting_approval')}</div>
     <div class="meta" style="font-size:11.5px;color:var(--text-faint);margin-bottom:6px">${to ? `To ${esc(to)}` : ''}${card.subject ? ` · ${esc(card.subject)}` : ''}</div>
     <div class="draft-body">${esc(card.body || '')}</div>
     ${awaiting ? `<div class="btn-row">
@@ -1102,6 +1218,8 @@ async function loadActivity() {
     api.get('/api/tasks?limit=10').catch(() => ({ tasks: [] })),
     api.get('/api/events/?limit=8').catch(() => []),
   ]);
+  const messages = await api.get('/api/enterprise/messages?unhandled_only=true&limit=8')
+    .catch(() => ({ messages: [] }));
   const lists = $('#activity-lists');
   lists.innerHTML = '';
   const pending = (changes.changes || []).filter(c => c.status === 'draft');
@@ -1132,6 +1250,34 @@ async function loadActivity() {
     });
     lists.append(card);
   });
+
+  if ((messages.messages || []).length) {
+    lists.insertAdjacentHTML('beforeend', `<div class="section-title">New messages<span class="grow"></span></div>`);
+    messages.messages.forEach(message => {
+      const row = document.createElement('div');
+      row.className = 'card glass message-row';
+      const flags = [
+        message.urgency === 'high' ? '<span class="badge err">Urgent</span>' : '',
+        message.mentioned ? '<span class="badge accent">@you</span>' : '',
+        message.direct && !message.mentioned ? '<span class="badge">To you</span>' : '',
+        message.case_id ? `<span class="badge">${esc(message.case_id)}</span>` : '',
+      ].join('');
+      row.innerHTML = `<div class="list-row">
+        <div class="logo sm ${esc(message.source)}">${LOGO[message.source] || '✉'}</div>
+        <div class="grow"><div class="title">${esc(message.sender_name || message.sender || 'Someone')}${message.chat_or_channel ? ` · ${esc(message.chat_or_channel)}` : ''}</div>
+          <div class="meta">${esc(message.subject || message.preview || '')}</div></div>
+        <button class="btn sm" data-look>Look into it</button></div>
+        ${flags ? `<div class="flags">${flags}</div>` : ''}`;
+      $('[data-look]', row).addEventListener('click', async () => {
+        selectTab('ask');
+        const inbox = state.chats.find(c => c.title === 'Inbox' && !c.archived);
+        if (inbox) await openChat(inbox.id);
+        input.value = `Look into message #${message.id} from ${message.sender_name || message.sender || 'them'} and suggest a reply.`;
+        send();
+      });
+      lists.append(row);
+    });
+  }
 
   if (recent.length) {
     lists.insertAdjacentHTML('beforeend', `<div class="section-title">Recent changes<span class="grow"></span></div>`);
@@ -1206,7 +1352,8 @@ $('#kb-search').addEventListener('input', e => {
 });
 
 // ================================================================= Connect
-const LOGO = { dynamics: 'D365', rightanswers: 'RA', sharepoint: 'SP' };
+const LOGO = { dynamics: 'D365', rightanswers: 'RA', sharepoint: 'SP', outlook: 'OL', teams: 'T' };
+const MESSAGING = new Set(['outlook', 'teams']);
 
 async function loadConnect() {
   const body = $('#connect-body');
@@ -1225,6 +1372,7 @@ async function loadConnect() {
     <div id="integration-list"></div>`;
   $('[data-settings]', body).addEventListener('click', () => openExternal(`${location.origin}/settings#integrations`));
   const list = $('#integration-list');
+  state.monitor = data.monitor || state.monitor;
   (data.integrations || []).forEach(item => list.append(integrationCard(item)));
 }
 
@@ -1243,10 +1391,17 @@ function integrationCard(item) {
     <div style="min-width:0"><h4>${esc(item.label)} ${badge}</h4>
       <div class="meta">${item.account ? `Signed in as ${esc(item.account)} · ` : ''}${item.url ? esc(item.url) : 'Add its address in Settings'}${item.checked_at ? ` · checked ${relTime(new Date(item.checked_at * 1000).toISOString())}` : ''}</div>
       ${item.sign_in?.detail && item.sign_in.status !== 'idle' ? `<p>${esc(item.sign_in.detail)}</p>` : ''}
-      ${item.enabled && item.can_auto_apply ? `
+      ${item.enabled && item.can_auto_apply ? (MESSAGING.has(item.name) ? `
+        <label class="auto-apply" title="Off: every message waits for your approval. On: replies in an existing thread go straight away; a new message to someone still asks.">
+          <span class="switch"><input type="checkbox" data-auto ${item.auto_apply ? 'checked' : ''}><span></span></span>
+          Send replies without asking</label>` : `
         <label class="auto-apply" title="Off: every change waits for your approval. On: changes are made straight away and can be undone from their card.">
           <span class="switch"><input type="checkbox" data-auto ${item.auto_apply ? 'checked' : ''}><span></span></span>
-          Apply changes automatically</label>` : ''}</div>
+          Apply changes automatically</label>`) : ''}
+      ${item.enabled && MESSAGING.has(item.name) ? `
+        <label class="auto-apply" title="Check for new messages in the background and tell you about the important ones.">
+          <span class="switch"><input type="checkbox" data-monitor ${state.monitor?.enabled ? 'checked' : ''}><span></span></span>
+          Watch for new messages</label>` : ''}</div>
     <div class="btn-row" style="margin:0;flex-direction:column">
       ${item.enabled ? `<button class="btn sm ${signedIn ? '' : 'primary'}" data-signin>${signedIn ? 'Sign in again' : 'Sign in'}</button>
       <button class="btn sm ghost" data-check>Check</button>
@@ -1268,11 +1423,26 @@ function integrationCard(item) {
     }
   });
   $('[data-teach]', card)?.addEventListener('click', e => teach(item.name, e.currentTarget));
+  $('[data-monitor]', card)?.addEventListener('change', async e => {
+    const enabled = e.currentTarget.checked;
+    try {
+      await api.post('/api/integrations/monitor', { enabled });
+      state.monitor = { ...(state.monitor || {}), enabled };
+      toast(enabled ? 'Watching Outlook and Teams for new messages' : 'Stopped watching Outlook and Teams', 'ok');
+      loadConnect();
+    } catch (error) {
+      e.currentTarget.checked = !enabled;
+      toast(error.message, 'err');
+    }
+  });
   $('[data-auto]', card)?.addEventListener('change', async e => {
     const enabled = e.currentTarget.checked;
     try {
       await api.post(`/api/integrations/${item.name}/auto-apply`, { enabled });
-      toast(enabled ? `${item.label} changes will be made straight away — each can be undone`
+      toast(MESSAGING.has(item.name)
+        ? (enabled ? `${item.label} replies will be sent without asking; new conversations still ask`
+          : `Every ${item.label} message will wait for your approval`)
+        : enabled ? `${item.label} changes will be made straight away — each can be undone`
         : `${item.label} changes will wait for your approval`, 'ok');
     } catch (error) {
       e.currentTarget.checked = !enabled;
@@ -1323,6 +1493,8 @@ async function signIn(name, button) {
 // ==================================================================== boot
 // The desktop shell and tray open a specific tab ("Ask Cerebro…", approvals).
 window.cerebroSelectTab = name => selectTab(['ask', 'activity', 'sources', 'connect'].includes(name) ? name : 'ask');
+// A notification's "Open" (the tray) lands in the chat it is about.
+window.cerebroOpenChat = id => { selectTab('ask'); openChat(Number(id)); };
 selectTab('ask');
 connectActivity();
 loadInfo();

@@ -1,6 +1,12 @@
 """
 RightAnswers (Upland) knowledge base through the hidden browser.
 
+Work starts from the agent workspace (DEXIS: SolutionManager's
+``/solutionmanger/controller/workspace/``), which is where articles are
+reached; the site's front page doesn't link to them. SolutionManager is a
+single-page workspace that may put its search and articles in frames, so
+every selector is looked for in each frame, not just the top page.
+
 RightAnswers portals are configured per company, so this connector is driven
 by selectors rather than hard-coded page structure. The defaults below match
 the common portal layout; anything different on a given tenant is corrected
@@ -19,9 +25,14 @@ from app.services.browser import register
 from app.services.browser.connector import BrowserConnector
 
 DEFAULT_SELECTORS: Dict[str, Any] = {
-    # Search
-    "search_url": "{base}/portal/ss/?searchText={query}",
-    "search_input": "input[type='search'], input[name='searchText'], #searchText",
+    # Search. No address by default: the workspace's own search box is used
+    # until Teach learns this portal's search address; a portal without one
+    # gets the classic self-service search address instead.
+    "search_url": "",
+    "portal_search_url": "{base}/portal/ss/?searchText={query}",
+    "search_input": ("input[type='search'], input[name='searchText'], #searchText, "
+                     "input[name='search'], input[name='query'], input[id*='search' i], "
+                     "input[placeholder*='search' i]"),
     "result_item": ("[data-solution-id], .search-result, .result-item, .solution-result, "
                     "li.result"),
     "result_link": "a[href*='solution'], a",
@@ -72,12 +83,17 @@ _ARTICLE_LINKS_JS = r"""
   return out;
 }
 """
-ARTICLE_LINK_PATTERN = r"solution|article|kb[-_/]?\d|[?&](?:id|docid|contentid)="
+ARTICLE_LINK_PATTERN = r"solution|article|kb[-_/]?\d|[?&](?:id|docid|contentid|solutionid)="
+
+#: SolutionManager's path is spelled both ways in the wild ("solutionmanger"
+#: is what DEXIS gave); if one 404s the other is tried and remembered.
+_SPELLINGS = ("solutionmanger", "solutionmanager")
 
 
 class RightAnswersConnector(BrowserConnector):
     name = "rightanswers"
     label = "RightAnswers"
+    keep_path = True
     enabled_setting = "RIGHTANSWERS_ENABLED"
     url_setting = "RIGHTANSWERS_URL"
     default_selectors = DEFAULT_SELECTORS
@@ -90,6 +106,38 @@ class RightAnswersConnector(BrowserConnector):
         self.teacher = Teacher(self)
 
     # ------------------------------------------------------------ helpers
+    def open_start(self, page):
+        """Open the workspace; if that address errors, try the other spelling."""
+        response = super().open_start(page)
+        if not _page_missing(page, response):
+            return response
+        for alternative in _alternatives(self.start_url):
+            retry = page.goto(alternative, wait_until="domcontentloaded")
+            self.settle(page)
+            if not _page_missing(page, retry):
+                self.remember(start_url=alternative)
+                return retry
+        return response
+
+    @staticmethod
+    def _find(page, selector: str):
+        """The first match for ``selector`` in the page or any of its frames."""
+        if not selector:
+            return None
+        for frame in [page.main_frame] + [f for f in page.frames if f != page.main_frame]:
+            try:
+                locator = frame.locator(selector)
+                if locator.count():
+                    return locator
+            except Exception:  # noqa: BLE001 - a frame that navigated away
+                continue
+        return None
+
+    def _locate(self, page, selector: str):
+        """``_find``, falling back to the top page (so waits and errors read well)."""
+        found = self._find(page, selector)
+        return (found if found is not None else page.locator(selector)).first
+
     def _template(self, key: str, **values) -> str:
         template = self.selectors().get(key) or ""
         if not template:
@@ -100,13 +148,17 @@ class RightAnswersConnector(BrowserConnector):
         match = re.search(self.selectors()["article_id_pattern"], url or "")
         return match.group(1) if match else None
 
-    @staticmethod
-    def _first_text(scope, selector: str) -> str:
+    @classmethod
+    def _first_text(cls, scope, selector: str) -> str:
         if not selector:
             return ""
         try:
-            locator = scope.locator(selector).first
-            if locator.count() == 0:
+            if hasattr(scope, "main_frame"):          # a page: look in its frames too
+                found = cls._find(scope, selector)
+                locator = found.first if found is not None else None
+            else:
+                locator = scope.locator(selector).first
+            if locator is None or locator.count() == 0:
                 return ""
             return (locator.inner_text(timeout=2000) or "").strip()
         except Exception:  # noqa: BLE001 - optional field
@@ -122,11 +174,21 @@ class RightAnswersConnector(BrowserConnector):
                 self.goto(page, url)
             else:
                 self.goto(page)
-                page.fill(selectors["search_input"], query)
-                page.keyboard.press("Enter")
-                self.settle(page)
+                box = self._find(page, selectors["search_input"])
+                if box is not None:
+                    box.first.fill(query)
+                    box.first.press("Enter")
+                    self.settle(page)
+                    page.wait_for_timeout(800)        # results render after the request
+                elif self._template("portal_search_url", query=quote_plus(query)):
+                    self.goto(page, self._template("portal_search_url", query=quote_plus(query)))
+                else:
+                    raise RightAnswersError(
+                        "Cerebro couldn't find the search box in the RightAnswers workspace. "
+                        "Open Cerebro → Connect → RightAnswers → Teach so it can learn it.")
             results = []
-            items = page.locator(selectors["result_item"])
+            found = self._find(page, selectors["result_item"])
+            items = found if found is not None else page.locator(selectors["result_item"])
             for index in range(min(items.count(), limit * 2)):
                 item = items.nth(index)
                 link = item.locator(selectors["result_link"]).first
@@ -150,11 +212,19 @@ class RightAnswersConnector(BrowserConnector):
                     break
             if not results:
                 # The result markup isn't what the selectors expect: fall back
-                # to any link that looks like an article.
-                for link in page.evaluate(_ARTICLE_LINKS_JS, ARTICLE_LINK_PATTERN)[:limit]:
-                    results.append({"id": self.article_id_from(link["href"]),
-                                    "title": link["title"], "snippet": link["snippet"],
-                                    "url": link["href"]})
+                # to any link that looks like an article, in any frame.
+                for frame in page.frames:
+                    try:
+                        links = frame.evaluate(_ARTICLE_LINKS_JS, ARTICLE_LINK_PATTERN)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    for link in links:
+                        results.append({"id": self.article_id_from(link["href"]),
+                                        "title": link["title"], "snippet": link["snippet"],
+                                        "url": link["href"]})
+                    if len(results) >= limit:
+                        break
+                results = results[:limit]
             return results
 
         return self.run(work, f"Searching {self.label}")
@@ -176,8 +246,9 @@ class RightAnswersConnector(BrowserConnector):
         def work(page):
             article_id = self._open_article(page, article)
             title = self._first_text(page, selectors["article_title"])
-            body_area = page.locator(selectors["article_body"]).first
-            body = self.readable_text_of(body_area) if body_area.count() else ""
+            found = self._find(page, selectors["article_body"])
+            body_area = found.first if found is not None else None
+            body = self.readable_text_of(body_area) if body_area is not None else ""
             if not body:
                 body = self.readable_text(page)
             if not title and not body:
@@ -192,7 +263,7 @@ class RightAnswersConnector(BrowserConnector):
     # Called only by approved AgentActions (see app.services.agent).
     def _fill_body(self, page, text: str) -> None:
         selector = self.selectors()["editor_body"]
-        target = page.locator(selector).first
+        target = self._locate(page, selector)
         tag = (target.evaluate("el => el.tagName") or "").lower()
         html = "".join(f"<p>{line}</p>" if line.strip() else "<p><br></p>"
                        for line in _escape(text).split("\n"))
@@ -207,7 +278,7 @@ class RightAnswersConnector(BrowserConnector):
 
     def _save(self, page) -> None:
         selectors = self.selectors()
-        page.locator(selectors["save_button"]).first.click()
+        self._locate(page, selectors["save_button"]).click()
         self.settle(page)
         marker = selectors.get("saved_marker")
         if marker:
@@ -223,7 +294,7 @@ class RightAnswersConnector(BrowserConnector):
                 article_id = article
             else:
                 article_id = self._open_article(page, article)
-                edit = page.locator(selectors["edit_button"]).first
+                edit = self._locate(page, selectors["edit_button"])
                 if not edit.count():
                     raise RightAnswersError(
                         "Cerebro couldn't find this portal's Edit button. Open Cerebro → "
@@ -231,7 +302,7 @@ class RightAnswersConnector(BrowserConnector):
                 edit.click()
                 self.settle(page)
             if title is not None:
-                page.locator(selectors["editor_title"]).first.fill(title)
+                self._locate(page, selectors["editor_title"]).fill(title)
             if body is not None:
                 self._fill_body(page, body)
             self._save(page)
@@ -250,7 +321,7 @@ class RightAnswersConnector(BrowserConnector):
                     "Creating articles needs the “create_url” address for your RightAnswers "
                     "portal in connectors/rightanswers.json.")
             self.goto(page, create_url)
-            page.locator(selectors["editor_title"]).first.fill(title)
+            self._locate(page, selectors["editor_title"]).fill(title)
             self._fill_body(page, body)
             self._save(page)
             article_id = self.article_id_from(page.url)
@@ -258,6 +329,23 @@ class RightAnswersConnector(BrowserConnector):
                     "detail": f"{self.label} article “{title}” created"}
 
         return self.run(work, f"Creating a {self.label} article")
+
+
+def _page_missing(page, response) -> bool:
+    """A "not found" or error page, rather than the workspace."""
+    if response is not None and getattr(response, "status", 200) >= 400:
+        return True
+    try:
+        title = (page.title() or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(marker in title for marker in ("404", "not found", "error"))
+
+
+def _alternatives(url: str):
+    for wrong, right in (_SPELLINGS, tuple(reversed(_SPELLINGS))):
+        if f"/{wrong}/" in url:
+            yield url.replace(f"/{wrong}/", f"/{right}/", 1)
 
 
 def _escape(text: str) -> str:

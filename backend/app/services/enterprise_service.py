@@ -244,6 +244,8 @@ def normalise(payload: Dict[str, Any], source_file: str = None) -> Dict[str, Any
         "customer": _first(payload, "customer") or _first(metadata, "customer"),
         "raw": json.dumps(payload, default=str)[:100_000],
         "source_file": source_file,
+        "direct": bool(_first(payload, "direct", "isDirect")) or None,
+        "mentioned": bool(_first(payload, "mentioned", "isMentioned")) or None,
     }
 
 
@@ -515,7 +517,14 @@ about it and when you will follow up.
         return record
 
     def dispatch_action(self, record: EnterpriseAction) -> EnterpriseAction:
-        """Write the action to the outbox folder for Power Automate to collect."""
+        """
+        Send an approved action: through Outlook or Teams in the hidden
+        browser when that is connected, otherwise by writing it to the outbox
+        folder for Power Automate to collect.
+        """
+        transport = browser_transport(record.source)
+        if transport is not None:
+            return self._send_in_browser(record, transport)
         outbox = outbox_dir()
         if outbox is None:
             record.status = "failed"
@@ -560,6 +569,82 @@ about it and when you will follow up.
         self.db.commit()
         self.db.refresh(record)
         return record
+
+
+    def _send_in_browser(self, record: EnterpriseAction, transport) -> EnterpriseAction:
+        original = (self.db.query(EnterpriseMessage).get(record.in_reply_to)
+                    if record.in_reply_to else None)
+        recipients = [r for r in (record.to or "").split(",") if r]
+        try:
+            if record.source == "teams":
+                chat = (original.thread_id if original is not None and original.thread_id
+                        else record.thread_id or record.chat_or_channel)
+                result = transport.send(record.body, chat=chat,
+                                        users=None if chat else recipients)
+            elif original is not None and original.source == "outlook":
+                result = transport.reply(_reply_id(original), record.body,
+                                         reply_all=record.action == "reply_all_email")
+            else:
+                result = transport.send(recipients, record.subject or "", record.body)
+        except Exception as exc:  # noqa: BLE001 - recorded on the action and explained
+            from app.services.browser.connector import SignInRequired
+
+            record.status = "draft" if isinstance(exc, SignInRequired) else "failed"
+            record.status_detail = str(exc)[:500]
+            logger.error("enterprise", "Browser send failed", {"source": record.source,
+                                                                "error": str(exc)[:200]})
+        else:
+            record.status = "sent"
+            record.status_detail = (result or {}).get("detail") or "Sent"
+            if original is not None:
+                original.handled = True
+            logger.info("enterprise", "Sent through the browser",
+                        {"source": record.source, "action": record.action})
+        self.db.commit()
+        self.db.refresh(record)
+        return record
+
+
+def browser_transport(source: str):
+    """The Outlook or Teams browser connector, when it is switched on."""
+    if source not in ("outlook", "teams"):
+        return None
+    try:
+        from app.services import browser
+
+        connector = browser.get(source)
+    except Exception:  # noqa: BLE001 - browser support not installed
+        return None
+    return connector if connector.enabled else None
+
+
+def can_auto_send(record: EnterpriseAction, original: Optional[EnterpriseMessage]) -> bool:
+    """
+    May this go without the user's approval? Only when they switched on
+    "send without asking" for that app, it goes through the browser, and it
+    is a reply in an existing thread — a new email or a first message to
+    someone always asks.
+    """
+    transport = browser_transport(record.source)
+    if transport is None or not transport.auto_send:
+        return False
+    if record.source == "teams":
+        return bool((original is not None and original.thread_id) or record.thread_id)
+    return original is not None and original.source == "outlook"
+
+
+def _provider_id(external_id: str) -> str:
+    """The app's own id from ``outlook:<id>``."""
+    return (external_id or "").split(":", 1)[-1]
+
+
+def _reply_id(message: EnterpriseMessage) -> str:
+    """The Outlook item to reply to (a list summary carries its first item's id)."""
+    try:
+        reply = (json.loads(message.raw or "{}") or {}).get("reply_id")
+    except (TypeError, ValueError):
+        reply = None
+    return reply or _provider_id(message.external_id)
 
 
 # ------------------------------------------------------------------ folders

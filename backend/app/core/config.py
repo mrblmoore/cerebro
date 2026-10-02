@@ -9,6 +9,7 @@ the user can fill in the details later from the Setup UI at ``/setup``.
 import re
 from typing import List, Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.paths import (
@@ -25,6 +26,13 @@ def _split_paths(value: str) -> List[str]:
     """Split a multi-path setting. Newlines and semicolons only — Windows paths
     contain colons, and folder names legitimately contain commas."""
     return [part.strip() for part in re.split(r"[;\n]", value or "") if part.strip()]
+
+
+#: DEXIS's RightAnswers agent workspace (as given by the user).
+RIGHTANSWERS_WORKSPACE = "https://dexis.rightanswers.com/solutionmanger/controller/workspace/"
+#: Addresses earlier versions saved, which only reached the site's front page.
+_OLD_RIGHTANSWERS_DEFAULTS = {"https://dexis.rightanswers.com", "http://dexis.rightanswers.com",
+                              "dexis.rightanswers.com"}
 
 
 class Settings(BaseSettings):
@@ -163,9 +171,18 @@ class Settings(BaseSettings):
     #: Longest Cerebro waits for one page to load or one step to finish.
     BROWSER_TIMEOUT_SECONDS: int = 30
     RIGHTANSWERS_ENABLED: bool = False
-    #: The company's RightAnswers site. Only the host matters; any path is
-    #: ignored, and a missing "https://" is added.
-    RIGHTANSWERS_URL: Optional[str] = "https://dexis.rightanswers.com"
+    #: The page RightAnswers work starts from: DEXIS's SolutionManager agent
+    #: workspace, which is where the articles are reached. A missing "https://"
+    #: is added. (Its host is also what "on the RightAnswers site" means.)
+    RIGHTANSWERS_URL: Optional[str] = RIGHTANSWERS_WORKSPACE
+
+    @field_validator("RIGHTANSWERS_URL")
+    @classmethod
+    def _workspace_address(cls, value):
+        # 0.4.0 saved the bare site, which doesn't lead to the articles.
+        if value and value.strip().rstrip("/").lower() in _OLD_RIGHTANSWERS_DEFAULTS:
+            return RIGHTANSWERS_WORKSPACE
+        return value
     DYNAMICS_ENABLED: bool = False
     #: The company's Dynamics 365 organisation (host only, as above).
     DYNAMICS_URL: Optional[str] = "https://dental.crm.dynamics.com"
@@ -178,6 +195,30 @@ class Settings(BaseSettings):
     #: task) makes them, instead of waiting for approval. Each one is still
     #: shown with its before/after and can be undone from its card.
     SHAREPOINT_AUTO_APPLY: bool = False
+    #: Outlook and Teams on the web, through the same hidden browser and
+    #: Microsoft 365 sign-in: read, search and send mail and chats, watched
+    #: for new messages. Sending always asks first unless the matching
+    #: *_AUTO_SEND is on, and even then only replies in an existing thread.
+    OUTLOOK_BROWSER_ENABLED: bool = False
+    OUTLOOK_URL: Optional[str] = "https://outlook.cloud.microsoft/mail/"
+    OUTLOOK_AUTO_SEND: bool = False
+    TEAMS_BROWSER_ENABLED: bool = False
+    TEAMS_URL: Optional[str] = "https://teams.cloud.microsoft"
+    TEAMS_AUTO_SEND: bool = False
+    #: Watch Outlook and Teams for new messages while they are connected.
+    INBOX_MONITOR_ENABLED: bool = True
+    INBOX_MONITOR_SECONDS: int = 60
+    #: Which new messages Cerebro researches on its own: off | important | all.
+    #: "Important" = sent directly to you, @mentions you, urgent, or names a case.
+    INBOX_ASSIST: str = "important"
+    #: Most messages researched per hour, so a busy inbox can't run up AI costs.
+    INBOX_ASSIST_PER_HOUR: int = 12
+    #: Windows notifications for: important | all | suggestions (when research finishes).
+    INBOX_NOTIFY: str = "important"
+    #: Your name(s) as Outlook and Teams show them, comma-separated — so your
+    #: own messages are never treated as new mail. Found automatically when it can be.
+    INBOX_MY_NAMES: Optional[str] = None
+
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 

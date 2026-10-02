@@ -58,6 +58,13 @@ class EnterpriseMessage(Base):
     handled = Column(Boolean, default=False, index=True)
     ingested_at = Column(DateTime, default=func.now(), index=True)
 
+    #: Sent to the user personally (they're in To, or a one-to-one chat).
+    direct = Column(Boolean, nullable=True)
+    #: The user is @mentioned.
+    mentioned = Column(Boolean, nullable=True)
+    #: Cerebro has already researched this message (see app.services.inbox_monitor).
+    assisted = Column(Boolean, nullable=True)
+
     def to_dict(self, include_body: bool = False) -> dict:
         payload = {
             "id": self.id,
@@ -78,6 +85,7 @@ class EnterpriseMessage(Base):
             "case_id": self.case_id,
             "customer": self.customer,
             "handled": bool(self.handled),
+            "direct": bool(self.direct), "mentioned": bool(self.mentioned),
             "ingested_at": self.ingested_at.isoformat() if self.ingested_at else None,
         }
         if include_body:
@@ -114,7 +122,7 @@ class EnterpriseAction(Base):
 
     #: draft   — written to disk, waiting on the user to approve
     #: queued  — file written to the outbox for Power Automate
-    #: sent    — flow reported completion
+    #: sent    — flow reported completion, or sent through Outlook/Teams in the browser
     #: failed  — flow reported an error
     status = Column(String, default="draft", index=True)
     status_detail = Column(String, nullable=True)

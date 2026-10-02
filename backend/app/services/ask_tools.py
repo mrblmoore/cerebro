@@ -44,8 +44,13 @@ def _completion(title: str, detail: str = None, status: str = "complete") -> dic
 
 def _draft_card(action: EnterpriseAction) -> dict:
     target = action.chat_or_channel or ", ".join(action.to_dict().get("to") or [])
+    from app.services.enterprise_service import browser_transport
+
+    status = "awaiting_approval" if action.status == "draft" else action.status
     return {
-        "type": "draft", "status": "awaiting_approval",
+        "type": "draft", "status": status, "source": action.source,
+        "via": "browser" if browser_transport(action.source) is not None else "power_automate",
+        "detail_status": action.status_detail,
         "title": "Email draft" if action.source == "outlook" else "Teams draft",
         "detail": f"To {target}" if target else "Destination needs review",
         "action_id": action.id, "action": action.action,
@@ -195,6 +200,9 @@ class AskToolService:
         }
 
     def _find_message(self, text: str) -> Optional[EnterpriseMessage]:
+        bare = (text or "").strip().lstrip("#").strip()
+        if bare.isdigit():                       # "12" or "#12", as tools list them
+            return self.db.query(EnterpriseMessage).get(int(bare))
         match = MESSAGE_ID_RE.search(text)
         if match:
             return self.db.query(EnterpriseMessage).get(int(match.group(1)))
@@ -380,11 +388,23 @@ class AskToolService:
                     "cards": [_completion("Action not sent", action.status_detail, "error")]}
 
         action = self.enterprise.dispatch_action(action)
+        if action.status == "sent":
+            app = "Outlook" if action.source == "outlook" else "Teams"
+            return {"reply": f"Sent — {action.status_detail or app}.", "kind": "completion",
+                    "tool": action.action, "action": action.to_dict(), "notify": True,
+                    "cards": [_progress("Approval recorded"),
+                              _completion(f"Sent through {app}", action.status_detail)]}
+        if action.status == "draft" and action.status_detail:
+            # Not signed in to Outlook/Teams: the draft waits for another try.
+            return {"reply": action.status_detail, "kind": "completion",
+                    "action": action.to_dict(),
+                    "cards": [{"type": "signin", "integration": action.source,
+                               "title": f"Sign in to {'Outlook' if action.source == 'outlook' else 'Teams'}",
+                               "detail": "Then approve the draft again."}]}
         if action.status == "failed":
-            return {"reply": f"I couldn't queue that action: {action.status_detail}",
+            return {"reply": f"I couldn't send that: {action.status_detail}",
                     "kind": "completion", "action": action.to_dict(),
-                    "cards": [_completion("Power Automate queue failed",
-                                          action.status_detail, "error")]}
+                    "cards": [_completion("Not sent", action.status_detail, "error")]}
         return {
             "reply": "Approved and queued for Power Automate.",
             "kind": "completion", "tool": action.action, "action": action.to_dict(),

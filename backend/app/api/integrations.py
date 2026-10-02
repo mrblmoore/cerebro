@@ -8,6 +8,8 @@ Routes for the hidden-browser integrations (RightAnswers, Dynamics 365).
 ``POST /api/integrations/{name}/check``         is the saved session still valid?
 ``DELETE /api/integrations/{name}/auth``        forget the sign-in
 ``POST /api/integrations/{name}/auto-apply``    make changes without approval (or not)
+``POST /api/integrations/monitor``              watch Outlook and Teams (or not)
+``POST /api/integrations/inbox/check``          check Outlook and Teams now
 ``GET  /api/integrations/browser``              the hidden browser itself
 """
 
@@ -31,8 +33,34 @@ def _connector(name: str):
 
 @router.get("")
 def list_integrations() -> Dict[str, Any]:
+    from app.core.config import settings
+
     return {"browser": browser.engine().status(),
-            "integrations": [connector.status() for connector in browser.connectors()]}
+            "integrations": [connector.status() for connector in browser.connectors()],
+            "monitor": {"enabled": bool(settings.INBOX_MONITOR_ENABLED),
+                        "seconds": int(settings.INBOX_MONITOR_SECONDS or 60),
+                        "assist": settings.INBOX_ASSIST, "notify": settings.INBOX_NOTIFY}}
+
+
+@router.post("/monitor")
+def set_monitor(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Watch Outlook and Teams for new messages (or stop)."""
+    from app.core import settings_store
+
+    result = settings_store.update({"INBOX_MONITOR_ENABLED": bool(body.get("enabled"))})
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("errors"))
+    return {"ok": True, "enabled": bool(body.get("enabled"))}
+
+
+@router.post("/inbox/check")
+def check_inbox() -> Dict[str, Any]:
+    """Check Outlook and Teams now, instead of waiting for the next round."""
+    from app.core.database import SessionLocal
+    from app.services import inbox_monitor
+
+    with SessionLocal() as db:
+        return {"ok": True, "report": inbox_monitor.check_once(db)}
 
 
 @router.get("/browser")

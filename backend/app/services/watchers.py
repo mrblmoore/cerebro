@@ -139,9 +139,17 @@ def start() -> None:
                                              name="cerebro-scheduler", daemon=True)
         _scheduler_thread.start()
 
+    # Outlook and Teams in the hidden browser (does nothing until connected).
+    from app.services import inbox_monitor
+
+    inbox_monitor.start()
+
 
 def stop() -> None:
     _stop.set()
+    from app.services import inbox_monitor
+
+    inbox_monitor.stop()
 
 
 def running() -> bool:

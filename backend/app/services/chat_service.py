@@ -160,8 +160,27 @@ class ChatService:
         for message in messages:
             meta = message.get("meta")
             if isinstance(meta, dict) and meta.get("cards"):
-                meta["cards"] = actions.refresh_cards(self.db, meta["cards"])
+                meta["cards"] = self._refresh_drafts(actions.refresh_cards(self.db, meta["cards"]))
         return messages
+
+    def _refresh_drafts(self, cards: list) -> list:
+        """Email/Teams draft cards with their current status (sent, failed…)."""
+        from app.models.enterprise import EnterpriseAction
+        from app.services.ask_tools import _draft_card
+
+        ids = [c.get("action_id") for c in cards
+               if isinstance(c, dict) and c.get("type") == "draft" and c.get("action_id")]
+        if not ids:
+            return cards
+        live = {row.id: row for row in
+                self.db.query(EnterpriseAction).filter(EnterpriseAction.id.in_(ids))}
+        refreshed = []
+        for card in cards:
+            row = live.get(card.get("action_id")) if isinstance(card, dict) and \
+                card.get("type") == "draft" else None
+            refreshed.append({**_draft_card(row), "automatic": card.get("automatic")}
+                             if row is not None else card)
+        return refreshed
 
     def _last_assistant_message(self) -> Optional[ChatMessage]:
         return (self._in_chat(self.db.query(ChatMessage))

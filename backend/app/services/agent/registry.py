@@ -112,6 +112,10 @@ def string_param(description: str) -> dict:
     return {"type": "string", "description": description}
 
 
+def bool_param(description: str) -> dict:
+    return {"type": "boolean", "description": description}
+
+
 def schema(required: List[str] = None, **properties: dict) -> dict:
     """Shorthand for an object JSON schema."""
     return {"type": "object", "properties": properties, "required": required or []}

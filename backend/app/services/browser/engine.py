@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
@@ -104,10 +105,10 @@ def playwright_installed() -> bool:
 
 
 class _Job:
-    __slots__ = ("fn", "label", "future", "mode")
+    __slots__ = ("fn", "label", "future", "mode", "quiet")
 
-    def __init__(self, fn, label, mode):
-        self.fn, self.label, self.mode = fn, label, mode
+    def __init__(self, fn, label, mode, quiet=False):
+        self.fn, self.label, self.mode, self.quiet = fn, label, mode, quiet
         self.future: Future = Future()
 
 
@@ -132,11 +133,13 @@ class BrowserEngine:
 
     # ------------------------------------------------------------ public
     def submit(self, fn: Callable[["BrowserEngine"], Any], label: str = "Working in the browser",
-               mode: str = None, timeout: float = None) -> Any:
+               mode: str = None, timeout: float = None, quiet: bool = False) -> Any:
         """Run ``fn(engine)`` on the browser thread and return its result.
 
         ``fn`` may call :meth:`page`, :meth:`context` and friends — they are
-        only valid inside a job. Exceptions are re-raised here.
+        only valid inside a job. Exceptions are re-raised here. A ``quiet``
+        job (a routine inbox check) doesn't show as activity, so the tray
+        brain and desktop buddy only react to real work.
         """
         if not settings.BROWSER_AUTOMATION_ENABLED:
             raise BrowserUnavailable(
@@ -147,7 +150,7 @@ class BrowserEngine:
                 "The browser automation component (Playwright) is not installed. "
                 "Run: pip install -r backend/requirements-browser.txt")
         self._ensure_thread()
-        job = _Job(fn, label, mode)
+        job = _Job(fn, label, mode, quiet)
         self._jobs.put(job)
         wait = timeout or max(30, int(settings.BROWSER_TIMEOUT_SECONDS or 30) * 4)
         return job.future.result(timeout=wait)
@@ -233,7 +236,7 @@ class BrowserEngine:
             if not job.future.set_running_or_notify_cancel():
                 continue
             try:
-                with activity("browsing", job.label):
+                with (nullcontext() if job.quiet else activity("browsing", job.label)):
                     if job.mode:
                         self.context(job.mode)
                     result = job.fn(self)

@@ -124,6 +124,9 @@ a { color: var(--violet); text-decoration: none; }
   height: 100%;
   display: grid;
   grid-template-rows: auto auto auto 1fr;
+  /* One column that may shrink below its content's natural width — long
+     unbreakable text (a status line, an address) must never widen the page. */
+  grid-template-columns: minmax(0, 1fr);
   max-width: 980px; margin: 0 auto;
 }
 .glass {
@@ -497,6 +500,8 @@ main { position: relative; min-height: 0; }
 .logo.dynamics { background: linear-gradient(135deg, #0b53ce, #2aa0f0); }
 .logo.rightanswers { background: linear-gradient(135deg, #f97316, #f43f5e); }
 .logo.sharepoint { background: linear-gradient(135deg, #036c70, #1a9ba1 60%, #37c6d0); }
+.logo.outlook { background: linear-gradient(135deg, #0a4fbf, #1490df 60%, #28a8ea); }
+.logo.teams { background: linear-gradient(135deg, #4b53bc, #5b5fc7 60%, #7b83eb); }
 .logo.browser { background: linear-gradient(135deg, #334155, #64748b); }
 
 .toast-host { position: fixed; z-index: 60; left: 50%; bottom: 18px; transform: translateX(-50%); display: grid; gap: 8px; }
@@ -667,3 +672,57 @@ button.extra-chip:hover { border-color: var(--stroke-strong); color: var(--text)
 /* Automatic changes */
 .auto-apply { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
 .card-error { margin-top: 8px; font-size: 12px; color: var(--err); }
+
+/* ============================================================ window size */
+/* The desktop window is frameless: these strips along its edges (and the
+   grip in the corner) are what you drag to resize it. */
+.resize-edge, .resize-grip { position: fixed; z-index: 80; touch-action: none; }
+.resize-edge[data-edge="right"] { top: 40px; right: 0; bottom: 14px; width: 6px; cursor: ew-resize; }
+.resize-edge[data-edge="left"] { top: 40px; left: 0; bottom: 14px; width: 6px; cursor: ew-resize; }
+.resize-edge[data-edge="bottom"] { left: 14px; right: 14px; bottom: 0; height: 6px; cursor: ns-resize; }
+.resize-edge[data-edge="bottom-left"] { left: 0; bottom: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.resize-grip {
+  right: 2px; bottom: 2px; width: 16px; height: 16px; display: grid; place-items: center;
+  cursor: nwse-resize; color: var(--text-faint); opacity: .7;
+}
+.resize-grip:hover { color: var(--text); opacity: 1; }
+body.compact .resize-edge, body.compact .resize-grip,
+body.maximized .resize-edge, body.maximized .resize-grip { display: none; }
+body.resizing, body.resizing * { user-select: none !important; cursor: inherit; }
+body.maximized .app { max-width: none; }
+
+/* Small windows: everything stays reachable rather than being cut off. */
+.chat-extras { max-height: 34vh; overflow-y: auto; scrollbar-width: thin; }
+.sheet { max-height: calc(100vh - 32px); }
+@media (max-width: 420px) {
+  .integration { grid-template-columns: auto 1fr; }
+  .integration > .btn-row, .integration > .btn { grid-column: 1 / -1; flex-direction: row !important; justify-content: flex-end; }
+  .suggestions { grid-template-columns: 1fr; }
+}
+@media (max-height: 560px) {
+  .context-strip { padding-bottom: 6px; }
+  .titlebar { padding-top: 8px; padding-bottom: 4px; }
+  .hero .brain-host { width: 112px; height: 98px; }
+  .hero .brain-host .mascot { width: 112px !important; height: 97px !important; }
+  .hero { padding-top: 10px; }
+  .hint { display: none; }
+}
+
+/* Outlook and Teams */
+.logo.sm { width: 26px; height: 26px; border-radius: 8px; font-size: 10px; flex: none; display: inline-grid; place-items: center; color: #fff; font-weight: 800; }
+.message-row .flags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.message-row .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.incoming { margin: 0 0 10px; padding: 9px 11px; border-radius: 11px; border-left: 3px solid var(--violet);
+  background: var(--glass); font-size: 12.5px; }
+.incoming-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.incoming-head .meta { color: var(--text-faint); font-size: 11px; }
+.incoming-subject { font-weight: 650; margin-top: 4px; }
+.incoming-preview { color: var(--text-dim); margin-top: 2px; }
+.integration .meta { overflow-wrap: anywhere; }
+@media (max-width: 420px) {
+  .titlebar { gap: 4px; padding-left: 10px; padding-right: 8px; }
+  .titlebar .icon-btn { width: 28px; }
+  .brand { gap: 6px; }
+  .brand .brain-host { width: 38px; }
+  .brand .brain-host .mascot { width: 38px !important; height: 33px !important; }
+}

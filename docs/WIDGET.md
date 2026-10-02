@@ -144,13 +144,21 @@ not disappear between tabs.
 
 ## Making it fit your desktop
 
+**Resize it** — drag any edge of the window, or the ◢ grip in the
+bottom-right corner. **Expand** (the square button, or double-click the title
+bar) fills the screen; do it again to go back. **⋯ → Window size** has Small,
+Medium, Large and Full height. **⋯ → Text size** (or `Ctrl +`, `Ctrl −`,
+`Ctrl 0`) makes everything bigger or smaller.
+
+The window always stays on the screen it's on: if a size or position saved
+on a bigger monitor would run off the edge or under the taskbar, it's pulled
+back in when Cerebro opens, comes back from the tray, or the screen changes.
+
 **Move it** — drag the title bar. Release near a screen edge and it snaps flush.
 
-**Collapse it** — double-click the title bar, press `Esc`, or use the `—` button.
-The widget shrinks to a single strip that still shows your case, customer and
-whether you are on a call. Do it again to expand.
-
-**Resize it** — drag the `◢` grip in the bottom-right corner.
+**Collapse it** — the `—` button. The widget shrinks to a single strip that
+still shows your case, customer and whether you are on a call. Click it again
+to expand.
 
 **Park it** — ☰ menu → **Move to** → any corner.
 
@@ -180,6 +188,7 @@ Position, size, tab and every preference are remembered between sessions.
 | `Ctrl+R` | Refresh now |
 | `Ctrl+F` | Jump to Sources / search |
 | `Ctrl+N` | New chat |
+| `Ctrl +` / `Ctrl −` / `Ctrl 0` | Text size bigger / smaller / reset |
 | `Ctrl+K` | Chat list and search |
 | `Ctrl+Q` | Quit |
 

@@ -11,7 +11,7 @@ import re
 from typing import List
 
 from app.core.config import settings
-from app.services.agent.registry import ToolContext, schema, string_param, tool
+from app.services.agent.registry import ToolContext, bool_param, schema, string_param, tool
 from app.services import text_chunks
 
 #: How much of one tool result the model reads; long results are trimmed.
@@ -219,7 +219,31 @@ def search_sharepoint(ctx: ToolContext, query: str = "", **_) -> dict:
 
 # ------------------------------------------------------------ Outlook/Teams
 def _enterprise_on(ctx: ToolContext) -> bool:
-    return bool(settings.ENTERPRISE_ENABLED)
+    """Mail and Teams tools: through Power Automate or the browser connectors."""
+    if settings.ENTERPRISE_ENABLED:
+        return True
+    from app.services.enterprise_service import browser_transport
+
+    return browser_transport("outlook") is not None or browser_transport("teams") is not None
+
+
+def _offer(ctx: ToolContext, action, original=None) -> str:
+    """Show a draft card — or, for a reply the user lets Cerebro send on its
+    own, send it now. Returns what the model should be told."""
+    from app.services.ask_tools import _draft_card
+    from app.services.enterprise_service import EnterpriseService, can_auto_send
+
+    if can_auto_send(action, original):
+        action = EnterpriseService(ctx.db).dispatch_action(action)
+        card = _draft_card(action)
+        card["automatic"] = action.status == "sent"
+        ctx.drafts.append(card)
+        if action.status == "sent":
+            return (f"Sent automatically ({action.status_detail}) — the user has "
+                    "“send replies without asking” on.")
+        return f"Sending failed: {action.status_detail}. The draft is waiting for the user."
+    ctx.drafts.append(_draft_card(action))
+    return f"Draft #{action.id} prepared; it is NOT sent until the user approves it."
 
 
 @tool("get_inbox_briefing",
@@ -284,10 +308,39 @@ def draft_reply(ctx: ToolContext, message: str = "", instruction: str = "", **_)
         body=draft["draft"], source=target.source, in_reply_to=target.id,
         to=draft.get("to"), chat_or_channel=draft.get("chat_or_channel"),
         thread_id=draft.get("thread_id"), subject=draft.get("subject"), send=False)
-    card = _draft_card(action)
-    ctx.drafts.append(card)
-    return {"content": f"Draft #{action.id} prepared for review (not sent):\n{draft['draft']}",
-            "summary": "Draft ready for approval", "action": action.to_dict()}
+    outcome = _offer(ctx, action, target)
+    return {"content": f"{outcome}\nReply:\n{draft['draft']}",
+            "summary": "Sent" if outcome.startswith("Sent") else "Draft ready for approval",
+            "action": action.to_dict()}
+
+
+@tool("reply_to_message",
+      "Reply to an Outlook email or Teams message Cerebro has seen, with the reply text you "
+      "wrote. It waits for the user's approval unless they let replies send without asking.",
+      schema(["message", "body"], message=string_param("Which message: its number (e.g. 12), "
+                                                       "sender or subject."),
+             body=string_param("The reply, ready to send, in the user's voice."),
+             reply_all=bool_param("Email only: reply to everyone on the thread.")),
+      mode="approval", label="Prepare a reply", activity="writing", available=_enterprise_on)
+def reply_to_message(ctx: ToolContext, message: str = "", body: str = "",
+                     reply_all: bool = False, **_) -> dict:
+    from app.services.ask_tools import AskToolService
+
+    service = AskToolService(ctx.db)
+    target = service._find_message(str(message))
+    if target is None:
+        return {"content": "No matching message to reply to.", "summary": "Not found"}
+    if not body.strip():
+        return {"content": "Write the reply first.", "summary": "Needs details"}
+    if target.source == "outlook":
+        kind = "reply_all_email" if reply_all else "reply_email"
+    else:
+        kind = "reply_teams_message"
+    action = service.enterprise.create_action(kind, body=body.strip(), source=target.source,
+                                              in_reply_to=target.id, send=False)
+    outcome = _offer(ctx, action, target)
+    return {"content": outcome, "summary": "Sent" if outcome.startswith("Sent") else
+            "Waiting for approval", "action": action.to_dict()}
 
 
 @tool("send_email",
@@ -307,15 +360,15 @@ def send_email(ctx: ToolContext, to: str = "", subject: str = "", body: str = ""
     action = service.enterprise.create_action(
         "send_email", body=body.strip(), source="outlook", to=recipients,
         subject=subject or None, send=False)
-    ctx.drafts.append(_draft_card(action))
-    return {"content": f"Email draft #{action.id} prepared; waiting for the user's approval.",
-            "summary": "Waiting for approval", "action": action.to_dict()}
+    return {"content": _offer(ctx, action), "summary": "Waiting for approval",
+            "action": action.to_dict()}
 
 
 @tool("send_teams_message",
-      "Prepare a Teams post for the user to approve. It is NOT posted until "
+      "Prepare a Teams message for the user to approve. It is NOT posted until "
       "they approve the card.",
-      schema(["channel", "body"], channel=string_param("Teams chat or channel name."),
+      schema(["channel", "body"], channel=string_param("The chat's name as it appears in Teams, "
+                                                       "or the person's email address."),
              body=string_param("The message.")),
       mode="approval", label="Prepare a Teams post", activity="writing", available=_enterprise_on)
 def send_teams_message(ctx: ToolContext, channel: str = "", body: str = "", **_) -> dict:
@@ -324,13 +377,14 @@ def send_teams_message(ctx: ToolContext, channel: str = "", body: str = "", **_)
     if not channel.strip() or not body.strip():
         return {"content": "A Teams post needs a destination and a message. "
                            "Ask the user for whichever is missing.", "summary": "Needs details"}
+    from app.services.browser.teams import EMAIL_RE
+
     service = AskToolService(ctx.db)
     action = service.enterprise.create_action(
         "send_teams_message", body=body.strip(), source="teams",
-        chat_or_channel=channel.strip(), send=False)
-    ctx.drafts.append(_draft_card(action))
-    return {"content": f"Teams draft #{action.id} prepared; waiting for the user's approval.",
-            "summary": "Waiting for approval", "action": action.to_dict()}
+        to=EMAIL_RE.findall(channel), chat_or_channel=channel.strip(), send=False)
+    return {"content": _offer(ctx, action), "summary": "Waiting for approval",
+            "action": action.to_dict()}
 
 
 # -------------------------------------------------------------------- tasks
