@@ -1,22 +1,32 @@
-# RightAnswers, Dynamics 365 & SharePoint
+# RightAnswers, Dynamics 365, SharePoint, Outlook & Teams
 
-Cerebro can work in three systems on its own:
+Cerebro can work in five systems on its own:
 
 - **RightAnswers**, your knowledge base;
 - **Dynamics 365**, your cases;
-- **SharePoint**, your documents and pages.
+- **SharePoint**, your documents and pages;
+- **Outlook**, your email;
+- **Teams**, your chats.
 
-It searches them and reads articles, cases, documents and pages. With your
-approval, it also posts notes, updates tickets, edits articles, changes
-documents and updates pages.
+It searches them and reads articles, cases, documents, pages, emails and
+chats. With your approval, it also posts notes, updates tickets, edits
+articles, changes documents, updates pages and sends emails and Teams
+messages. It watches Outlook and Teams for new messages, tells you about the
+important ones, and looks into them for you (see
+[Outlook and Teams](#outlook-and-teams)).
 
 ## Your setup
 
 | System | Address (pre-filled) |
 |---|---|
 | Dynamics 365 | `https://dental.crm.dynamics.com` |
-| RightAnswers | `https://dexis.rightanswers.com` |
+| RightAnswers | `https://dexis.rightanswers.com/solutionmanger/controller/workspace/` (the SolutionManager workspace, where the articles are) |
 | SharePoint | `https://envistaconnect.sharepoint.com`, plus its OneDrive at `envistaconnect-my` |
+| Outlook | `https://outlook.cloud.microsoft/mail/` |
+| Teams | `https://teams.cloud.microsoft` |
+
+SharePoint, Outlook and Teams share your Microsoft 365 sign-in, so signing in
+to one usually signs in the others.
 
 1. Open Cerebro and go to the **Connect** tab.
 2. Click **Connect** on each system. This switches the system on and opens a
@@ -191,6 +201,13 @@ Every proposed and completed change is listed at `GET /api/chat/changes`.
 | `sharepoint_search` | read | "Find the onboarding checklist in SharePoint." |
 | `sharepoint_update_document` | approval | "In <link>, change the Tier 2 extension to 5520." |
 | `sharepoint_update_page` | approval | "On <page link>, replace 'two calls' with 'three calls'." |
+| `outlook_search` | read | "Find emails from Contoso about the sensor." |
+| `outlook_read` | read | "Read email #12." |
+| `teams_search` | read | "Search Teams for CAS-04567." |
+| `teams_read_chat` | read | "What's new in Support Escalations?" |
+| `reply_to_message` | approval | "Reply to Dr Patel that I'll call in five minutes." |
+| `send_email` | approval | "Email alex@clinic.example the reinstall steps." |
+| `send_teams_message` | approval | "Message Jordan on Teams that I've taken the case." |
 
 When the browser extension sees you open a Dynamics case, Cerebro reads it in
 the background. By the time you ask about it, Ask already has it.
@@ -248,7 +265,68 @@ SharePoint link, Ask opens it without being told to.
   touching the page's layout or web parts. The page is then checked out,
   saved and republished.
 
+## Outlook and Teams
+
+Outlook on the web and Teams on the web run in the same hidden browser,
+signed in as you.
+
+**Reading.** Cerebro reads mail and chats from the data the Outlook and Teams
+pages load for themselves (it listens in their tabs; it never sees a password
+or token), with the page itself as a fallback.
+
+**Watching.** While **Watch for new messages** is on (Connect tab), Outlook
+and Teams are checked every minute. A routine check doesn't wake the tray
+brain or the desktop buddy. New messages:
+
+- are stored like any other, so the inbox briefing, nudges, Ask and the
+  **New messages** list in Activity all see them;
+- pop up a **Windows notification** when they're important — sent directly
+  to you, an @mention, urgent, or about a case. The tray menu's **Open: …**
+  item takes you to it;
+- are **looked into**, for the important ones: in a pinned chat called
+  **Inbox**, Cerebro checks the case in Dynamics, searches RightAnswers, the
+  knowledge base and SharePoint, says what the sender needs and what to do,
+  and prepares a reply for you to approve. At most 12 messages an hour are
+  researched, and never the same one twice.
+
+The first check after Cerebro starts only catches up — you aren't notified
+about mail that arrived while it was closed.
+
+**Sending.** Emails and Teams messages are written in Outlook's and Teams'
+own compose and reply screens, so they come from you and show in Sent Items
+and the chat like anything you send. Every message waits for **Approve and
+send**. With **Send replies without asking** on (per app, off by default),
+replies in an existing thread or chat go straight away; a brand-new email,
+or a first message to someone, still asks. Sent messages can't be unsent.
+
+**Settings** (Settings → RightAnswers, Dynamics & SharePoint):
+
+| Setting | Default | What it does |
+|---|---|---|
+| Watch Outlook and Teams | On | Check for new messages in the background. |
+| Check every | 60 s | How often. |
+| Look into new messages | Important ones | Or every new message, or only when you ask. |
+| Most researched per hour | 12 | A cap on AI use when a lot arrives at once. |
+| Windows notifications | Urgent, direct and @mentions | Or every new message, or only when Cerebro has a suggestion. |
+| Your name in Outlook and Teams | (found automatically) | So your own messages are never taken for new mail. |
+
+Keeping Outlook and Teams open in the hidden browser uses roughly 0.5–1 GB of
+memory while watching is on.
+
+If reading or sending stops working after Outlook or Teams changes its pages,
+send `%LOCALAPPDATA%\Cerebro\connectors\outlook-capture.zip` (or
+`teams-capture.zip`). Selectors can be corrected in `connectors/outlook.json`
+or `connectors/teams.json`, the same way as for RightAnswers.
+
 ## RightAnswers details
+
+Work starts from DEXIS's **SolutionManager workspace**
+(`/solutionmanger/controller/workspace/`), which is where the articles are —
+the site's front page doesn't lead to them. If that spelling of the address
+doesn't exist, Cerebro tries `solutionmanager` and remembers whichever works.
+The workspace can hold its search box and articles inside frames; Cerebro
+looks in each frame. Searches use the workspace's own search box until Teach
+learns a search address.
 
 RightAnswers portals differ between companies, so the connector is driven by
 **selectors** rather than a fixed page structure. **Teach** (on the Connect
@@ -293,4 +371,6 @@ needed; the file is read on each use.
 | A RightAnswers search finds nothing | Run **Teach** on the Connect tab. If it still fails, send the capture bundle described above. |
 | A SharePoint change says the file changed | Someone edited it after the preview. Ask again so the change is based on the current version. |
 | Bedrock: "doesn't support tool use" | Nothing to do. Cerebro switches that model to the JSON protocol by itself. If answers still skip lookups, set **Tool use in Ask** to **JSON**, or pick a larger model. |
+| Outlook or Teams messages don't appear | Check **Watch for new messages** is on and the card says **Signed in**. Click **Check** to test the sign-in. |
+| Your own messages show up as new | Set **Your name in Outlook and Teams** in Settings (display name and email, comma-separated). |
 | Something failed mid-way | A screenshot of the page is saved in `%LOCALAPPDATA%\Cerebro\browser_screenshots`. |

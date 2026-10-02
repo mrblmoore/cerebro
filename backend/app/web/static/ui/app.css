@@ -124,6 +124,9 @@ a { color: var(--violet); text-decoration: none; }
   height: 100%;
   display: grid;
   grid-template-rows: auto auto auto 1fr;
+  /* One column that may shrink below its content's natural width — long
+     unbreakable text (a status line, an address) must never widen the page. */
+  grid-template-columns: minmax(0, 1fr);
   max-width: 980px; margin: 0 auto;
 }
 .glass {
@@ -715,3 +718,11 @@ body.maximized .app { max-width: none; }
 .incoming-head .meta { color: var(--text-faint); font-size: 11px; }
 .incoming-subject { font-weight: 650; margin-top: 4px; }
 .incoming-preview { color: var(--text-dim); margin-top: 2px; }
+.integration .meta { overflow-wrap: anywhere; }
+@media (max-width: 420px) {
+  .titlebar { gap: 4px; padding-left: 10px; padding-right: 8px; }
+  .titlebar .icon-btn { width: 28px; }
+  .brand { gap: 6px; }
+  .brand .brain-host { width: 38px; }
+  .brand .brain-host .mascot { width: 38px !important; height: 33px !important; }
+}

@@ -167,3 +167,24 @@ template replies.
   status after a reload.
 - [ ] **B8.8 Check on Windows** with the user's Bedrock models: the buddy's
   transparency, a scheduled chat task, and tool use with Nova and Llama.
+
+---
+
+## Phase 9 — Window size, RightAnswers workspace, Outlook and Teams (0.5.0)
+
+- [x] **B9.1 Resizable window.** Resize handles on the frameless window, Expand
+  and double-click to maximise, Window size presets, Text size, and the
+  window kept inside the screen it is on. Narrow windows tighten the layout
+  instead of cutting it off.
+- [x] **B9.2 RightAnswers workspace.** Starts from SolutionManager's
+  `/solutionmanger/controller/workspace/`, with a spelling fallback, frame-aware
+  search and reading, and Teach that recognises in-page searches.
+- [x] **B9.3 Outlook and Teams connectors.** Read from the apps' own data,
+  search, read, reply and send through their compose screens; approval by
+  default, "Send replies without asking" per app.
+- [x] **B9.4 Inbox monitor.** Checks every minute, stores new messages,
+  notifies about important ones, and researches them in a pinned Inbox chat
+  with a draft reply (capped per hour).
+- [ ] **B9.5 Real-tenant check** of Outlook and Teams on a work machine:
+  connect both, receive a test email and @mention, approve a reply in each.
+
