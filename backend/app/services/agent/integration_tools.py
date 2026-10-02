@@ -7,7 +7,7 @@ matching executor at the bottom of this module runs only after the user
 approves the card.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from app.services.agent import actions
 from app.services.agent.registry import ToolContext, schema, string_param, tool
@@ -484,6 +484,142 @@ def _change_result(ctx: ToolContext, made: dict, target: str) -> dict:
     return {"content": f"Change to {target} prepared as change #{action.id}; it is made in "
                        "SharePoint when the user approves it.",
             "summary": "Waiting for approval"}
+
+
+# ========================================================= Outlook / Teams
+def _messaging(name: str):
+    from app.services.browser import get
+
+    return get(name)
+
+
+def _outlook_on(ctx: ToolContext) -> bool:
+    return _messaging("outlook").enabled
+
+
+def _teams_on(ctx: ToolContext) -> bool:
+    return _messaging("teams").enabled
+
+
+def _store_seen(ctx: ToolContext, messages: List[dict]) -> Dict[str, int]:
+    """Keep what was read, so it can be replied to by number. Returns id -> #."""
+    from app.services.enterprise_service import EnterpriseService
+
+    numbers = {}
+    service = EnterpriseService(ctx.db)
+    for message in messages:
+        try:
+            stored = service.ingest_payload(message)
+            numbers[message["id"]] = stored["id"]
+        except Exception:  # noqa: BLE001 - reading still works without storing
+            continue
+    return numbers
+
+
+def _message_lines(ctx: ToolContext, messages: List[dict], numbers: Dict[str, int],
+                   prefix: str) -> List[str]:
+    lines = []
+    for message in messages:
+        sender = message.get("sender_name") or message.get("sender") or "someone"
+        title = message.get("subject") or message.get("chat") or f"Message from {sender}"
+        body = (message.get("body") or "").strip()
+        ref = ctx.cite({"title": title, "kind": message.get("source") or "message", "uri": None,
+                        "locator": f"{sender} · {message.get('timestamp') or ''}".strip(" ·"),
+                        "excerpt": body[:600]}, prefix)
+        number = numbers.get(message.get("id"))
+        lines.append(f"[{ref}]{f' #{number}' if number else ''} {sender} — {title} "
+                     f"({message.get('timestamp') or 'recent'}): {body[:700]}")
+    return lines
+
+
+@tool("outlook_search",
+      "Search the user's Outlook mailbox (all folders) by keywords, sender or case number.",
+      schema(["query"], query=string_param("What to look for, e.g. 'from:alex sensor' or 'CAS-01234'.")),
+      label="Search Outlook", activity="searching", available=_outlook_on)
+def outlook_search(ctx: ToolContext, query: str = "", **_) -> dict:
+    connector = _messaging("outlook")
+
+    def run():
+        results = connector.search(query)
+        if not results:
+            return {"content": f"No email matched “{query}”.", "summary": "No matches"}
+        numbers = _store_seen(ctx, results)
+        lines = _message_lines(ctx, results, numbers, "M")
+        return {"content": "\n".join(lines) + "\nUse outlook_read or reply_to_message with a #number.",
+                "summary": f"{len(results)} email(s)"}
+
+    return _guard(ctx, connector, run)
+
+
+@tool("outlook_read",
+      "Read one email in full by its #number (from a search or the inbox) or its Outlook link.",
+      schema(["message"], message=string_param("The email's #number or link.")),
+      label="Read an email", activity="browsing", available=_outlook_on)
+def outlook_read(ctx: ToolContext, message: str = "", **_) -> dict:
+    from app.models.enterprise import EnterpriseMessage
+
+    connector = _messaging("outlook")
+    target = str(message).lstrip("#").strip()
+    stored = ctx.db.query(EnterpriseMessage).get(int(target)) if target.isdigit() else None
+    key = stored.external_id if stored is not None else target
+
+    def run():
+        item = connector.read(key)
+        if stored is not None and len(item.get("body") or "") > len(stored.body or ""):
+            stored.body = item["body"]
+            ctx.db.commit()
+        lines = _message_lines(ctx, [item], {item.get("id"): stored.id} if stored else {}, "M")
+        return {"content": lines[0], "summary": item.get("subject") or "Email"}
+
+    return _guard(ctx, connector, run)
+
+
+@tool("teams_search",
+      "Search the user's Teams chats and channels by keywords or names.",
+      schema(["query"], query=string_param("What to look for.")),
+      label="Search Teams", activity="searching", available=_teams_on)
+def teams_search(ctx: ToolContext, query: str = "", **_) -> dict:
+    connector = _messaging("teams")
+
+    def run():
+        found = connector.search(query)
+        messages = found.get("messages") or []
+        numbers = _store_seen(ctx, messages)
+        lines = _message_lines(ctx, messages, numbers, "T")
+        if found.get("text"):
+            lines.append("Search results on screen:\n" + found["text"][:2500])
+        if not lines:
+            return {"content": f"Nothing in Teams matched “{query}”.", "summary": "No matches"}
+        return {"content": "\n".join(lines), "summary": f"{len(messages)} message(s)"}
+
+    return _guard(ctx, connector, run)
+
+
+@tool("teams_read_chat",
+      "Read the latest messages in a Teams chat, by the chat's name (as shown in Teams) or the "
+      "#number of a message in it.",
+      schema(["chat"], chat=string_param("Chat name, or a message #number from that chat.")),
+      label="Read a Teams chat", activity="browsing", available=_teams_on)
+def teams_read_chat(ctx: ToolContext, chat: str = "", **_) -> dict:
+    from app.models.enterprise import EnterpriseMessage
+
+    connector = _messaging("teams")
+    target = str(chat).lstrip("#").strip()
+    stored = ctx.db.query(EnterpriseMessage).get(int(target)) if target.isdigit() else None
+    key = stored.thread_id if stored is not None and stored.thread_id else target
+
+    def run():
+        result = connector.read_chat(key)
+        messages = result.get("messages") or []
+        if not messages:
+            return {"content": f"No messages found in “{result.get('chat') or chat}”.",
+                    "summary": "Empty"}
+        numbers = _store_seen(ctx, messages)
+        lines = _message_lines(ctx, messages, numbers, "T")
+        return {"content": f"Chat “{result.get('chat') or chat}”:\n" + "\n".join(lines),
+                "summary": f"{len(messages)} message(s)"}
+
+    return _guard(ctx, connector, run)
 
 
 _PREFETCHED: Dict[str, float] = {}

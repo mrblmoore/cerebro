@@ -3053,7 +3053,7 @@ def test_browser_integrations():
             listed = client.get("/api/integrations").json()
         check("Integrations are listed over the API",
               {item["name"] for item in listed["integrations"]}
-              == {"dynamics", "rightanswers", "sharepoint"})
+              == {"dynamics", "rightanswers", "sharepoint", "outlook", "teams"})
     finally:
         browser.engine().shutdown()
         for patch in reversed(patches):
@@ -4344,7 +4344,7 @@ def test_rightanswers_workspace():
         check("The other spelling is tried when the given one doesn't exist",
               rightanswers.start_url == f"{base}/solutionmanager/controller/workspace/")
         check("…and remembered for next time",
-              "solutionmanager" in (connectors_dir / "rightanswers.json").read_text())
+              "solutionmanager" in (connectors_dir / "rightanswers.json").read_text(encoding="utf-8"))
         check("A search runs through the workspace's search box inside its frame",
               [r["id"] for r in results] == ["KB900"], results)
         article = rightanswers.get_article(results[0]["url"])
@@ -4357,6 +4357,517 @@ def test_rightanswers_workspace():
         for patch in reversed(patches):
             patch.stop()
         server.shutdown()
+
+
+def _fake_m365():
+    """Tiny stand-ins for Outlook on the web and Teams on the web.
+
+    Like the real apps they need a sign-in (a cookie from /login?done=1), keep
+    fetching their own JSON in the background, and have compose boxes and
+    Send buttons that post what was written back to the server.
+    """
+    import http.server
+    import json as _json
+    import threading
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    me = {"name": "Sam Agent", "email": "sam@dexis.example"}
+    state = {
+        "mail": [
+            {"ItemId": {"Id": "AAMk-1"}, "Subject": "Sensor not detected after update",
+             "From": {"Mailbox": {"Name": "Alex Rivera", "EmailAddress": "alex@clinic.example"}},
+             "ToRecipients": [{"Mailbox": {"Name": me["name"], "EmailAddress": me["email"]}}],
+             "DateTimeReceived": "2026-10-02T08:00:00Z", "Preview": "Since this morning's update…",
+             "Body": {"Value": "<p>Since this morning's update the sensor isn't detected.</p>"},
+             "Importance": "Normal", "ConversationId": {"Id": "conv-1"}, "IsRead": False},
+            {"ItemId": {"Id": "AAMk-2"}, "Subject": "Weekly product newsletter",
+             "From": {"Mailbox": {"Name": "News", "EmailAddress": "news@vendor.example"}},
+             "ToRecipients": [{"Mailbox": {"Name": "All", "EmailAddress": "all@dexis.example"}}],
+             "DateTimeReceived": "2026-10-02T07:00:00Z", "Preview": "This week…",
+             "Importance": "Normal", "ConversationId": {"Id": "conv-2"}, "IsRead": True},
+            {"ItemId": {"Id": "AAMk-3"}, "Subject": "Re: something I sent",
+             "From": {"Mailbox": {"Name": me["name"], "EmailAddress": me["email"]}},
+             "ToRecipients": [{"Mailbox": {"Name": "Alex", "EmailAddress": "alex@clinic.example"}}],
+             "DateTimeReceived": "2026-10-02T07:30:00Z", "Preview": "My own sent mail",
+             "ConversationId": {"Id": "conv-1"}},
+        ],
+        "chats": {
+            "19:alex_sam@unq.gbl.spaces": {"topic": "", "messages": [
+                {"id": "1001", "messagetype": "RichText/Html", "imdisplayname": "Alex Rivera",
+                 "from": "https://x/v1/users/ME/contacts/8:orgid:alex",
+                 "content": "<p>Are you around? The scanner is down again.</p>",
+                 "originalarrivaltime": "2026-10-02T08:05:00Z"}]},
+            "19:escalations@thread.v2": {"topic": "Support Escalations", "messages": [
+                {"id": "2001", "messagetype": "RichText/Html", "imdisplayname": "Jordan Lee",
+                 "from": "https://x/v1/users/ME/contacts/8:orgid:jordan",
+                 "content": "<p><span itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">Sam Agent</span>"
+                            " can you take CAS-04567-ZZZZZ?</p>",
+                 "properties": {"mentions": _json.dumps([{"mri": "8:orgid:sam", "displayName": "Sam Agent"}])},
+                 "originalarrivaltime": "2026-10-02T08:06:00Z"},
+                {"id": "2002", "messagetype": "ThreadActivity/AddMember", "content": "<addmember/>",
+                 "imdisplayname": "", "from": "", "originalarrivaltime": "2026-10-02T08:07:00Z"},
+                {"id": "2003", "messagetype": "RichText/Html", "imdisplayname": "Sam Agent",
+                 "from": "https://x/v1/users/ME/contacts/8:orgid:sam",
+                 "content": "<p>My own message</p>", "originalarrivaltime": "2026-10-02T08:08:00Z"}]},
+        },
+        "sent_mail": [], "sent_chat": [],
+    }
+    session = "m365=ok"
+
+    OUTLOOK_APP = """<!doctype html><title>Mail - Sam Agent - Outlook</title>
+<input id="topSearchInput" aria-label="Search">
+<div role="listbox" id="list"></div>
+<script>
+async function refresh() {
+  await fetch('/owa/startupdata.ashx').then(r => r.json());
+  const data = await (await fetch('/owa/service.svc?action=FindItem')).json();
+  const items = data.Body.ResponseMessages.Items[0].RootFolder.Items;
+  document.getElementById('list').innerHTML = items.map(i =>
+    `<div role="option" data-convid="${i.ConversationId.Id}" aria-label="${i.IsRead ? '' : 'Unread '}">` +
+    `<span>${i.From.Mailbox.Name}</span>\\n<span>${i.Subject}</span>\\n<span>${i.Preview}</span></div>`).join('');
+}
+refresh(); setInterval(refresh, 700);
+document.getElementById('topSearchInput').addEventListener('keydown', async e => {
+  if (e.key === 'Enter') await fetch('/owa/service.svc?action=ExecuteSearch&q=' + encodeURIComponent(e.target.value));
+});
+</script>"""
+
+    OUTLOOK_READ = """<!doctype html><title>Read - Outlook</title>
+<div id="pane" aria-label="Message body" role="document"></div>
+<button aria-label="Reply" id="reply">Reply</button>
+<div id="compose"></div>
+<script>
+const id = decodeURIComponent(location.pathname.split('/').pop());
+fetch('/owa/service.svc?action=GetItem&id=' + encodeURIComponent(id)).then(r => r.json()).then(d => {
+  const item = d.Body.ResponseMessages.Items[0].Items[0];
+  document.getElementById('pane').innerHTML = item.Body.Value;
+});
+document.getElementById('reply').onclick = () => {
+  document.getElementById('compose').innerHTML =
+    '<div aria-label="Message body" contenteditable="true" id="editor"></div><button aria-label="Send" id="send">Send</button>';
+  document.getElementById('send').onclick = async () => {
+    await fetch('/owa/service.svc?action=CreateItem', {method: 'POST', body: JSON.stringify(
+      {inReplyTo: id, body: document.getElementById('editor').innerText})});
+    document.getElementById('compose').innerHTML = '';
+  };
+};
+</script>"""
+
+    OUTLOOK_COMPOSE = """<!doctype html><title>New message - Outlook</title>
+<div id="compose"><div aria-label="Message body" contenteditable="true" id="editor"></div>
+<button aria-label="Send" id="send">Send</button></div>
+<script>
+const q = new URLSearchParams(location.search);
+// Like some Outlook versions, the body in the address is ignored here.
+document.getElementById('send').onclick = async () => {
+  await fetch('/owa/service.svc?action=CreateItem', {method: 'POST', body: JSON.stringify(
+    {to: q.get('to'), subject: q.get('subject'), body: document.getElementById('editor').innerText})});
+  document.getElementById('compose').innerHTML = '';
+};
+</script>"""
+
+    TEAMS_APP = """<!doctype html><title>Chat | Microsoft Teams</title>
+<button data-tid="me-control-avatar-trigger" aria-label="Your profile, Sam Agent, Available">SA</button>
+<div id="list"></div>
+<script>
+async function refresh() {
+  await fetch('/api/chatsvc/amer/v1/users/ME/properties');
+  const data = await (await fetch('/api/chatsvc/amer/v1/users/ME/conversations')).json();
+  document.getElementById('list').innerHTML = data.conversations.map(c =>
+    `<div data-tid="chat-list-item-${c.id}" onclick="location.href='/l/chat/${encodeURIComponent(c.id)}/0?direct=1'">` +
+    `${c.threadProperties.topic || 'Alex Rivera'}</div>`).join('');
+}
+refresh(); setInterval(refresh, 700);
+</script>"""
+
+    TEAMS_CHAT = """<!doctype html><title>Chat | Microsoft Teams</title>
+<div id="launcher"><button id="web">Use the web app instead</button></div>
+<div id="chat" hidden>
+  <div id="messages"></div>
+  <div data-tid="ckeditor" contenteditable="true" role="textbox" id="box"></div>
+  <button data-tid="newMessageCommands-send" id="send">Send</button>
+</div>
+<script>
+const parts = location.pathname.split('/');
+const chat = decodeURIComponent(parts[3]);
+const q = new URLSearchParams(location.search);
+function open() {
+  document.getElementById('launcher').remove();
+  document.getElementById('chat').hidden = false;
+  if (q.get('message')) document.getElementById('box').innerText = q.get('message');
+  if (chat !== '0') fetch('/api/chatsvc/amer/v1/users/ME/conversations/' + encodeURIComponent(chat) + '/messages')
+    .then(r => r.json()).then(d => {
+      document.getElementById('messages').innerHTML = d.messages.map(m =>
+        `<div data-tid="chat-pane-message"><span data-tid="message-author-name">${m.imdisplayname}</span>` +
+        `<div id="content-${m.id}">${m.content}</div></div>`).join('');
+    });
+}
+if (q.get('direct')) open(); else document.getElementById('web').onclick = open;
+document.getElementById('send').onclick = async () => {
+  await fetch('/api/chatsvc/amer/v1/users/ME/conversations/' + encodeURIComponent(chat) + '/messages',
+    {method: 'POST', body: JSON.stringify({content: document.getElementById('box').innerText,
+                                           users: q.get('users')})});
+  document.getElementById('box').innerText = '';
+};
+</script>"""
+
+    def outlook_items(items):
+        return {"Body": {"ResponseMessages": {"Items": [{"RootFolder": {"Items": items}}]}}}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        app = "outlook"
+
+        def log_message(self, *args):
+            pass
+
+        def _send(self, status, body, kind="text/html", headers=None):
+            data = body.encode("utf-8") if isinstance(body, str) else body
+            self.send_response(status)
+            self.send_header("Content-Type", f"{kind}; charset=utf-8")
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _json(self, payload):
+            self._send(200, _json.dumps(payload), "application/json")
+
+        def _signed_in(self):
+            return session in (self.headers.get("Cookie") or "")
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            query = parse_qs(url.query)
+            if url.path == "/login":
+                if query.get("done"):
+                    return self._send(302, "", headers={"Set-Cookie": f"{session}; Path=/",
+                                                        "Location": "/"})
+                return self._send(200, "<title>Sign in</title>Sign in to your account")
+            if not self._signed_in():
+                return self._send(302, "", headers={"Location": "/login"})
+            if self.app == "outlook":
+                return self.outlook(url, query)
+            return self.teams(url, query)
+
+        def outlook(self, url, query):
+            if url.path.startswith("/mail/deeplink/read/"):
+                return self._send(200, OUTLOOK_READ)
+            if url.path.startswith("/mail/deeplink/compose"):
+                return self._send(200, OUTLOOK_COMPOSE)
+            if url.path.startswith("/mail"):
+                return self._send(200, OUTLOOK_APP)
+            if url.path == "/owa/startupdata.ashx":
+                return self._json({"owaUserConfig": {"SessionSettings": {
+                    "UserEmailAddress": me["email"], "UserDisplayName": me["name"]}}})
+            if url.path == "/owa/service.svc":
+                action = (query.get("action") or [""])[0]
+                if action == "FindItem":
+                    return self._json(outlook_items(state["mail"]))
+                if action == "GetItem":
+                    item = next(i for i in state["mail"] if i["ItemId"]["Id"] == query["id"][0])
+                    return self._json({"Body": {"ResponseMessages": {"Items": [{"Items": [item]}]}}})
+                if action == "ExecuteSearch":
+                    words = (query.get("q") or [""])[0].lower().split()
+                    hits = [i for i in state["mail"]
+                            if any(w in (i["Subject"] + i["Preview"]).lower() for w in words)]
+                    return self._json({"SearchResults": {"Items": hits}})
+            return self._send(404, "Not found")
+
+        def teams(self, url, query):
+            if url.path.startswith("/l/chat/"):
+                return self._send(200, TEAMS_CHAT)
+            if url.path == "/":
+                return self._send(200, TEAMS_APP)
+            if url.path.endswith("/users/ME/properties"):
+                return self._json({"userDetails": _json.dumps({"name": me["name"], "upn": me["email"]}),
+                                   "userMri": "8:orgid:sam"})
+            if url.path.endswith("/users/ME/conversations"):
+                return self._json({"conversations": [
+                    {"id": chat_id, "threadProperties": {"topic": chat["topic"]},
+                     "lastMessage": {**chat["messages"][-1], "conversationid": chat_id}}
+                    for chat_id, chat in state["chats"].items()]})
+            if url.path.endswith("/messages"):
+                chat_id = unquote(url.path.split("/conversations/")[1].split("/messages")[0])
+                messages = [{**m, "conversationid": chat_id}
+                            for m in state["chats"].get(chat_id, {}).get("messages", [])]
+                return self._json({"messages": messages})
+            return self._send(404, "Not found")
+
+        def do_POST(self):
+            if not self._signed_in():
+                return self._send(401, "{}", "application/json")
+            body = _json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            if self.app == "outlook":
+                state["sent_mail"].append(body)
+            else:
+                chat_id = unquote(self.path.split("/conversations/")[1].split("/messages")[0])
+                state["sent_chat"].append({"chat": chat_id, **body})
+            return self._json({"ok": True})
+
+    class OutlookHandler(Handler):
+        app = "outlook"
+
+    class TeamsHandler(Handler):
+        app = "teams"
+
+    servers = []
+    for handler in (OutlookHandler, TeamsHandler):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+    return servers, state, me
+
+
+def test_outlook_and_teams():
+    """Outlook and Teams through the hidden browser: read, watch, notify, help, send."""
+    print("\nOutlook and Teams — through the hidden browser")
+    import importlib
+    import sys as _sys
+    from unittest import mock
+
+    from app.core import activity_state
+    from app.core.config import settings
+    from app.models.chat import ChatMessage
+    from app.models.enterprise import EnterpriseAction, EnterpriseMessage
+    from app.services import browser, inbox_monitor
+    from app.services.agent.registry import REGISTRY, ToolContext
+    from app.services.ask_tools import AskToolService
+    from app.services.browser.engine import playwright_installed
+    from app.services.browser.outlook import outlook_item
+    from app.services.browser.teams import teams_message
+
+    check("Outlook and Teams are pre-filled",
+          settings.OUTLOOK_URL == "https://outlook.cloud.microsoft/mail/"
+          and settings.TEAMS_URL == "https://teams.cloud.microsoft")
+    me = {"name": "Sam Agent", "email": "sam@dexis.example"}
+    item = outlook_item({"ItemId": {"Id": "X"}, "Subject": "Hi", "DateTimeReceived": "2026-10-02",
+                         "From": {"Mailbox": {"Name": "A", "EmailAddress": "a@x"}},
+                         "ToRecipients": [{"Mailbox": {"EmailAddress": "SAM@dexis.example"}}],
+                         "Body": {"Value": "<p>Hello &amp; welcome</p>"}}, me)
+    check("An Outlook message is read from the app's own data",
+          item["sender"] == "a@x" and item["body"] == "Hello & welcome" and item["direct"])
+    check("…but not a draft", outlook_item({"ItemId": {"Id": "D"}, "Subject": "x", "IsDraft": True,
+                                            "DateTimeReceived": "2026"}, me) is None)
+    check("A Teams system event is not a message", teams_message(
+        {"messagetype": "ThreadActivity/AddMember", "content": "x", "id": "1",
+         "conversationid": "19:a"}, me, {}) is None)
+
+    if not playwright_installed():
+        print("  - skipped browser part: Playwright is not installed")
+        return
+    (outlook_server, teams_server), state, me = _fake_m365()
+    outlook_base = f"http://127.0.0.1:{outlook_server.server_port}"
+    teams_base = f"http://127.0.0.1:{teams_server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    overrides = {"BROWSER_AUTOMATION_ENABLED": True, "BROWSER_MODE": "headless",
+                 "BROWSER_TIMEOUT_SECONDS": 15,
+                 "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium",
+                 "OUTLOOK_BROWSER_ENABLED": True, "OUTLOOK_URL": f"{outlook_base}/mail/",
+                 "TEAMS_BROWSER_ENABLED": True, "TEAMS_URL": teams_base,
+                 "OUTLOOK_AUTO_SEND": False, "TEAMS_AUTO_SEND": False,
+                 "INBOX_MONITOR_ENABLED": True, "INBOX_ASSIST": "important",
+                 "INBOX_NOTIFY": "important", "INBOX_ASSIST_PER_HOUR": 12,
+                 "ENTERPRISE_ENABLED": False}
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches.append(mock.patch.object(engine_module, "BROWSER_PROFILE_DIR",
+                                     Path(_TEMP_DIR) / "m365_profile"))
+    for patch in patches:
+        patch.start()
+    outlook, teams = browser.get("outlook"), browser.get("teams")
+    for connector in (outlook, teams):
+        connector.me.clear()
+        connector._opened_at = 0
+    inbox_monitor.reset()
+    activity_state.reset()
+    db = session()
+    try:
+        try:
+            for base in (outlook_base, teams_base):
+                browser.engine().submit(lambda eng, b=base: eng.page("signin").goto(f"{b}/login?done=1"))
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+
+        # ---- reading
+        mail = outlook.collect()
+        check("Outlook's inbox is read from the data the page fetched",
+              {m["id"] for m in mail} == {"AAMk-1", "AAMk-2"}, [m.get("id") for m in mail])
+        check("Who is signed in is learned from the app", outlook.me.get("email") == me["email"])
+        check("Your own sent mail isn't taken for new mail", "AAMk-3" not in {m["id"] for m in mail})
+        alex = next(m for m in mail if m["id"] == "AAMk-1")
+        check("Mail sent to you is marked direct", alex["direct"] and not
+              next(m for m in mail if m["id"] == "AAMk-2")["direct"])
+
+        chats = teams.collect()
+        mention = next((m for m in chats if "CAS-04567" in (m.get("body") or "")), None)
+        check("Teams chats are read from the data the page fetched", mention is not None
+              and any("scanner is down" in (m.get("body") or "") for m in chats), chats)
+        check("An @mention of you is recognised", mention and mention["mentioned"])
+        check("A one-to-one chat counts as direct",
+              any(m["direct"] for m in chats if "scanner" in (m.get("body") or "")))
+        check("The chat's name comes along", mention and mention["chat"] == "Support Escalations")
+        check("Your own Teams messages are left out",
+              not any("My own message" in (m.get("body") or "") for m in chats))
+
+        # ---- watching (from scratch: forget what was read above)
+        inbox_monitor.reset()
+        teams._read_up_to.clear()
+        for message in db.query(EnterpriseMessage).all():
+            db.delete(message)
+        db.commit()
+        first = inbox_monitor.check_once(db)
+        check("The first check only catches up", first["outlook"]["catching_up"]
+              and not activity_state.recent_notices())
+        check("Messages are stored like any other", db.query(EnterpriseMessage)
+              .filter(EnterpriseMessage.source == "outlook").count() == 2)
+        state["mail"].insert(0, {
+            "ItemId": {"Id": "AAMk-9"}, "Subject": "URGENT: CAS-01234-ABCDE imaging down",
+            "From": {"Mailbox": {"Name": "Dr Patel", "EmailAddress": "patel@clinic.example"}},
+            "ToRecipients": [{"Mailbox": {"Name": me["name"], "EmailAddress": me["email"]}}],
+            "DateTimeReceived": "2026-10-02T09:00:00Z", "Preview": "Nothing images since 8am",
+            "Body": {"Value": "Nothing images since 8am. Please call."}, "Importance": "High",
+            "ConversationId": {"Id": "conv-9"}})
+        state["mail"].insert(1, {
+            "ItemId": {"Id": "AAMk-10"}, "Subject": "Lunch menu",
+            "From": {"Mailbox": {"Name": "Cafe", "EmailAddress": "cafe@dexis.example"}},
+            "ToRecipients": [{"Mailbox": {"Name": "All", "EmailAddress": "all@dexis.example"}}],
+            "DateTimeReceived": "2026-10-02T09:01:00Z", "Preview": "Soup", "ConversationId": {"Id": "c10"}})
+        import time as _time
+        _time.sleep(1.5)                                   # the page fetches again by itself
+        queued = []
+        with mock.patch.object(inbox_monitor._assist_queue, "put", side_effect=queued.append):
+            second = inbox_monitor.check_once(db)
+        notices = activity_state.recent_notices()
+        check("New mail is noticed on the next check", second["outlook"]["new"] == 2, second)
+        check("An urgent direct email pops up a notification",
+              any("Dr Patel" in n["title"] for n in notices), notices)
+        check("…an ordinary one doesn't", not any("Cafe" in n["title"] for n in notices))
+        urgent = db.query(EnterpriseMessage).filter(EnterpriseMessage.external_id == "outlook:AAMk-9").one()
+        check("Only the important one is queued for research", queued == [urgent.id], queued)
+
+        # ---- research (scripted model)
+        script = ScriptedLLM([
+            {"name": "reply_to_message", "arguments": {
+                "message": str(urgent.id), "body": "I'm on it — calling you in 5 minutes."}},
+            "Dr Patel's imaging is down (CAS-01234-ABCDE). I've drafted a reply saying you'll call."])
+        enabled, patched = _with_ai(script)
+        with enabled, patched:
+            outcome = inbox_monitor.assist(db, urgent.id)
+        posted = db.query(ChatMessage).filter(ChatMessage.kind == "inbox_assist").order_by(
+            ChatMessage.id.desc()).first()
+        meta = json.loads(posted.meta)
+        check("Research is posted in the Inbox chat",
+              outcome and posted is not None and meta["incoming"]["id"] == urgent.id)
+        check("…with a draft reply waiting for approval",
+              any(c.get("type") == "draft" and c["status"] == "awaiting_approval" for c in meta["cards"]))
+        check("Nothing was sent yet", not state["sent_mail"])
+        with enabled, patched:
+            again = inbox_monitor.assist(db, urgent.id)
+        check("A message is never researched twice", again is None)
+
+        draft = next(c for c in meta["cards"] if c.get("type") == "draft")
+        result = AskToolService(db).approve(draft["action_id"])
+        check("Approving sends the reply through Outlook", state["sent_mail"]
+              and state["sent_mail"][-1]["inReplyTo"] == "AAMk-9"
+              and "calling you" in state["sent_mail"][-1]["body"], result.get("reply"))
+        check("The draft is marked sent",
+              db.query(EnterpriseAction).get(draft["action_id"]).status == "sent")
+
+        # ---- sending without asking (replies only)
+        ctx = ToolContext(db=db, context={})
+        with mock.patch.object(settings, "OUTLOOK_AUTO_SEND", True):
+            reply = REGISTRY["reply_to_message"].handler(ctx, message=str(urgent.id),
+                                                        body="Following up on the call.")
+            new = REGISTRY["send_email"].handler(ctx, to="someone@clinic.example",
+                                                 subject="Hello", body="A brand-new email.")
+        check("With 'send replies without asking' on, a reply goes straight away",
+              reply["content"].startswith("Sent automatically")
+              and state["sent_mail"][-1]["body"].startswith("Following up"))
+        check("…but a brand-new email still asks", "NOT sent" in new["content"]
+              and not any("brand-new" in m.get("body", "") for m in state["sent_mail"]))
+
+        ctx = ToolContext(db=db, context={})
+        REGISTRY["send_email"].handler(ctx, to="someone@clinic.example", subject="Hello",
+                                       body="Typed into the compose box.")
+        AskToolService(db).approve(ctx.drafts[0]["action_id"])
+        check("A new email is written and sent from Outlook's compose screen",
+              state["sent_mail"][-1].get("to") == "someone@clinic.example"
+              and "Typed into" in state["sent_mail"][-1]["body"])
+
+        # ---- Teams sending
+        stored_mention = db.query(EnterpriseMessage).filter(
+            EnterpriseMessage.source == "teams", EnterpriseMessage.mentioned.is_(True)).first()
+        ctx = ToolContext(db=db, context={})
+        REGISTRY["reply_to_message"].handler(ctx, message=str(stored_mention.id),
+                                             body="Taking CAS-04567 now.")
+        AskToolService(db).approve(ctx.drafts[0]["action_id"])
+        check("A Teams reply is posted in the right chat (past Teams' launcher page)",
+              state["sent_chat"] and state["sent_chat"][-1]["chat"] == "19:escalations@thread.v2"
+              and "Taking CAS-04567" in state["sent_chat"][-1]["content"], state["sent_chat"])
+        ctx = ToolContext(db=db, context={})
+        REGISTRY["send_teams_message"].handler(ctx, channel="newperson@clinic.example",
+                                               body="Hi, starting a chat with you.")
+        AskToolService(db).approve(ctx.drafts[0]["action_id"])
+        check("A first message to someone opens a new chat with them",
+              state["sent_chat"][-1].get("users") == "newperson@clinic.example"
+              and "starting a chat" in state["sent_chat"][-1]["content"])
+
+        # ---- Ask tools
+        ctx = ToolContext(db=db, context={})
+        found = REGISTRY["outlook_search"].handler(ctx, query="sensor")
+        check("Ask can search the mailbox", "Sensor not detected" in found["content"]
+              and "#" in found["content"], found)
+        read = REGISTRY["teams_read_chat"].handler(ToolContext(db=db, context={}),
+                                                   chat=str(stored_mention.id))
+        check("Ask can read a Teams chat", "CAS-04567" in read["content"], read)
+
+        # ---- the hourly cap
+        inbox_monitor.reset()
+        with mock.patch.object(settings, "INBOX_ASSIST_PER_HOUR", 1), enabled, patched:
+            fresh = db.query(EnterpriseMessage).filter(EnterpriseMessage.external_id == "outlook:AAMk-2").one()
+            other = db.query(EnterpriseMessage).filter(EnterpriseMessage.external_id == "outlook:AAMk-10").one()
+            script.turns = ["Looked.", "Looked again."]
+            inbox_monitor.assist(db, fresh.id)
+            capped = inbox_monitor.assist(db, other.id)
+        check("Research stops at the hourly limit", capped is None)
+
+        from fastapi.testclient import TestClient
+        from app.main import app
+        with TestClient(app) as client:
+            listed = client.get("/api/integrations").json()
+        names = {item["name"]: item for item in listed["integrations"]}
+        check("The Connect tab lists Outlook and Teams with their switches",
+              names["outlook"]["can_auto_apply"] and names["teams"]["enabled"]
+              and listed["monitor"]["enabled"])
+    finally:
+        browser.engine().shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        for server in (outlook_server, teams_server):
+            server.shutdown()
+        db.close()
+
+
+def test_tray_notices():
+    """New notices become Windows notifications; old ones are not replayed."""
+    print("\nTray — notifications")
+    sys.path.insert(0, str(ROOT / "desktop"))
+    from unittest import mock
+
+    import tray
+
+    shown = []
+    brain = tray.BrainTray("http://127.0.0.1:1", {"open": lambda tab=None: None})
+    with mock.patch.object(brain, "notify", side_effect=lambda body, title="": shown.append(title)):
+        brain._on_activity({"state": "idle", "notices": [{"id": 3, "title": "Old one"}]})
+        check("Notices from before the tray started aren't replayed", shown == [])
+        brain._on_activity({"state": "idle", "notices": [
+            {"id": 3, "title": "Old one"}, {"id": 4, "title": "Email from Dr Patel", "body": "Imaging down"}]})
+        check("A new notice pops up a notification", shown == ["Email from Dr Patel"])
+        check("…and can be opened from the tray menu", brain.latest["id"] == 4)
+        brain._on_activity({"state": "idle", "notices": [{"id": 4, "title": "Email from Dr Patel"}]})
+        check("Each notice pops up once", shown == ["Email from Dr Patel"])
 
 
 # -------------------------------------------------------------------- main
@@ -4392,7 +4903,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_tray_notices):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

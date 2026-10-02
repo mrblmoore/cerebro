@@ -70,6 +70,10 @@ class BrainTray:
         self.state = "idle"
         self.detail = "Starting…"
         self.pending = 0
+        #: Newest notice seen; None until the first snapshot sets the baseline
+        #: (notices from before the tray started are not replayed).
+        self.last_notice = None
+        self.latest = None                     # the newest notice, for the menu
         self.icon = None
         self._stop = threading.Event()
         self._watcher = ActivityWatcher(self.api_url, self._on_activity)
@@ -87,8 +91,11 @@ class BrainTray:
             Item(lambda item: self._status_text(), None, enabled=False),
             Item(lambda item: f"{self.pending} change(s) waiting for approval",
                  act("open", "activity"), visible=lambda item: self.pending > 0),
+            Item(lambda item: f"Open: {(self.latest or {}).get('title', '')}"[:60],
+                 lambda icon, item: self._open_latest(), visible=lambda item: bool(self.latest)),
             Menu.SEPARATOR,
-            Item("RightAnswers, Dynamics & SharePoint…", act("open", "connect")),
+            Item("Connections (RightAnswers, Dynamics, SharePoint, Outlook, Teams)…",
+                 act("open", "connect")),
             Item("Dashboard", act("dashboard")),
             Item("Settings", act("settings")),
             Item("Show working buddy", self._toggle_buddy,
@@ -159,6 +166,27 @@ class BrainTray:
                 pass
         if self.pending > previous_pending:
             self.notify("A change is waiting for your approval. Open Cerebro to review it.")
+        self._new_notices(snapshot.get("notices") or [])
+
+    def _new_notices(self, notices) -> None:
+        """A Windows notification for each notice that arrived since the last snapshot."""
+        newest = max((n.get("id") or 0 for n in notices), default=0)
+        if self.last_notice is None:
+            self.last_notice = newest
+            return
+        for item in notices:
+            if (item.get("id") or 0) > self.last_notice:
+                self.latest = item
+                self.notify(item.get("body") or item.get("title") or "", item.get("title") or "Cerebro")
+        self.last_notice = max(self.last_notice, newest)
+
+    def _open_latest(self) -> None:
+        link = (self.latest or {}).get("link") or {}
+        opener = self.actions.get("open_link")
+        if opener:
+            opener(link)
+        else:
+            self.actions["open"](link.get("tab"))
 
     def _animate(self) -> None:
         index = 0

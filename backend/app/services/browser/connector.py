@@ -422,7 +422,7 @@ class BrowserConnector:
         return bool(self.auto_apply_setting and getattr(settings, self.auto_apply_setting, False))
 
     # -------------------------------------------------------- page work
-    def run(self, fn: Callable[[Any], Any], label: str) -> Any:
+    def run(self, fn: Callable[[Any], Any], label: str, quiet: bool = False) -> Any:
         """Run ``fn(page)`` on this connector's tab in the hidden browser.
 
         Raises :class:`SignInRequired` when the site sends the browser to a
@@ -435,7 +435,7 @@ class BrowserConnector:
             return fn(page)
 
         try:
-            result = engine().submit(job, label)
+            result = engine().submit(job, label, quiet=quiet)
         except SignInRequired:
             with self._state_lock:
                 self._signed_in, self._checked_at = False, time.time()

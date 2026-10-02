@@ -195,6 +195,30 @@ class Settings(BaseSettings):
     #: task) makes them, instead of waiting for approval. Each one is still
     #: shown with its before/after and can be undone from its card.
     SHAREPOINT_AUTO_APPLY: bool = False
+    #: Outlook and Teams on the web, through the same hidden browser and
+    #: Microsoft 365 sign-in: read, search and send mail and chats, watched
+    #: for new messages. Sending always asks first unless the matching
+    #: *_AUTO_SEND is on, and even then only replies in an existing thread.
+    OUTLOOK_BROWSER_ENABLED: bool = False
+    OUTLOOK_URL: Optional[str] = "https://outlook.cloud.microsoft/mail/"
+    OUTLOOK_AUTO_SEND: bool = False
+    TEAMS_BROWSER_ENABLED: bool = False
+    TEAMS_URL: Optional[str] = "https://teams.cloud.microsoft"
+    TEAMS_AUTO_SEND: bool = False
+    #: Watch Outlook and Teams for new messages while they are connected.
+    INBOX_MONITOR_ENABLED: bool = True
+    INBOX_MONITOR_SECONDS: int = 60
+    #: Which new messages Cerebro researches on its own: off | important | all.
+    #: "Important" = sent directly to you, @mentions you, urgent, or names a case.
+    INBOX_ASSIST: str = "important"
+    #: Most messages researched per hour, so a busy inbox can't run up AI costs.
+    INBOX_ASSIST_PER_HOUR: int = 12
+    #: Windows notifications for: important | all | suggestions (when research finishes).
+    INBOX_NOTIFY: str = "important"
+    #: Your name(s) as Outlook and Teams show them, comma-separated — so your
+    #: own messages are never treated as new mail. Found automatically when it can be.
+    INBOX_MY_NAMES: Optional[str] = None
+
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
 

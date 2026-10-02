@@ -38,5 +38,5 @@ def _load() -> None:
     global _LOADED
     if _LOADED:
         return
-    from app.services.browser import dynamics, rightanswers, sharepoint  # noqa: F401
+    from app.services.browser import dynamics, outlook, rightanswers, sharepoint, teams  # noqa: F401
     _LOADED = True

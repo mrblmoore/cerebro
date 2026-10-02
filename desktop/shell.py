@@ -202,6 +202,14 @@ class Shell:
         if self.window is not None:
             self.window.hide()
 
+    def open_link(self, link: dict):
+        """Open Cerebro where a notice points: a tab, and maybe a chat."""
+        link = link or {}
+        self.show(link.get("tab") or "ask")
+        chat = link.get("conversation_id")
+        if chat and self.window is not None:
+            self.window.evaluate_js(f"window.cerebroOpenChat && window.cerebroOpenChat({int(chat)})")
+
     def set_compact(self, compact: bool):
         self.compact = compact
         width = int(self.config.get("width") or DEFAULT_SIZE[0])
@@ -293,6 +301,7 @@ class Shell:
             startup = None
         actions = {
             "open": lambda tab=None: self.show(tab),
+            "open_link": self.open_link,
             "dashboard": lambda: webbrowser.open(f"{self.api_url}/"),
             "settings": lambda: webbrowser.open(f"{self.api_url}/settings"),
             "quit": self.quit,

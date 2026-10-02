@@ -497,6 +497,8 @@ main { position: relative; min-height: 0; }
 .logo.dynamics { background: linear-gradient(135deg, #0b53ce, #2aa0f0); }
 .logo.rightanswers { background: linear-gradient(135deg, #f97316, #f43f5e); }
 .logo.sharepoint { background: linear-gradient(135deg, #036c70, #1a9ba1 60%, #37c6d0); }
+.logo.outlook { background: linear-gradient(135deg, #0a4fbf, #1490df 60%, #28a8ea); }
+.logo.teams { background: linear-gradient(135deg, #4b53bc, #5b5fc7 60%, #7b83eb); }
 .logo.browser { background: linear-gradient(135deg, #334155, #64748b); }
 
 .toast-host { position: fixed; z-index: 60; left: 50%; bottom: 18px; transform: translateX(-50%); display: grid; gap: 8px; }
@@ -702,3 +704,14 @@ body.maximized .app { max-width: none; }
   .hero { padding-top: 10px; }
   .hint { display: none; }
 }
+
+/* Outlook and Teams */
+.logo.sm { width: 26px; height: 26px; border-radius: 8px; font-size: 10px; flex: none; display: inline-grid; place-items: center; color: #fff; font-weight: 800; }
+.message-row .flags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.message-row .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.incoming { margin: 0 0 10px; padding: 9px 11px; border-radius: 11px; border-left: 3px solid var(--violet);
+  background: var(--glass); font-size: 12.5px; }
+.incoming-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.incoming-head .meta { color: var(--text-faint); font-size: 11px; }
+.incoming-subject { font-weight: 650; margin-top: 4px; }
+.incoming-preview { color: var(--text-dim); margin-top: 2px; }

@@ -50,6 +50,11 @@ _ids = itertools.count(1)
 _active: Dict[int, Dict[str, Any]] = {}
 _last_error: Optional[Dict[str, Any]] = None
 _version = 0
+#: Things worth telling the user about right away (a new important email,
+#: research finished). The tray turns new ones into Windows notifications.
+_notices: List[Dict[str, Any]] = []
+_notice_ids = itertools.count(1)
+NOTICES_KEPT = 20
 
 
 def _bump() -> None:
@@ -161,7 +166,26 @@ def snapshot(pending_approvals: int = 0) -> Dict[str, Any]:
                    for item in items],
         "pending_approvals": pending_approvals,
         "version": current_version,
+        "notices": recent_notices()[-5:],
     }
+
+
+def notice(title: str, body: str = "", kind: str = "message",
+           link: Optional[Dict[str, Any]] = None) -> int:
+    """Tell the user something now. ``link`` says where Cerebro should open
+    ({"tab": "ask", "conversation_id": 3}); returns the notice id."""
+    with _lock:
+        notice_id = next(_notice_ids)
+        _notices.append({"id": notice_id, "title": title[:120], "body": (body or "")[:300],
+                         "kind": kind, "link": link or {}, "at": time.time()})
+        del _notices[:-NOTICES_KEPT]
+        _bump()
+    return notice_id
+
+
+def recent_notices(after: int = 0) -> List[Dict[str, Any]]:
+    with _lock:
+        return [dict(item) for item in _notices if item["id"] > after]
 
 
 def reset() -> None:
@@ -169,5 +193,6 @@ def reset() -> None:
     global _last_error
     with _lock:
         _active.clear()
+        _notices.clear()
         _last_error = None
         _bump()
