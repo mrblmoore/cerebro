@@ -4171,7 +4171,13 @@ def test_window_sizing():
     """
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            # The installed Edge on Windows (the build machine has no bundled
+            # Chromium), Playwright's Chromium elsewhere — as the browser tests do.
+            try:
+                browser = p.chromium.launch(channel="msedge" if sys.platform == "win32" else None)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  - skipped page part: {str(exc).splitlines()[0]}")
+                return
             page = browser.new_page(viewport={"width": 440, "height": 640},
                                     screen={"width": 1920, "height": 1080})
             page.add_init_script(bridge)
