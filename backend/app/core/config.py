@@ -224,6 +224,20 @@ class Settings(BaseSettings):
     #: Your name(s) as Outlook and Teams show them, comma-separated — so your
     #: own messages are never treated as new mail. Found automatically when it can be.
     INBOX_MY_NAMES: Optional[str] = None
+    #: What to pay attention to. Teams: all | direct (1:1 chats only) |
+    #: direct_mentions | selected (the chats named in TEAMS_WATCH_CHATS, plus
+    #: @mentions). Names are comma-separated and match part of a chat, channel
+    #: or person's name.
+    TEAMS_WATCH: str = "all"
+    TEAMS_WATCH_CHATS: Optional[str] = None
+    TEAMS_MUTE_CHATS: Optional[str] = None
+    #: Outlook: all | direct (addressed to you) | selected (senders in
+    #: OUTLOOK_WATCH_SENDERS). Muted senders/subject words are always ignored,
+    #: and OUTLOOK_SKIP_BULK drops newsletters and promotions.
+    OUTLOOK_WATCH: str = "all"
+    OUTLOOK_WATCH_SENDERS: Optional[str] = None
+    OUTLOOK_MUTE_SENDERS: Optional[str] = None
+    OUTLOOK_SKIP_BULK: bool = True
 
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True

@@ -78,13 +78,22 @@ def check_once(db) -> Dict[str, Any]:
 
 def handle(db, source: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Store new messages; notify about and research the important ones."""
-    from app.services.enterprise_service import EnterpriseService
+    from app.services import message_filter
     from app.models.enterprise import EnterpriseMessage
+    from app.services.enterprise_service import EnterpriseService
 
     service = EnterpriseService(db)
     catching_up = source not in _primed
     new: List[EnterpriseMessage] = []
+    filtered = 0
     for payload in messages:
+        try:
+            keep, _why = message_filter.allow(source, payload)
+        except Exception:  # noqa: BLE001 - a filter bug must never hide mail
+            keep = True
+        if not keep:
+            filtered += 1
+            continue
         try:
             stored = service.ingest_payload({**payload, "source": source})
         except Exception as exc:  # noqa: BLE001 - one odd message never stops the rest
@@ -108,7 +117,8 @@ def handle(db, source: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         logger.info("inbox", "New messages", {"source": source, "new": len(new),
                                               "important": len(important),
                                               "catching_up": catching_up})
-    return {"new": len(new), "important": len(important), "catching_up": catching_up}
+    return {"new": len(new), "important": len(important), "catching_up": catching_up,
+            "filtered": filtered}
 
 
 def is_important(message) -> bool:

@@ -95,7 +95,8 @@ hiddenimports = [
     "app.services.browser.rightanswers", "app.services.browser.teach",
     "app.services.browser.sharepoint", "app.services.conversations",
     "app.services.browser.messaging", "app.services.browser.outlook",
-    "app.services.browser.teams", "app.services.inbox_monitor",
+    "app.services.browser.teams",     "app.services.inbox_monitor", "app.services.contacts",
+    "app.services.message_filter", "app.services.agent.analysis_tools",
     "app.api.integrations",
     "app.models.agent_action",
 ]

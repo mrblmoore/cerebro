@@ -346,9 +346,10 @@ def tools() -> Dict[str, Any]:
 
 
 @router.post("/actions/{action_id}/approve", dependencies=[Depends(require_local_origin)])
-def approve_action(action_id: int, conversation_id: Optional[int] = None,
+def approve_action(action_id: int, conversation_id: Optional[int] = None, to: Optional[str] = None,
                    db: Session = Depends(get_db)) -> Dict[str, Any]:
-    return _service(db, conversation_id).handle_action(action_id, "approve")
+    """Approve (or retry) a draft; ``to`` replaces the destination first."""
+    return _service(db, conversation_id).handle_action(action_id, "approve", to=to)
 
 
 @router.post("/actions/{action_id}/discard", dependencies=[Depends(require_local_origin)])

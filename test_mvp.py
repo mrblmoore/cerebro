@@ -4626,6 +4626,98 @@ document.getElementById('send').onclick = async () => {
     return servers, state, me
 
 
+def test_ask_reliability_and_scoping():
+    """Fuzzy people, failed-send retry, message scoping, relevance gating, new tools."""
+    print("\nAsk reliability — people, retries, scoping, relevance")
+    import os
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.models.enterprise import EnterpriseAction, EnterpriseMessage
+    from app.services import contacts, message_filter
+    from app.services.agent import loop
+    from app.services.agent.analysis_tools import summarise_log
+    from app.services.ask_tools import AskToolService
+    from app.services.browser.teams import name_pattern
+    import re as _re
+
+    check("Name matches in any order", contacts.matches("Anthony Oddo", "Oddo, Anthony")
+          and contacts.matches("oddo anth", "Anthony Oddo") and not contacts.matches("Bob", "Anthony Oddo"))
+    check("Teams chat pattern ignores word order",
+          bool(name_pattern("Anthony Oddo").search("Oddo Anthony (Dexis)")))
+
+    db = session()
+    db.add(EnterpriseMessage(source="teams", sender="x", sender_name="Anthony Oddo",
+                             thread_id="19:abc@unq.gbl.spaces", direct=True, external_id="fz-1"))
+    db.add(EnterpriseMessage(source="outlook", sender="jo.ann@x.example", sender_name="Joanne Lee",
+                             external_id="fz-2"))
+    db.add(EnterpriseMessage(source="outlook", sender="jo.bob@x.example", sender_name="Joanne Smith",
+                             external_id="fz-3"))
+    db.commit()
+    found = contacts.resolve(db, "anthony oddo")
+    check("A known person resolves to their chat",
+          found["status"] == "found" and found["person"]["chat"] == "19:abc@unq.gbl.spaces")
+    check("A partial name resolves", contacts.resolve(db, "Oddo")["status"] == "found")
+    check("Two matches are ambiguous", contacts.resolve(db, "Joanne")["status"] == "ambiguous")
+    check("An unknown name is none", contacts.resolve(db, "Zed Nobody")["status"] == "none")
+
+    saved = (settings.TEAMS_WATCH, settings.TEAMS_WATCH_CHATS, settings.OUTLOOK_WATCH,
+             settings.OUTLOOK_SKIP_BULK, settings.OUTLOOK_MUTE_SENDERS)
+    try:
+        settings.TEAMS_WATCH = "direct"
+        check("Direct-only drops channel posts",
+              not message_filter.allow("teams", {"chat": "Ops", "direct": False})[0]
+              and message_filter.allow("teams", {"chat": "Sam", "direct": True})[0])
+        settings.TEAMS_WATCH, settings.TEAMS_WATCH_CHATS = "selected", "ops"
+        check("Selected keeps listed chats and @mentions only",
+              message_filter.allow("teams", {"chat": "Ops room"})[0]
+              and message_filter.allow("teams", {"chat": "Other", "mentioned": True})[0]
+              and not message_filter.allow("teams", {"chat": "Other"})[0])
+        settings.OUTLOOK_WATCH, settings.OUTLOOK_SKIP_BULK = "all", True
+        settings.OUTLOOK_MUTE_SENDERS = "spam.example"
+        check("Ads and muted senders are dropped",
+              not message_filter.allow("outlook", {"sender": "no-reply@shop.example", "subject": "50% off"})[0]
+              and not message_filter.allow("outlook", {"sender": "a@spam.example", "subject": "hi"})[0]
+              and message_filter.allow("outlook", {"sender": "bob@x.example", "subject": "Server down"})[0])
+        check("A message naming a case always gets through",
+              message_filter.allow("outlook", {"sender": "no-reply@shop.example",
+                                               "subject": "Update on INC0012345"})[0])
+    finally:
+        (settings.TEAMS_WATCH, settings.TEAMS_WATCH_CHATS, settings.OUTLOOK_WATCH,
+         settings.OUTLOOK_SKIP_BULK, settings.OUTLOOK_MUTE_SENDERS) = saved
+
+    action = EnterpriseAction(action="send_teams_message", source="teams", chat_or_channel="Nobody",
+                              body="hi", status="failed", status_detail="no chat")
+    db.add(action)
+    db.commit()
+    service = AskToolService(db)
+    check("A just-failed send is still the pending action",
+          service.pending_action() is not None and service.pending_action().id == action.id)
+    def fake_dispatch(item):
+        item.status = "sent"
+        db.commit()
+        return item
+
+    with mock.patch.object(service.enterprise, "dispatch_action", side_effect=fake_dispatch):
+        result = service.approve(action.id, destination="Anthony Oddo")
+    db.refresh(action)
+    check("Retrying a failed send with a new destination works",
+          action.status == "sent" and action.chat_or_channel == "Anthony Oddo" and "Sent" in result["reply"],
+          f"{action.status} / {action.chat_or_channel} / {result.get('reply')}")
+
+    check("A plain 'message X on Teams' request is messaging-only",
+          loop.messaging_only("Send Anthony Oddo a message on Teams saying hi"))
+    check("A research request is not",
+          not loop.messaging_only("Search the KB for the Teams error and email me the steps"))
+
+    log = "\n".join(f"2026-01-02 10:00:{i:02d} ERROR db timeout id {i}" for i in range(5)) + \
+          "\n2026-01-02 10:01:00 INFO ok\n2026-01-02 10:02:00 WARN disk low"
+    summary = summarise_log(log)
+    check("Log review groups repeats with counts", "5 · 2026-01-02" in summary and "disk low" in summary, summary)
+    from app.services.agent.registry import REGISTRY
+    check("The analysis tools are registered", "review_log" in REGISTRY and "compare_cases" in REGISTRY)
+
+
 def test_beyondtrust_and_genesys():
     """BeyondTrust and Genesys through the hidden browser: config, sign-in rules, call matching."""
     print("\nBeyondTrust & Genesys Cloud — through the hidden browser")
@@ -5074,7 +5166,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_beyondtrust_and_genesys, test_tray_notices):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_beyondtrust_and_genesys, test_tray_notices):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

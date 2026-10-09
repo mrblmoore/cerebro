@@ -21,6 +21,7 @@ Why it is shaped this way — each point fixes a way Ask used to go wrong:
 
 import difflib
 import json
+import re
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -39,8 +40,27 @@ How to respond:
 - For general technical knowledge you are confident about, just answer; no tool is needed.
 - Context provided with a message is optional evidence. Ignore anything in it that is not about the question.
 - When a statement comes from a source, cite its bracketed ID exactly, e.g. [K1] or [S2]. Never invent IDs. Say plainly when nothing you found answers the question, then give your best general guidance.
+- Use only the tools the request needs. To message someone, go straight to send_teams_message / send_email: pass the person's name exactly as the user said it (a first name or partial name is fine; the app finds them) and never ask for a full name or email first. Don't search the knowledge base, cases or documents unless the message itself needs them.
+- To compare cases, fetch each with compare_cases and point out differences and shared causes. To review a log, use review_log and explain the repeated errors and when they began.
 - Anything that sends or changes something outside this computer is prepared as a card for the user to approve — unless the tool result says it was already applied (the user can turn that on for SharePoint). Never claim something was sent, posted or updated unless a tool result says so.
 - Be concise and specific. Use short numbered steps for procedures. Markdown is fine."""
+
+MESSAGING_TOOLS = ("send_", "reply_", "draft_", "outlook_", "teams_", "get_message_thread",
+                   "get_inbox_briefing", "create_task")
+_MESSAGING_VERB = re.compile(
+    r"\b(send|message|msg|ping|dm|tell|email|e-mail|reply|respond|write to|let\b.{0,30}\bknow)\b", re.I)
+_MESSAGING_CHANNEL = re.compile(r"\b(teams|outlook|email|e-mail|chat|dm|message)\b", re.I)
+_RESEARCH_WORDS = re.compile(
+    r"\b(search|look up|lookup|find|research|article|kb|knowledge|how (do|to|can)|why|"
+    r"troubleshoot|case|ticket|log|compare|summari[sz]e|according)\b", re.I)
+
+
+def messaging_only(text: str) -> bool:
+    """True for a plain "send X a message" request that needs no lookups."""
+    text = text or ""
+    return bool(_MESSAGING_VERB.search(text) and _MESSAGING_CHANNEL.search(text)
+                and not _RESEARCH_WORDS.search(text))
+
 
 #: Previous answers are shortened in the history the model sees; the model
 #: needs to know what it said, not to be handed its old answer to copy.
@@ -201,7 +221,8 @@ def run(db, text: str, context: Dict[str, Any] = None,
     previous_answer = next((m["content"] for m in reversed(history)
                             if m["role"] == "assistant"), None)
 
-    prefetched = _prefetch(ctx, text)
+    focused = messaging_only(text)
+    prefetched = "" if focused else _prefetch(ctx, text)
     note = _context_note(ctx)
     links = _sharepoint_links(text)
     if links:
@@ -210,7 +231,8 @@ def run(db, text: str, context: Dict[str, Any] = None,
         note = "; ".join(filter(None, [note, "SharePoint link(s) in the message — open with "
                                              "sharepoint_read: " + ", ".join(links)]))
     messages = history + [{"role": "user", "content": _user_turn(text, note, prefetched)}]
-    tool_specs = [item.spec() for item in available_tools(ctx)]
+    tool_specs = [item.spec() for item in available_tools(ctx)
+                  if not focused or item.name.startswith(MESSAGING_TOOLS)]
     system = ASK_SYSTEM_PROMPT.format(today=datetime.now().strftime("%A %d %B %Y"))
     if (instructions or "").strip():
         system += ("\n\nThis chat's standing instructions from the user (follow them unless "
