@@ -405,6 +405,19 @@ the keys that differ:
   "row": "table.sessions tbody tr"
 }
 ```
+## Files, folders, URLs and commands
+
+Ask can work with anything you point it at, not only connected systems:
+
+- `list_folder`, `find_in_files`, `read_file` (text, Office, PDF, CSV), `review_logs_in_folder`, `fetch_url` read freely.
+- `write_file` creates or updates a file after you approve it; the old file is backed up and the change can be undone.
+- `run_command` (PowerShell) exists only when **Settings → Let Ask run PowerShell commands** is on, and every command needs approval.
+- For recurring work ("every morning check this folder's logs"), Ask creates a scheduled task that runs the same instruction.
+
+## Backups and sign-in isolation
+
+While a sign-in or teaching window is open, other systems wait instead of being disturbed, so connecting one system no longer signs the others out. Learned layouts are backed up automatically on each change (`<name>.json.bak`). Use `POST /api/integrations/backups` (and `/backups/{name}/restore`) for a full zip backup, or `POST /api/integrations/{name}/reset` to forget one system's learned layout.
+
 ## Troubleshooting
 
 | Symptom | Fix |

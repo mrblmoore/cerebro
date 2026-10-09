@@ -136,3 +136,31 @@ def check(name: str) -> Dict[str, Any]:
 @router.delete("/{name}/auth")
 def sign_out(name: str) -> Dict[str, Any]:
     return _connector(name).sign_out()
+
+
+@router.get("/backups")
+def backups() -> Dict[str, Any]:
+    from app.services import connector_backup
+    return {"backups": connector_backup.list_backups()}
+
+
+@router.post("/backups")
+def make_backup() -> Dict[str, Any]:
+    from app.services import connector_backup
+    return connector_backup.create_backup("manual")
+
+
+@router.post("/backups/{backup}/restore")
+def restore(backup: str) -> Dict[str, Any]:
+    from app.services import connector_backup
+    try:
+        return connector_backup.restore_backup(backup)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="No such backup")
+
+
+@router.post("/{name}/reset")
+def reset(name: str) -> Dict[str, Any]:
+    from app.services import connector_backup
+    _connector(name)
+    return connector_backup.reset_connector(name)

@@ -171,6 +171,7 @@ class Teacher:
 
         def open_window(eng):
             eng.hold_visible = mode == "visible"
+            eng.hold_owner = "RightAnswers teaching" if eng.hold_visible else None
             eng.close_context()
             page = eng.page(connector.name, mode=mode)
             page.goto(connector.sign_in_url(), wait_until="domcontentloaded")
@@ -180,6 +181,7 @@ class Teacher:
             engine().submit(open_window, "Opening RightAnswers to learn its layout")
         except Exception as exc:  # noqa: BLE001
             engine().hold_visible = False
+            engine().hold_owner = None
             return {"ok": False, "status": "failed", "detail": str(exc)}
 
         self._set(status="waiting", word=TEACH_WORD, started=time.time(), learned={},
@@ -214,7 +216,8 @@ class Teacher:
                     "frames": frames}
 
         try:
-            return engine().submit(job, "Watching RightAnswers", timeout=30)
+            return engine().submit(job, "Watching RightAnswers", timeout=30,
+                                   owner="RightAnswers teaching")
         except Exception as exc:  # noqa: BLE001 - window closed, page navigating…
             logger.info("browser", "Teach snapshot skipped", {"error": str(exc)[:160]})
             return None
@@ -233,7 +236,8 @@ class Teacher:
                 return scratch.evaluate(script, arg) if arg is not None else scratch.evaluate(script)
             finally:
                 scratch.close()
-        return engine().submit(job, "Learning RightAnswers layout", timeout=30)
+        return engine().submit(job, "Learning RightAnswers layout", timeout=30,
+                               owner="RightAnswers teaching")
 
     def _watch(self) -> None:
         captures: Dict[str, Dict[str, Any]] = {}
@@ -395,12 +399,15 @@ class Teacher:
 
         def close(eng):
             eng.hold_visible = False
+            eng.hold_owner = None
             eng.close_context()
 
         try:
-            engine().submit(close, "Finishing RightAnswers teaching", timeout=30)
+            engine().submit(close, "Finishing RightAnswers teaching", timeout=30,
+                            owner="RightAnswers teaching")
         except Exception:  # noqa: BLE001
             engine().hold_visible = False
+            engine().hold_owner = None
 
         if status == "learned":
             parts = ["search", "articles"] + (["editing"] if "editor_body" in learned else [])

@@ -284,6 +284,9 @@ FIELDS: List[Field] = [
     Field("ASK_MAX_STEPS", "Ask tool steps", "ai",
           "How many searches or reads Ask may make for one message.", type="number",
           advanced=True, show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_SHELL_ENABLED", "Let Ask run PowerShell commands", "ai",
+          "Off by default. When on, Ask can propose a command; nothing runs until you approve it.",
+          type="bool", advanced=True),
     Field("ASK_MIN_SOURCE_SCORE", "Source relevance floor", "ai",
           "Excerpts scoring below this are treated as unrelated and never cited. "
           "Raise it if answers drag in unrelated documents.", type="number", advanced=True),

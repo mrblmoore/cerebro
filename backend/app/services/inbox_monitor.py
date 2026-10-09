@@ -57,6 +57,8 @@ def check_once(db) -> Dict[str, Any]:
     report: Dict[str, Any] = {}
     if not settings.INBOX_MONITOR_ENABLED or not settings.BROWSER_AUTOMATION_ENABLED:
         return report
+    if browser.engine().hold_visible:
+        return {"skipped": "A sign-in window is open"}
     for name in SOURCES:
         connector = browser.get(name)
         if not connector.enabled:

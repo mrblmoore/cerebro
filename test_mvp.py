@@ -4718,6 +4718,104 @@ def test_ask_reliability_and_scoping():
     check("The analysis tools are registered", "review_log" in REGISTRY and "compare_cases" in REGISTRY)
 
 
+def test_system_tools_and_robustness():
+    """File/URL/command tools, sign-in isolation, connector backups."""
+    print("\nGeneral Ask tools — files, URLs, commands, backups")
+    import http.server
+    import tempfile
+    import threading
+    from pathlib import Path as _P
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.models.agent_action import AgentAction
+    from app.services import browser, connector_backup
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext, available_tools
+    from app.services.browser.engine import BrowserBusy, BrowserEngine
+
+    db = session()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _P(tmp)
+        (root / "app.log").write_text(
+            "\n".join(f"2026-01-02 10:00:{i:02d} ERROR db timeout {i}" for i in range(4)), encoding="utf-8")
+        (root / "notes.txt").write_text("alpha\nneedle here\n", encoding="utf-8")
+        ctx = ToolContext(db=db, context={})
+        listing = REGISTRY["list_folder"].handler(ctx, path=str(root))
+        check("list_folder shows files", "app.log" in listing["content"], listing)
+        check("read_file reads text", "needle" in REGISTRY["read_file"].handler(
+            ToolContext(db=db, context={}), path=str(root / "notes.txt"))["content"])
+        check("find_in_files finds text", "notes.txt" in REGISTRY["find_in_files"].handler(
+            ToolContext(db=db, context={}), path=str(root), text="needle")["content"])
+        check("review_logs_in_folder summarises errors", "ERROR" in REGISTRY["review_logs_in_folder"].handler(
+            ToolContext(db=db, context={}), path=str(root), days="3650")["content"])
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html><body><p>Hello web</p></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            got = REGISTRY["fetch_url"].handler(ToolContext(db=db, context={}),
+                                                url=f"http://127.0.0.1:{server.server_port}/")
+            check("fetch_url returns page text", "Hello web" in got["content"], got)
+        finally:
+            server.shutdown()
+
+        target = root / "out.txt"
+        target.write_text("old", encoding="utf-8")
+        wctx = ToolContext(db=db, context={})
+        REGISTRY["write_file"].handler(wctx, path=str(target), content="new")
+        check("write_file waits for approval", target.read_text(encoding="utf-8") == "old"
+              and len(wctx.drafts) == 1)
+        action_id = wctx.drafts[0]["action_id"]
+        actions.approve(db, action_id)
+        check("Approved write changes the file", target.read_text(encoding="utf-8") == "new")
+        actions.undo(db, action_id)
+        check("Undo restores the file", target.read_text(encoding="utf-8") == "old")
+
+    with mock.patch.object(settings, "ASK_SHELL_ENABLED", False):
+        check("run_command hidden by default",
+              "run_command" not in {t.name for t in available_tools(ToolContext(db=db))})
+    with mock.patch.object(settings, "ASK_SHELL_ENABLED", True):
+        check("run_command available when enabled",
+              "run_command" in {t.name for t in available_tools(ToolContext(db=db))})
+
+    eng = BrowserEngine()
+    eng.hold_visible, eng.hold_owner = True, "Outlook"
+    with mock.patch.object(settings, "BROWSER_AUTOMATION_ENABLED", True), \
+            mock.patch("app.services.browser.engine.playwright_installed", return_value=True), \
+            mock.patch.object(eng, "_ensure_thread"):
+        try:
+            eng.submit(lambda e: 1)
+            busy = False
+        except BrowserBusy:
+            busy = True
+    check("Other systems wait while a sign-in window is open", busy)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cdir = _P(tmp) / "connectors"
+        bdir = _P(tmp) / "backups"
+        cdir.mkdir()
+        (cdir / "genesys.json").write_text('{"x": 1}', encoding="utf-8")
+        with mock.patch.object(connector_backup, "CONNECTORS_DIR", cdir), \
+                mock.patch.object(connector_backup, "BACKUP_DIR", bdir):
+            made = connector_backup.create_backup("test")
+            check("Backup captures connectors", made["connectors"] == 1)
+            connector_backup.reset_connector("genesys")
+            check("Reset removes the layout", not (cdir / "genesys.json").exists())
+            connector_backup.restore_backup(made["name"])
+            check("Restore brings it back", (cdir / "genesys.json").exists())
+
+
 def test_beyondtrust_and_genesys():
     """BeyondTrust and Genesys through the hidden browser: config, sign-in rules, call matching."""
     print("\nBeyondTrust & Genesys Cloud — through the hidden browser")
@@ -5166,7 +5264,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_beyondtrust_and_genesys, test_tray_notices):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

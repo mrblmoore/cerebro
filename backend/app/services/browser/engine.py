@@ -95,6 +95,10 @@ class BrowserUnavailable(RuntimeError):
     """The browser could not be started (not installed, or switched off)."""
 
 
+class BrowserBusy(BrowserUnavailable):
+    """A sign-in or teaching window has the browser; background work waits."""
+
+
 def playwright_installed() -> bool:
     from importlib import util as importlib_util
 
@@ -129,11 +133,14 @@ class BrowserEngine:
         #: While a sign-in window is open the browser stays visible and is
         #: never closed for being idle.
         self.hold_visible = False
+        #: Who set hold_visible; only that owner's jobs run meanwhile.
+        self.hold_owner: Optional[str] = None
         self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------ public
     def submit(self, fn: Callable[["BrowserEngine"], Any], label: str = "Working in the browser",
-               mode: str = None, timeout: float = None, quiet: bool = False) -> Any:
+               mode: str = None, timeout: float = None, quiet: bool = False,
+               owner: str = None) -> Any:
         """Run ``fn(engine)`` on the browser thread and return its result.
 
         ``fn`` may call :meth:`page`, :meth:`context` and friends — they are
@@ -150,6 +157,10 @@ class BrowserEngine:
                 "The browser automation component (Playwright) is not installed. "
                 "Run: pip install -r backend/requirements-browser.txt")
         self._ensure_thread()
+        if self.hold_visible and self.hold_owner and owner != self.hold_owner:
+            raise BrowserBusy(
+                f"The browser is busy with a {self.hold_owner} sign-in window. "
+                "Finish or close it, then try again.")
         job = _Job(fn, label, mode, quiet)
         self._jobs.put(job)
         wait = timeout or max(30, int(settings.BROWSER_TIMEOUT_SECONDS or 30) * 4)

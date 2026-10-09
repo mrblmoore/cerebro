@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     ASK_MAX_TOKENS: int = 1200
     #: Most tool calls Ask may make while answering one message.
     ASK_MAX_STEPS: int = 8
+    ASK_SHELL_ENABLED: bool = False
     #: Minimum similarity for a source excerpt to be offered as evidence.
     #: Below it, an excerpt is treated as unrelated and left out of the answer.
     ASK_MIN_SOURCE_SCORE: float = 0.12
