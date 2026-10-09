@@ -361,6 +361,37 @@ Templates may use `{base}`, `{query}` and `{id}`. Every selector accepts
 Playwright selector syntax (`css`, `text=`, `:has-text()`). No restart is
 needed; the file is read on each use.
 
+### Researching the knowledge base
+
+For how-to and error questions Ask uses **`rightanswers_research`**: it runs
+several phrasings of the question in one browser session, follows each
+search's result pages (up to 60 matches per phrasing), ranks articles by how
+many phrasings found them, and **reads the top articles in full** (5 by
+default, up to 8). The answer is written from the article text and cites each
+article. Articles it read are also saved to Cerebro's local knowledge base, so
+later questions find them without a browser. `rightanswers_search` lists up to
+60 matches per search for browsing. If paging stops after the first page on
+your portal, add a `next_page` selector (the "next" link) to
+`rightanswers.json`.
+
+## BeyondTrust Remote Support and Genesys Cloud
+
+These two use their **APIs**, not the hidden browser, and are **read-only**.
+Create an API client in each (administrator task), then enter it in Settings →
+*BeyondTrust & Genesys Cloud* and press **Test connection** on the Connect tab.
+
+| System | Create | Settings |
+|---|---|---|
+| BeyondTrust | *Configuration → API Configuration → Add API Account*, with Reporting access | site address, client ID, client secret |
+| Genesys Cloud | *Admin → Integrations → OAuth → Add Client*, Client Credentials, with `analytics:conversationDetail:view` and `conversation:conversation:view` | region (e.g. `mypurecloud.com`), client ID, client secret |
+
+Ask tools: `beyondtrust_list_sessions`, `beyondtrust_get_session`,
+`genesys_search_conversations`, `genesys_get_conversation`, and
+`link_call_to_remote_session`, which matches a Genesys conversation to its
+BeyondTrust session by conversation ID (in the session's external key), phone
+number, customer name and time. Report field names vary by appliance version;
+unknown fields are passed through unchanged.
+
 ## Troubleshooting
 
 | Symptom | Fix |

@@ -35,6 +35,7 @@ ASK_SYSTEM_PROMPT = """You are Cerebro, an AI copilot running on a technical sup
 How to respond:
 - Answer the user's LATEST message directly. Treat it as a new request. Do not repeat, restate or re-summarise your earlier answers unless the user asks you to.
 - If the answer depends on the user's own information — their knowledge base, open documents, cases, tickets, messages, SharePoint, memory — use the tools to look it up before answering. Search before saying you don't know. Try a second search with different words if the first finds nothing useful.
+- For a question the knowledge base might answer (how-to, errors, known issues), never answer from the search titles alone: when rightanswers_research is available, call it with several different phrasings, then answer from the article text it returns and cite those articles. If the articles don't cover it, search again with new words before giving up.
 - For general technical knowledge you are confident about, just answer; no tool is needed.
 - Context provided with a message is optional evidence. Ignore anything in it that is not about the question.
 - When a statement comes from a source, cite its bracketed ID exactly, e.g. [K1] or [S2]. Never invent IDs. Say plainly when nothing you found answers the question, then give your best general guidance.
@@ -172,8 +173,9 @@ def _run_tool(ctx: ToolContext, name: str, arguments: Dict[str, Any],
     ctx.progress(item.label, result.get("summary") or None,
                  "warning" if result.get("summary") in ("Failed", "Bad arguments") else "complete")
     content = str(result.get("content") or "(no result)")
-    if len(content) > _tools.RESULT_CHARS:
-        content = content[:_tools.RESULT_CHARS] + "\n…[truncated]"
+    cap = max(_tools.RESULT_CHARS, int(result.get("max_chars") or 0))
+    if len(content) > cap:
+        content = content[:cap] + "\n…[truncated]"
     done[key] = content
     for extra in ("action", "task"):
         if result.get(extra):

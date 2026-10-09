@@ -18,7 +18,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.system import require_local_origin
-from app.services import browser
+from app.services import browser, systems
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"],
                    dependencies=[Depends(require_local_origin)])
@@ -28,6 +28,10 @@ def _connector(name: str):
     try:
         return browser.get(name)
     except KeyError:
+        pass
+    try:
+        return systems.get(name)
+    except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
 
 
@@ -36,7 +40,8 @@ def list_integrations() -> Dict[str, Any]:
     from app.core.config import settings
 
     return {"browser": browser.engine().status(),
-            "integrations": [connector.status() for connector in browser.connectors()],
+            "integrations": [connector.status() for connector in
+                            [*browser.connectors(), *systems.connectors()]],
             "monitor": {"enabled": bool(settings.INBOX_MONITOR_ENABLED),
                         "seconds": int(settings.INBOX_MONITOR_SECONDS or 60),
                         "assist": settings.INBOX_ASSIST, "notify": settings.INBOX_NOTIFY}}
@@ -78,8 +83,10 @@ def enable(name: str) -> Dict[str, Any]:
     from app.core import settings_store
 
     connector = _connector(name)
-    result = settings_store.update({"BROWSER_AUTOMATION_ENABLED": True,
-                                    connector.enabled_setting: True})
+    changes = {connector.enabled_setting: True}
+    if getattr(connector, "kind", "browser") != "api":
+        changes["BROWSER_AUTOMATION_ENABLED"] = True
+    result = settings_store.update(changes)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("errors"))
     return {"ok": True, "integration": connector.status()}
@@ -91,7 +98,7 @@ def set_auto_apply(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     from app.core import settings_store
 
     connector = _connector(name)
-    if not connector.auto_apply_setting:
+    if not getattr(connector, "auto_apply_setting", None):
         raise HTTPException(status_code=400,
                             detail=f"Changes in {connector.label} always need your approval.")
     result = settings_store.update({connector.auto_apply_setting: bool(body.get("enabled"))})

@@ -46,7 +46,7 @@ def _lines(ctx: ToolContext, items: List[dict], prefix: str) -> str:
 def search_knowledge(ctx: ToolContext, query: str = "", **_) -> dict:
     from app.services.rag_service import RAGService
 
-    hits = RAGService(ctx.db).search(query, limit=5, min_score=_min_score())
+    hits = RAGService(ctx.db).search(query, limit=10, min_score=_min_score())
     items = [{"title": hit.get("title"), "kind": "knowledge", "uri": hit.get("url"),
               "locator": hit.get("locator"), "excerpt": hit.get("excerpt", "")}
              for hit in hits]

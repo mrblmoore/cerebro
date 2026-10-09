@@ -4625,6 +4625,62 @@ document.getElementById('send').onclick = async () => {
     return servers, state, me
 
 
+def test_beyondtrust_and_genesys():
+    """API connectors: token handling, parsing and matching a call to a remote session."""
+    print("\nBeyondTrust & Genesys Cloud")
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import systems
+    from app.services.agent import systems_tools
+    from app.services.systems import beyondtrust as bt, genesys as gc
+    from app.services.systems.base import NotConfigured
+
+    check("Both systems are registered", [c.name for c in systems.connectors()] == ["beyondtrust", "genesys"])
+    check("They are off by default", not any(c.enabled for c in systems.connectors()))
+    check("Status has the Connect-tab shape",
+          {"name", "label", "enabled", "url", "configured", "signed_in", "sign_in"} <= set(bt.connector.status()))
+    try:
+        bt.connector.require_enabled()
+        check("A switched-off system refuses to run", False)
+    except NotConfigured:
+        check("A switched-off system refuses to run", True)
+
+    settings.GENESYS_REGION = "https://login.usw2.pure.cloud/"
+    check("A pasted Genesys URL becomes the region", gc.connector.api_base() == "https://api.usw2.pure.cloud")
+    settings.BEYONDTRUST_URL = "support.example.com/"
+    check("BeyondTrust gets https and no trailing slash", bt.connector.api_base() == "https://support.example.com")
+
+    xml = ("<sessions><session lsid='L1'><start_time>2025-01-01T10:05:00Z</start_time>"
+           "<customer_name>Ada Lovelace</customer_name><external_key>CONV-1</external_key></session>"
+           "<session lsid='L2'><start_time>2025-01-01T15:00:00Z</start_time>"
+           "<customer_name>Someone Else</customer_name></session></sessions>")
+    rows = bt.parse_sessions(xml)
+    check("Remote sessions are parsed", [bt.summary(r)["id"] for r in rows] == ["L1", "L2"])
+
+    conversation = {"conversationId": "CONV-1", "conversationStart": "2025-01-01T10:00:00.000Z",
+                    "conversationEnd": "2025-01-01T10:20:00.000Z",
+                    "participants": [{"purpose": "customer", "participantName": "Ada Lovelace",
+                                      "sessions": [{"ani": "tel:+15551234567", "mediaType": "voice"}]},
+                                     {"purpose": "agent", "participantName": "Sam", "sessions": []}]}
+    ranked = systems_tools.match_sessions(conversation, rows)
+    check("The call is matched to the right remote session",
+          len(ranked) == 1 and ranked[0][1]["id"] == "L1" and ranked[0][0] >= 12, ranked)
+
+    class Reply:
+        ok, status_code = True, 200
+        text = ""
+        def json(self):
+            return {"access_token": "tok", "expires_in": 3600}
+
+    settings.GENESYS_ENABLED, settings.GENESYS_CLIENT_ID, settings.GENESYS_CLIENT_SECRET = True, "id", "secret"
+    gc.connector.forget_token()
+    with mock.patch("app.services.systems.base.requests.post", return_value=Reply()) as post:
+        first, second = gc.connector.bearer(), gc.connector.bearer()
+    check("The token is fetched once and cached", first == second == "tok" and post.call_count == 1)
+    settings.GENESYS_ENABLED = False
+
+
 def test_outlook_and_teams():
     """Outlook and Teams through the hidden browser: read, watch, notify, help, send."""
     print("\nOutlook and Teams — through the hidden browser")
@@ -4909,7 +4965,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_tray_notices):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_beyondtrust_and_genesys, test_tray_notices):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
