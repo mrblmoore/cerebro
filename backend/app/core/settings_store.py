@@ -111,9 +111,10 @@ GROUPS = [
     },
     {
         "id": "integrations",
-        "title": "RightAnswers, Dynamics & SharePoint",
+        "title": "RightAnswers, Dynamics, SharePoint & more",
         "icon": "🌐",
-        "description": "Let Cerebro work in RightAnswers, Dynamics 365 and SharePoint through a hidden "
+        "description": "Let Cerebro work in RightAnswers, Dynamics 365, SharePoint, BeyondTrust and "
+                       "Genesys Cloud through a hidden "
                        "browser that uses your own sign-in. Reads happen straight away; "
                        "every change is shown to you for approval first.",
     },
@@ -283,6 +284,9 @@ FIELDS: List[Field] = [
     Field("ASK_MAX_STEPS", "Ask tool steps", "ai",
           "How many searches or reads Ask may make for one message.", type="number",
           advanced=True, show_if=("LLM_PROVIDER", ["openai", "ollama", "qwen", "bedrock"])),
+    Field("ASK_SHELL_ENABLED", "Let Ask run PowerShell commands", "ai",
+          "Off by default. When on, Ask can propose a command; nothing runs until you approve it.",
+          type="bool", advanced=True),
     Field("ASK_MIN_SOURCE_SCORE", "Source relevance floor", "ai",
           "Excerpts scoring below this are treated as unrelated and never cited. "
           "Raise it if answers drag in unrelated documents.", type="number", advanced=True),
@@ -481,11 +485,59 @@ FIELDS: List[Field] = [
           "Your display name and email, comma-separated, so your own messages are never taken "
           "for new mail. Usually found automatically.",
           advanced=True, show_if=("INBOX_MONITOR_ENABLED", [True])),
+    Field("TEAMS_WATCH", "Teams: which chats to watch", "integrations",
+          "Only the messages you choose are stored, notified about and researched.",
+          type="select", options=[
+              {"value": "all", "label": "Every chat and channel"},
+              {"value": "direct_mentions", "label": "1:1 chats and @mentions"},
+              {"value": "direct", "label": "1:1 chats only"},
+              {"value": "selected", "label": "Only the chats and channels I list (and @mentions)"},
+          ], show_if=("INBOX_MONITOR_ENABLED", [True])),
+    Field("TEAMS_WATCH_CHATS", "Teams chats and channels to watch", "integrations",
+          "Comma-separated; part of a chat, channel or person's name is enough.",
+          show_if=("TEAMS_WATCH", ["selected"])),
+    Field("TEAMS_MUTE_CHATS", "Teams chats and channels to ignore", "integrations",
+          "Comma-separated; these are never stored or notified about.",
+          show_if=("INBOX_MONITOR_ENABLED", [True])),
+    Field("OUTLOOK_WATCH", "Outlook: which mail to watch", "integrations",
+          "Only the mail you choose is stored, notified about and researched.",
+          type="select", options=[
+              {"value": "all", "label": "All mail"},
+              {"value": "direct", "label": "Only mail addressed to me"},
+              {"value": "selected", "label": "Only senders I list"},
+          ], show_if=("INBOX_MONITOR_ENABLED", [True])),
+    Field("OUTLOOK_WATCH_SENDERS", "Outlook senders to watch", "integrations",
+          "Comma-separated names, addresses or domains (e.g. @envistaco.com).",
+          show_if=("OUTLOOK_WATCH", ["selected"])),
+    Field("OUTLOOK_MUTE_SENDERS", "Outlook senders and subjects to ignore", "integrations",
+          "Comma-separated names, addresses, domains or subject words.",
+          show_if=("INBOX_MONITOR_ENABLED", [True])),
+    Field("OUTLOOK_SKIP_BULK", "Skip newsletters and promotions", "integrations",
+          "Ignore ads, marketing and mailing-list mail. Mail that names a case is always kept.",
+          type="bool", show_if=("INBOX_MONITOR_ENABLED", [True])),
     Field("DYNAMICS_URL", "Dynamics 365 address", "integrations",
           "Your organisation's address. Pre-filled with dental.crm.dynamics.com; a pasted "
           "case link works too — only the host is used.",
           type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
                                     ("DYNAMICS_ENABLED", [True])]),
+
+    # BeyondTrust & Genesys Cloud
+    Field("BEYONDTRUST_ENABLED", "BeyondTrust Remote Support", "integrations",
+          "Look up remote support sessions and reports in the BeyondTrust console, signed in "
+          "as you. Read-only.", type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BEYONDTRUST_URL", "BeyondTrust address", "integrations",
+          "Your BeyondTrust site, e.g. https://yourcompany.beyondtrustcloud.com.",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("BEYONDTRUST_ENABLED", [True])]),
+    Field("GENESYS_ENABLED", "Genesys Cloud", "integrations",
+          "Look up calls, chats and emails in Genesys Cloud, signed in as you, and match them "
+          "to BeyondTrust sessions. Read-only.", type="bool",
+          show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("GENESYS_URL", "Genesys Cloud address", "integrations",
+          "The Genesys Cloud web app for your region: apps.mypurecloud.com, apps.usw2.pure.cloud, "
+          "apps.mypurecloud.ie, ...",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("GENESYS_ENABLED", [True])]),
 
     # Second brain
     Field("PERSONA", "How Cerebro speaks to you", "brain", type="select", options=[

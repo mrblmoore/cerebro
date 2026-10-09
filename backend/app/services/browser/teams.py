@@ -40,6 +40,8 @@ DEFAULT_SELECTORS: Dict[str, Any] = {
     "message_body": "[id^='content-'], [data-tid='message-body']",
     "search_box": "input[data-tid='searchInputField'], input[placeholder*='Search' i]",
     "search_results": "[data-tid='search-results'], [role='main']",
+    "search_suggestion": ("[data-tid*='suggestion' i], [data-tid*='search-result' i], "
+                          "[role='option'], [role='listitem'][data-tid*='people' i]"),
     # Writing.
     "compose": ("[data-tid='ckeditor'][contenteditable='true'], [data-tid='ckeditor'] [contenteditable='true'], "
                 "div[role='textbox'][contenteditable='true']"),
@@ -251,14 +253,43 @@ class TeamsConnector(MessagingConnector):
             self.goto(page, self._url("chat_url", chat=quote(chat, safe="")))
             self._skip_launcher(page)
             return chat
-        items = page.locator(self.selectors()["chat_list_item"]).filter(has_text=chat)
+        pattern = name_pattern(chat)
+        items = page.locator(self.selectors()["chat_list_item"]).filter(has_text=pattern)
+        if not items.count() and self._search_person(page, chat, pattern):
+            return _chat_from_url(page.url)
         if not items.count():
             self.capture(page, "chat_list_item")
-            raise MessagingError(f"There's no chat called “{chat}” in your Teams chat list. "
-                                 "Use the person's email address to start one.")
+            raise MessagingError(f"I couldn't find anyone or any chat matching “{chat}” in Teams. "
+                                 "Check the spelling, or give me their email address.")
         items.first.click()
         self.settle(page)
         return _chat_from_url(page.url)
+
+    def _search_person(self, page, name: str, pattern) -> bool:
+        """Find a person (or chat) through Teams' own search and open it."""
+        box = self.locate(page, "search_box", timeout=4000)
+        if box is None:
+            return False
+        try:
+            box.click()
+            box.fill(name)
+            page.wait_for_timeout(1500)
+            options = page.locator(self.selectors()["search_suggestion"]).filter(has_text=pattern)
+            if not options.count():
+                box.press("Escape")
+                return False
+            options.first.click()
+            self.settle(page)
+            page.wait_for_timeout(1000)
+            return True
+        except Exception:  # noqa: BLE001 - fall back to the "not found" message
+            return False
+
+
+def name_pattern(name: str):
+    """A regex matching text that contains every word of ``name``, in any order."""
+    words = re.findall(r"[^\W_]+", name or "", flags=re.UNICODE)
+    return re.compile("".join(rf"(?=.*\b{re.escape(w)})" for w in words) or ".", re.I | re.S)
 
 
 # ----------------------------------------------------------- JSON shapes

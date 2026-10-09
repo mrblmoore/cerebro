@@ -513,12 +513,12 @@ class ChatService:
                     kind=result.get("kind") or "completion", meta=meta)
         return result
 
-    def handle_action(self, action_id: int, decision: str) -> Dict[str, Any]:
+    def handle_action(self, action_id: int, decision: str, to: str = None) -> Dict[str, Any]:
         """Approve or discard a preview shown in Ask and record the outcome."""
         from app.services.ask_tools import AskToolService
 
         service = AskToolService(self.db)
-        result = (service.approve(action_id) if decision == "approve"
+        result = (service.approve(action_id, destination=to) if decision == "approve"
                   else service.discard(action_id))
         self._store("user", "Approve and send" if decision == "approve" else "Discard draft",
                     kind="instruction")

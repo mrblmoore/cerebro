@@ -90,7 +90,8 @@ class Settings(BaseSettings):
     #: Ask writes longer answers than a case note; this is its own cap.
     ASK_MAX_TOKENS: int = 1200
     #: Most tool calls Ask may make while answering one message.
-    ASK_MAX_STEPS: int = 6
+    ASK_MAX_STEPS: int = 8
+    ASK_SHELL_ENABLED: bool = False
     #: Minimum similarity for a source excerpt to be offered as evidence.
     #: Below it, an excerpt is treated as unrelated and left out of the answer.
     ASK_MIN_SOURCE_SCORE: float = 0.12
@@ -186,6 +187,12 @@ class Settings(BaseSettings):
     DYNAMICS_ENABLED: bool = False
     #: The company's Dynamics 365 organisation (host only, as above).
     DYNAMICS_URL: Optional[str] = "https://dental.crm.dynamics.com"
+    #: BeyondTrust Remote Support and Genesys Cloud, through the same hidden
+    #: browser and the user's own sign-in (no API client needed). Read-only.
+    BEYONDTRUST_ENABLED: bool = False
+    BEYONDTRUST_URL: Optional[str] = None
+    GENESYS_ENABLED: bool = False
+    GENESYS_URL: Optional[str] = "https://apps.mypurecloud.com"
     #: SharePoint through the same hidden browser and sign-in: open pasted
     #: links, read documents and pages, and change them with approval. Needs
     #: no app registration (unlike SHAREPOINT_GRAPH_ENABLED below).
@@ -218,6 +225,20 @@ class Settings(BaseSettings):
     #: Your name(s) as Outlook and Teams show them, comma-separated — so your
     #: own messages are never treated as new mail. Found automatically when it can be.
     INBOX_MY_NAMES: Optional[str] = None
+    #: What to pay attention to. Teams: all | direct (1:1 chats only) |
+    #: direct_mentions | selected (the chats named in TEAMS_WATCH_CHATS, plus
+    #: @mentions). Names are comma-separated and match part of a chat, channel
+    #: or person's name.
+    TEAMS_WATCH: str = "all"
+    TEAMS_WATCH_CHATS: Optional[str] = None
+    TEAMS_MUTE_CHATS: Optional[str] = None
+    #: Outlook: all | direct (addressed to you) | selected (senders in
+    #: OUTLOOK_WATCH_SENDERS). Muted senders/subject words are always ignored,
+    #: and OUTLOOK_SKIP_BULK drops newsletters and promotions.
+    OUTLOOK_WATCH: str = "all"
+    OUTLOOK_WATCH_SENDERS: Optional[str] = None
+    OUTLOOK_MUTE_SENDERS: Optional[str] = None
+    OUTLOOK_SKIP_BULK: bool = True
 
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True

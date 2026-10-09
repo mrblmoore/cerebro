@@ -502,6 +502,8 @@ main { position: relative; min-height: 0; }
 .logo.sharepoint { background: linear-gradient(135deg, #036c70, #1a9ba1 60%, #37c6d0); }
 .logo.outlook { background: linear-gradient(135deg, #0a4fbf, #1490df 60%, #28a8ea); }
 .logo.teams { background: linear-gradient(135deg, #4b53bc, #5b5fc7 60%, #7b83eb); }
+.logo.beyondtrust { background: linear-gradient(135deg, #b91c1c, #ef4444 60%, #f97316); }
+.logo.genesys { background: linear-gradient(135deg, #ff4f1f, #ff7a45 60%, #ffa24d); }
 .logo.browser { background: linear-gradient(135deg, #334155, #64748b); }
 
 .toast-host { position: fixed; z-index: 60; left: 50%; bottom: 18px; transform: translateX(-50%); display: grid; gap: 8px; }

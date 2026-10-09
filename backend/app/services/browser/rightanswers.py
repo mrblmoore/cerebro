@@ -57,7 +57,22 @@ DEFAULT_SELECTORS: Dict[str, Any] = {
     "saved_marker": "",
     # Marker that only appears when signed in (optional).
     "signed_in": "",
+    # The results pager. Cerebro follows it so one search can return far more
+    # than the first page of articles.
+    "next_page": ("a[rel='next'], a[aria-label*='next' i], button[aria-label*='next' i], "
+                  "a:has-text('Next'), button:has-text('Next'), li.next a, "
+                  ".pagination .next a, [class*='pager'] [class*='next']"),
 }
+
+#: Articles one search returns by default, the most it may be asked for, and how
+#: many result pages it follows to get them.
+DEFAULT_SEARCH_LIMIT = 20
+MAX_SEARCH_LIMIT = 60
+MAX_RESULT_PAGES = 6
+#: Research: phrasings tried, and articles read in full.
+MAX_QUERIES = 5
+DEFAULT_READ_COUNT = 5
+MAX_READ_COUNT = 8
 
 
 class RightAnswersError(RuntimeError):
@@ -165,69 +180,114 @@ class RightAnswersConnector(BrowserConnector):
             return ""
 
     # --------------------------------------------------------------- reads
-    def search(self, query: str, limit: int = 8) -> List[Dict[str, Any]]:
-        selectors = self.selectors()
+    def search(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> List[Dict[str, Any]]:
+        """Search the knowledge base, following result pages until ``limit``
+        articles are found (or the results run out)."""
+        limit = max(1, min(int(limit or DEFAULT_SEARCH_LIMIT), MAX_SEARCH_LIMIT))
+        return self.run(lambda page: self._search_on(page, query, limit),
+                        f"Searching {self.label}")
 
-        def work(page):
-            url = self._template("search_url", query=quote_plus(query))
-            if url:
-                self.goto(page, url)
-            else:
-                self.goto(page)
-                box = self._find(page, selectors["search_input"])
-                if box is not None:
-                    box.first.fill(query)
-                    box.first.press("Enter")
-                    self.settle(page)
-                    page.wait_for_timeout(800)        # results render after the request
-                elif self._template("portal_search_url", query=quote_plus(query)):
-                    self.goto(page, self._template("portal_search_url", query=quote_plus(query)))
-                else:
-                    raise RightAnswersError(
-                        "Cerebro couldn't find the search box in the RightAnswers workspace. "
-                        "Open Cerebro → Connect → RightAnswers → Teach so it can learn it.")
-            results = []
-            found = self._find(page, selectors["result_item"])
-            items = found if found is not None else page.locator(selectors["result_item"])
-            for index in range(min(items.count(), limit * 2)):
-                item = items.nth(index)
-                link = item.locator(selectors["result_link"]).first
-                href = ""
+    def _submit_search(self, page, query: str) -> None:
+        selectors = self.selectors()
+        url = self._template("search_url", query=quote_plus(query))
+        if url:
+            self.goto(page, url)
+            return
+        self.goto(page)
+        box = self._find(page, selectors["search_input"])
+        if box is not None:
+            box.first.fill(query)
+            box.first.press("Enter")
+            self.settle(page)
+            page.wait_for_timeout(800)        # results render after the request
+        elif self._template("portal_search_url", query=quote_plus(query)):
+            self.goto(page, self._template("portal_search_url", query=quote_plus(query)))
+        else:
+            raise RightAnswersError(
+                "Cerebro couldn't find the search box in the RightAnswers workspace. "
+                "Open Cerebro → Connect → RightAnswers → Teach so it can learn it.")
+
+    def _results_on_page(self, page, limit: int) -> List[Dict[str, Any]]:
+        """The articles listed on the current results page."""
+        selectors = self.selectors()
+        results = []
+        found = self._find(page, selectors["result_item"])
+        items = found if found is not None else page.locator(selectors["result_item"])
+        for index in range(min(items.count(), limit * 2)):
+            item = items.nth(index)
+            link = item.locator(selectors["result_link"]).first
+            href = ""
+            try:
+                href = link.get_attribute("href", timeout=1000) or ""
+            except Exception:  # noqa: BLE001
+                pass
+            article_id = (item.get_attribute("data-solution-id")
+                          or self.article_id_from(href))
+            title = self._first_text(item, selectors["result_title"])
+            if not title and not article_id:
+                continue
+            results.append({
+                "id": article_id, "title": title or f"Article {article_id}",
+                "snippet": self._first_text(item, selectors["result_snippet"])[:400],
+                "url": page.url if not href else self.url(href) if not href.startswith(
+                    "http") else href,
+            })
+            if len(results) >= limit:
+                break
+        if not results:
+            # The result markup isn't what the selectors expect: fall back
+            # to any link that looks like an article, in any frame.
+            for frame in page.frames:
                 try:
-                    href = link.get_attribute("href", timeout=1000) or ""
+                    links = frame.evaluate(_ARTICLE_LINKS_JS, ARTICLE_LINK_PATTERN)
                 except Exception:  # noqa: BLE001
-                    pass
-                article_id = (item.get_attribute("data-solution-id")
-                              or self.article_id_from(href))
-                title = self._first_text(item, selectors["result_title"])
-                if not title and not article_id:
                     continue
-                results.append({
-                    "id": article_id, "title": title or f"Article {article_id}",
-                    "snippet": self._first_text(item, selectors["result_snippet"])[:400],
-                    "url": page.url if not href else self.url(href) if not href.startswith(
-                        "http") else href,
-                })
+                for link in links:
+                    results.append({"id": self.article_id_from(link["href"]),
+                                    "title": link["title"], "snippet": link["snippet"],
+                                    "url": link["href"]})
                 if len(results) >= limit:
                     break
-            if not results:
-                # The result markup isn't what the selectors expect: fall back
-                # to any link that looks like an article, in any frame.
-                for frame in page.frames:
-                    try:
-                        links = frame.evaluate(_ARTICLE_LINKS_JS, ARTICLE_LINK_PATTERN)
-                    except Exception:  # noqa: BLE001
-                        continue
-                    for link in links:
-                        results.append({"id": self.article_id_from(link["href"]),
-                                        "title": link["title"], "snippet": link["snippet"],
-                                        "url": link["href"]})
-                    if len(results) >= limit:
-                        break
-                results = results[:limit]
-            return results
+            results = results[:limit]
+        return results
 
-        return self.run(work, f"Searching {self.label}")
+    def _next_page(self, page) -> bool:
+        """Move to the next page of results; False when there isn't one."""
+        selector = self.selectors().get("next_page")
+        found = self._find(page, selector) if selector else None
+        if found is None:
+            return False
+        try:
+            button = found.first
+            if not button.is_visible(timeout=1000) or not button.is_enabled(timeout=1000):
+                return False
+            if (button.get_attribute("aria-disabled") or "").lower() == "true":
+                return False
+            button.click(timeout=3000)
+        except Exception:  # noqa: BLE001 - no usable next button
+            return False
+        self.settle(page)
+        page.wait_for_timeout(600)
+        return True
+
+    def _search_on(self, page, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Run one search on ``page`` and gather up to ``limit`` articles."""
+        self._submit_search(page, query)
+        collected: List[Dict[str, Any]] = []
+        seen = set()
+        for _ in range(MAX_RESULT_PAGES):
+            fresh = 0
+            for item in self._results_on_page(page, limit):
+                key = item.get("id") or item.get("url") or item["title"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                collected.append(item)
+                fresh += 1
+            # No new articles means the "next" button did nothing useful.
+            if len(collected) >= limit or not fresh or not self._next_page(page):
+                break
+        return collected[:limit]
 
     def _open_article(self, page, article: str) -> str:
         """Navigate to an article given its ID or URL; returns the article ID."""
@@ -240,24 +300,64 @@ class RightAnswersConnector(BrowserConnector):
         self.goto(page, url)
         return article
 
-    def get_article(self, article: str) -> Dict[str, Any]:
+    def _read_on(self, page, article: str) -> Dict[str, Any]:
         selectors = self.selectors()
+        article_id = self._open_article(page, article)
+        title = self._first_text(page, selectors["article_title"])
+        found = self._find(page, selectors["article_body"])
+        body_area = found.first if found is not None else None
+        body = self.readable_text_of(body_area) if body_area is not None else ""
+        if not body:
+            body = self.readable_text(page)
+        if not title and not body:
+            raise RightAnswersError(f"Article {article} could not be read.")
+        return {"id": article_id, "title": title or f"Article {article_id}",
+                "body": body, "meta": self._first_text(page, selectors["article_meta"]),
+                "url": page.url}
+
+    def get_article(self, article: str) -> Dict[str, Any]:
+        return self.run(lambda page: self._read_on(page, article),
+                        f"Reading {self.label} article {article}")
+
+    def research(self, queries: List[str], per_query: int = DEFAULT_SEARCH_LIMIT,
+                 read: int = DEFAULT_READ_COUNT) -> Dict[str, Any]:
+        """Search several phrasings, then read the best articles in full.
+
+        One browser job does all of it, so the model gets articles to answer
+        from instead of a list of titles to follow up one at a time. Articles
+        that several phrasings find rank first.
+        """
+        queries = [q.strip() for q in queries if q and q.strip()][:MAX_QUERIES]
+        per_query = max(1, min(int(per_query or DEFAULT_SEARCH_LIMIT), MAX_SEARCH_LIMIT))
+        read = max(0, min(int(read if read is not None else DEFAULT_READ_COUNT), MAX_READ_COUNT))
 
         def work(page):
-            article_id = self._open_article(page, article)
-            title = self._first_text(page, selectors["article_title"])
-            found = self._find(page, selectors["article_body"])
-            body_area = found.first if found is not None else None
-            body = self.readable_text_of(body_area) if body_area is not None else ""
-            if not body:
-                body = self.readable_text(page)
-            if not title and not body:
-                raise RightAnswersError(f"Article {article} could not be read.")
-            return {"id": article_id, "title": title or f"Article {article_id}",
-                    "body": body, "meta": self._first_text(page, selectors["article_meta"]),
-                    "url": page.url}
+            merged: Dict[str, Dict[str, Any]] = {}
+            failures: List[str] = []
+            for query in queries:
+                try:
+                    hits = self._search_on(page, query, per_query)
+                except RightAnswersError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - keep the other phrasings
+                    failures.append(f"{query}: {exc}")
+                    continue
+                for rank, hit in enumerate(hits):
+                    key = hit.get("id") or hit.get("url") or hit["title"]
+                    entry = merged.setdefault(key, {**hit, "queries": 0, "score": 0.0})
+                    entry["queries"] += 1
+                    entry["score"] += 1.0 / (rank + 1)
+            ranked = sorted(merged.values(), key=lambda e: (-e["queries"], -e["score"]))
+            articles = []
+            for hit in ranked[:read]:
+                try:
+                    articles.append(self._read_on(page, hit.get("url") or hit["id"]))
+                except Exception as exc:  # noqa: BLE001 - one bad article must not lose the rest
+                    failures.append(f"{hit['title']}: {exc}")
+            return {"queries": queries, "results": ranked, "articles": articles,
+                    "failures": failures}
 
-        return self.run(work, f"Reading {self.label} article {article}")
+        return self.run(work, f"Researching {self.label}")
 
     # -------------------------------------------------------------- writes
     # Called only by approved AgentActions (see app.services.agent).

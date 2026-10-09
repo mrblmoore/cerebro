@@ -21,6 +21,7 @@ Why it is shaped this way — each point fixes a way Ask used to go wrong:
 
 import difflib
 import json
+import re
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -35,11 +36,32 @@ ASK_SYSTEM_PROMPT = """You are Cerebro, an AI copilot running on a technical sup
 How to respond:
 - Answer the user's LATEST message directly. Treat it as a new request. Do not repeat, restate or re-summarise your earlier answers unless the user asks you to.
 - If the answer depends on the user's own information — their knowledge base, open documents, cases, tickets, messages, SharePoint, memory — use the tools to look it up before answering. Search before saying you don't know. Try a second search with different words if the first finds nothing useful.
+- For a question the knowledge base might answer (how-to, errors, known issues), never answer from the search titles alone: when rightanswers_research is available, call it with several different phrasings, then answer from the article text it returns and cite those articles. If the articles don't cover it, search again with new words before giving up.
 - For general technical knowledge you are confident about, just answer; no tool is needed.
 - Context provided with a message is optional evidence. Ignore anything in it that is not about the question.
 - When a statement comes from a source, cite its bracketed ID exactly, e.g. [K1] or [S2]. Never invent IDs. Say plainly when nothing you found answers the question, then give your best general guidance.
+- Use only the tools the request needs. To message someone, go straight to send_teams_message / send_email: pass the person's name exactly as the user said it (a first name or partial name is fine; the app finds them) and never ask for a full name or email first. Don't search the knowledge base, cases or documents unless the message itself needs them.
+- To compare cases, fetch each with compare_cases and point out differences and shared causes. To review a log, use review_log and explain the repeated errors and when they began.
+- When given a file path, folder or URL, use list_folder, find_in_files, read_file, review_logs_in_folder or fetch_url. To change a file use write_file (the user approves first). For recurring work use create_task with a schedule. run_command exists only if the user enabled it.
 - Anything that sends or changes something outside this computer is prepared as a card for the user to approve — unless the tool result says it was already applied (the user can turn that on for SharePoint). Never claim something was sent, posted or updated unless a tool result says so.
 - Be concise and specific. Use short numbered steps for procedures. Markdown is fine."""
+
+MESSAGING_TOOLS = ("send_", "reply_", "draft_", "outlook_", "teams_", "get_message_thread",
+                   "get_inbox_briefing", "create_task")
+_MESSAGING_VERB = re.compile(
+    r"\b(send|message|msg|ping|dm|tell|email|e-mail|reply|respond|write to|let\b.{0,30}\bknow)\b", re.I)
+_MESSAGING_CHANNEL = re.compile(r"\b(teams|outlook|email|e-mail|chat|dm|message)\b", re.I)
+_RESEARCH_WORDS = re.compile(
+    r"\b(search|look up|lookup|find|research|article|kb|knowledge|how (do|to|can)|why|"
+    r"troubleshoot|case|ticket|log|compare|summari[sz]e|according)\b", re.I)
+
+
+def messaging_only(text: str) -> bool:
+    """True for a plain "send X a message" request that needs no lookups."""
+    text = text or ""
+    return bool(_MESSAGING_VERB.search(text) and _MESSAGING_CHANNEL.search(text)
+                and not _RESEARCH_WORDS.search(text))
+
 
 #: Previous answers are shortened in the history the model sees; the model
 #: needs to know what it said, not to be handed its old answer to copy.
@@ -172,8 +194,9 @@ def _run_tool(ctx: ToolContext, name: str, arguments: Dict[str, Any],
     ctx.progress(item.label, result.get("summary") or None,
                  "warning" if result.get("summary") in ("Failed", "Bad arguments") else "complete")
     content = str(result.get("content") or "(no result)")
-    if len(content) > _tools.RESULT_CHARS:
-        content = content[:_tools.RESULT_CHARS] + "\n…[truncated]"
+    cap = max(_tools.RESULT_CHARS, int(result.get("max_chars") or 0))
+    if len(content) > cap:
+        content = content[:cap] + "\n…[truncated]"
     done[key] = content
     for extra in ("action", "task"):
         if result.get(extra):
@@ -199,7 +222,8 @@ def run(db, text: str, context: Dict[str, Any] = None,
     previous_answer = next((m["content"] for m in reversed(history)
                             if m["role"] == "assistant"), None)
 
-    prefetched = _prefetch(ctx, text)
+    focused = messaging_only(text)
+    prefetched = "" if focused else _prefetch(ctx, text)
     note = _context_note(ctx)
     links = _sharepoint_links(text)
     if links:
@@ -208,7 +232,8 @@ def run(db, text: str, context: Dict[str, Any] = None,
         note = "; ".join(filter(None, [note, "SharePoint link(s) in the message — open with "
                                              "sharepoint_read: " + ", ".join(links)]))
     messages = history + [{"role": "user", "content": _user_turn(text, note, prefetched)}]
-    tool_specs = [item.spec() for item in available_tools(ctx)]
+    tool_specs = [item.spec() for item in available_tools(ctx)
+                  if not focused or item.name.startswith(MESSAGING_TOOLS)]
     system = ASK_SYSTEM_PROMPT.format(today=datetime.now().strftime("%A %d %B %Y"))
     if (instructions or "").strip():
         system += ("\n\nThis chat's standing instructions from the user (follow them unless "

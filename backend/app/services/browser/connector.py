@@ -19,6 +19,7 @@ stored by Cerebro.
 """
 
 import json
+import shutil
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
@@ -188,6 +189,12 @@ class BrowserConnector:
         except (OSError, ValueError) as exc:
             logger.warn("browser", "Ignoring unreadable connector override",
                         {"connector": self.name, "error": str(exc)})
+            try:
+                backup = json.loads(override.with_suffix(".json.bak").read_text(encoding="utf-8"))
+                if isinstance(backup, dict):
+                    merged.update(backup)
+            except (OSError, ValueError):
+                pass
         return merged
 
     def remember(self, **values) -> None:
@@ -202,6 +209,8 @@ class BrowserConnector:
         existing.update(values)
         try:
             CONNECTORS_DIR.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                shutil.copy2(path, path.with_suffix(".json.bak"))
             path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
         except OSError as exc:
             logger.warn("browser", "Could not save connector settings",
@@ -269,6 +278,7 @@ class BrowserConnector:
 
         def open_window(eng):
             eng.hold_visible = True
+            eng.hold_owner = f"{self.label}"
             eng.close_context()
             page = eng.page(self.name, mode="visible")
             page.goto(self.sign_in_url(), wait_until="domcontentloaded")
@@ -282,6 +292,7 @@ class BrowserConnector:
             browser.submit(open_window, f"Opening {self.label} sign-in")
         except Exception as exc:  # noqa: BLE001 - shown to the user
             browser.hold_visible = False
+            browser.hold_owner = None
             return {"ok": False, "status": "failed", "detail": str(exc)}
 
         with self._state_lock:
@@ -305,7 +316,8 @@ class BrowserConnector:
         while time.time() < deadline:
             time.sleep(SIGN_IN_POLL_SECONDS)
             try:
-                result = browser.submit(probe, f"Waiting for {self.label} sign-in", timeout=30)
+                result = browser.submit(probe, f"Waiting for {self.label} sign-in", timeout=30,
+                                        owner=self.label)
             except Exception as exc:  # noqa: BLE001 - window closed under us, etc.
                 logger.warn("browser", "Sign-in probe failed", {"error": str(exc)})
                 result = "closed"
@@ -315,12 +327,15 @@ class BrowserConnector:
 
         def finish(eng):
             eng.hold_visible = False
+            eng.hold_owner = None
             eng.close_context()
 
         try:
-            browser.submit(finish, f"Finishing {self.label} sign-in", timeout=30)
+            browser.submit(finish, f"Finishing {self.label} sign-in", timeout=30,
+                           owner=self.label)
         except Exception:  # noqa: BLE001
             browser.hold_visible = False
+            browser.hold_owner = None
 
         with self._state_lock:
             if outcome == "signed_in":

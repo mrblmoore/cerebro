@@ -46,7 +46,7 @@ def _lines(ctx: ToolContext, items: List[dict], prefix: str) -> str:
 def search_knowledge(ctx: ToolContext, query: str = "", **_) -> dict:
     from app.services.rag_service import RAGService
 
-    hits = RAGService(ctx.db).search(query, limit=5, min_score=_min_score())
+    hits = RAGService(ctx.db).search(query, limit=10, min_score=_min_score())
     items = [{"title": hit.get("title"), "kind": "knowledge", "uri": hit.get("url"),
               "locator": hit.get("locator"), "excerpt": hit.get("excerpt", "")}
              for hit in hits]
@@ -366,12 +366,15 @@ def send_email(ctx: ToolContext, to: str = "", subject: str = "", body: str = ""
 
 @tool("send_teams_message",
       "Prepare a Teams message for the user to approve. It is NOT posted until "
-      "they approve the card.",
-      schema(["channel", "body"], channel=string_param("The chat's name as it appears in Teams, "
-                                                       "or the person's email address."),
+      "they approve the card. Pass the person or chat exactly as the user said it "
+      "(a first name, a partial name, a chat name or an email) — the tool finds them; "
+      "do not ask for a full name or an email address first.",
+      schema(["channel", "body"], channel=string_param("Who or which chat to message: a name "
+                                                       "(partial is fine), a chat name or an email address."),
              body=string_param("The message.")),
       mode="approval", label="Prepare a Teams post", activity="writing", available=_enterprise_on)
 def send_teams_message(ctx: ToolContext, channel: str = "", body: str = "", **_) -> dict:
+    from app.services import contacts
     from app.services.ask_tools import AskToolService, _draft_card
 
     if not channel.strip() or not body.strip():
@@ -379,10 +382,29 @@ def send_teams_message(ctx: ToolContext, channel: str = "", body: str = "", **_)
                            "Ask the user for whichever is missing.", "summary": "Needs details"}
     from app.services.browser.teams import EMAIL_RE
 
+    destination, thread_id, emails = channel.strip(), None, EMAIL_RE.findall(channel)
+    if not emails and not destination.startswith(("19:", "48:")):
+        try:
+            from app.services import browser
+
+            names = dict(browser.get("teams").names)
+        except Exception:  # noqa: BLE001 - names are a hint only
+            names = {}
+        found = contacts.resolve(ctx.db, destination, names)
+        if found["status"] == "ambiguous":
+            options = "; ".join(p["name"] for p in found["options"])
+            return {"content": f"“{destination}” could be: {options}. Ask the user which one they mean.",
+                    "summary": "Which person?"}
+        if found["status"] == "found":
+            person = found["person"]
+            destination = person["name"]
+            thread_id = person["chat"]
+            emails = [person["email"]] if person["email"] and not thread_id else []
+
     service = AskToolService(ctx.db)
     action = service.enterprise.create_action(
         "send_teams_message", body=body.strip(), source="teams",
-        to=EMAIL_RE.findall(channel), chat_or_channel=channel.strip(), send=False)
+        to=emails, chat_or_channel=destination, thread_id=thread_id, send=False)
     return {"content": _offer(ctx, action), "summary": "Waiting for approval",
             "action": action.to_dict()}
 

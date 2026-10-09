@@ -361,6 +361,63 @@ Templates may use `{base}`, `{query}` and `{id}`. Every selector accepts
 Playwright selector syntax (`css`, `text=`, `:has-text()`). No restart is
 needed; the file is read on each use.
 
+### Researching the knowledge base
+
+For how-to and error questions Ask uses **`rightanswers_research`**: it runs
+several phrasings of the question in one browser session, follows each
+search's result pages (up to 60 matches per phrasing), ranks articles by how
+many phrasings found them, and **reads the top articles in full** (5 by
+default, up to 8). The answer is written from the article text and cites each
+article. Articles it read are also saved to Cerebro's local knowledge base, so
+later questions find them without a browser. `rightanswers_search` lists up to
+60 matches per search for browsing. If paging stops after the first page on
+your portal, add a `next_page` selector (the "next" link) to
+`rightanswers.json`.
+
+## BeyondTrust Remote Support and Genesys Cloud
+
+Both work like Dynamics and Teams: the hidden browser, your own sign-in, no
+API account, **read-only**. Turn each on from the Connect tab (BeyondTrust
+needs its site address first, e.g. `https://yourcompany.beyondtrustcloud.com`;
+Genesys is pre-filled with `https://apps.mypurecloud.com`, so change it for
+other regions such as `apps.usw2.pure.cloud`), then **Sign in** once.
+
+Ask tools: `beyondtrust_search`, `beyondtrust_read_page`,
+`genesys_search_conversations`, `genesys_get_conversation`, and
+`link_call_to_remote_session`, which matches a Genesys conversation to its
+BeyondTrust session by conversation ID, phone number, customer name and agent.
+
+**Genesys** reads conversations through the signed-in web app's own session
+token (found in the page, never stored). If your organisation blocks that, it
+falls back to reading the interactions page. Your Genesys role needs
+conversation/analytics view permission.
+
+**BeyondTrust** consoles differ by version, so it reads whatever tables the
+configured page shows. Set the address to the page that lists sessions (for
+example your Session Search or reports page) or paste report links into Ask. To
+tune it, create `%LOCALAPPDATA%\Cerebro\connectors\beyondtrust.json` with only
+the keys that differ:
+
+```json
+{
+  "search_url": "{base}/login/reports?query={query}",
+  "search_input": "input[name='search']",
+  "row": "table.sessions tbody tr"
+}
+```
+## Files, folders, URLs and commands
+
+Ask can work with anything you point it at, not only connected systems:
+
+- `list_folder`, `find_in_files`, `read_file` (text, Office, PDF, CSV), `review_logs_in_folder`, `fetch_url` read freely.
+- `write_file` creates or updates a file after you approve it; the old file is backed up and the change can be undone.
+- `run_command` (PowerShell) exists only when **Settings → Let Ask run PowerShell commands** is on, and every command needs approval.
+- For recurring work ("every morning check this folder's logs"), Ask creates a scheduled task that runs the same instruction.
+
+## Backups and sign-in isolation
+
+While a sign-in or teaching window is open, other systems wait instead of being disturbed, so connecting one system no longer signs the others out. Learned layouts are backed up automatically on each change (`<name>.json.bak`). Use `POST /api/integrations/backups` (and `/backups/{name}/restore`) for a full zip backup, or `POST /api/integrations/{name}/reset` to forget one system's learned layout.
+
 ## Troubleshooting
 
 | Symptom | Fix |

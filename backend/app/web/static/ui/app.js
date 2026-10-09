@@ -528,7 +528,7 @@ function actionCard(card) {
   return null;
 }
 
-const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint' };
+const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint', beyondtrust: 'BeyondTrust', genesys: 'Genesys Cloud' };
 
 function changeCard(card) {
   const node = document.createElement('div');
@@ -548,7 +548,9 @@ function changeCard(card) {
         <button class="btn primary" data-approve>${esc(card.approve_label || 'Approve')}</button>
         <button class="btn ghost" data-discard>${esc(card.discard_label || 'Discard')}</button>
         ${card.preview?.url ? '<button class="btn ghost" data-open>Open record</button>' : ''}
-      </div>` : card.can_undo || card.preview?.url ? `
+      </div>` : status === 'failed' ? `
+      <div class="btn-row"><button class="btn primary" data-approve>Retry</button>
+        <button class="btn ghost" data-discard>${esc(card.discard_label || 'Discard')}</button></div>` : card.can_undo || card.preview?.url ? `
       <div class="btn-row">
         ${card.can_undo ? '<button class="btn sm" data-undo>Undo</button>' : ''}
         ${card.preview?.url ? '<button class="btn sm ghost" data-open>Open</button>' : ''}
@@ -622,7 +624,8 @@ function wordDiff(a, b) {
 function draftCard(card) {
   const node = document.createElement('div');
   const awaiting = card.status === 'awaiting_approval';
-  node.className = `action-card ${awaiting ? 'awaiting' : card.status === 'failed' ? 'failed' : 'done'}`;
+  const failed = card.status === 'failed';
+  node.className = `action-card ${awaiting ? 'awaiting' : failed ? 'failed' : 'done'}`;
   const to = card.chat_or_channel || (card.to || []).join(', ');
   const via = card.via === 'browser' ? (card.source === 'teams' ? 'Teams' : 'Outlook') : 'Power Automate';
   node.innerHTML = `
@@ -631,10 +634,18 @@ function draftCard(card) {
         ? '<span class="badge ok">Sent automatically</span>' : statusBadge(card.status || 'awaiting_approval')}</div>
     <div class="meta" style="font-size:11.5px;color:var(--text-faint);margin-bottom:6px">${to ? `To ${esc(to)}` : ''}${card.subject ? ` · ${esc(card.subject)}` : ''}</div>
     <div class="draft-body">${esc(card.body || '')}</div>
+    ${failed ? `<div class="card-error">${esc(card.detail_status || 'It was not sent.')}</div>
+      <div class="btn-row"><input class="input" data-to value="${esc(to)}" placeholder="Who to send it to (name or email)" style="flex:1;min-width:0">
+      <button class="btn primary" data-approve>Retry</button>
+      <button class="btn ghost" data-discard>${esc(card.discard_label || 'Discard')}</button></div>` : ''}
     ${awaiting ? `<div class="btn-row">
       <button class="btn primary" data-approve>${esc(card.approve_label || 'Approve and send')}</button>
       <button class="btn ghost" data-discard>${esc(card.discard_label || 'Discard')}</button></div>` : ''}`;
-  $('[data-approve]', node)?.addEventListener('click', () => decide(node, `/api/chat/actions/${card.action_id}/approve`));
+  $('[data-approve]', node)?.addEventListener('click', () => {
+    const edited = ($('[data-to]', node)?.value || '').trim();
+    const changed = failed && edited && edited !== to;
+    decide(node, `/api/chat/actions/${card.action_id}/approve`, changed ? `&to=${encodeURIComponent(edited)}` : '');
+  });
   $('[data-discard]', node)?.addEventListener('click', () => decide(node, `/api/chat/actions/${card.action_id}/discard`));
   return node;
 }
@@ -650,10 +661,10 @@ function signinCard(card) {
   return node;
 }
 
-async function decide(node, path) {
+async function decide(node, path, extra = '') {
   $$('button', node).forEach(button => { button.disabled = true; });
   try {
-    const result = await api.post(`${path}?conversation_id=${state.chatId || ''}`);
+    const result = await api.post(`${path}?conversation_id=${state.chatId || ''}${extra}`);
     toast(result.reply || 'Done', result.cards?.some(c => c.status === 'error') ? 'err' : 'ok');
   } catch (error) {
     toast(error.message, 'err');
@@ -1352,7 +1363,7 @@ $('#kb-search').addEventListener('input', e => {
 });
 
 // ================================================================= Connect
-const LOGO = { dynamics: 'D365', rightanswers: 'RA', sharepoint: 'SP', outlook: 'OL', teams: 'T' };
+const LOGO = { dynamics: 'D365', rightanswers: 'RA', sharepoint: 'SP', outlook: 'OL', teams: 'T', beyondtrust: 'BT', genesys: 'GC' };
 const MESSAGING = new Set(['outlook', 'teams']);
 
 async function loadConnect() {

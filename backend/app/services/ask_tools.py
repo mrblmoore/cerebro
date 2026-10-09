@@ -99,8 +99,14 @@ class AskToolService:
         return None
 
     def pending_action(self) -> Optional[EnterpriseAction]:
+        """The newest draft waiting on the user — or a send that just failed,
+        so "send it again" retries rather than being refused."""
+        from datetime import datetime, timedelta
+
+        recent = datetime.utcnow() - timedelta(hours=1)
         return (self.db.query(EnterpriseAction)
-                .filter(EnterpriseAction.status == "draft")
+                .filter(or_(EnterpriseAction.status == "draft",
+                            (EnterpriseAction.status == "failed") & (EnterpriseAction.updated_at > recent)))
                 .order_by(EnterpriseAction.created_at.desc(), EnterpriseAction.id.desc())
                 .first())
 
@@ -373,11 +379,20 @@ class AskToolService:
                       _completion("Summary ready", record.name)],
         }
 
-    def approve(self, action_id: int) -> dict:
+    def approve(self, action_id: int, destination: str = None) -> dict:
         action = self.db.query(EnterpriseAction).get(action_id)
         if not action:
             return {"reply": "That draft no longer exists.", "kind": "completion",
                     "cards": [_completion("Draft not found", status="error")]}
+        if action.status == "failed":
+            # A failed send can be tried again — usually with a corrected destination.
+            action.status, action.status_detail = "draft", None
+        if destination and action.status == "draft":
+            emails = EMAIL_RE.findall(destination)
+            action.to = ",".join(emails)
+            action.chat_or_channel = destination.strip()
+            action.thread_id = None
+            self.db.commit()
         if action.status == "queued":
             return {"reply": "That action is already queued for Power Automate.",
                     "kind": "completion", "action": action.to_dict(),
@@ -418,7 +433,7 @@ class AskToolService:
         action = self.db.query(EnterpriseAction).get(action_id)
         if not action:
             return {"reply": "That draft no longer exists.", "kind": "completion"}
-        if action.status != "draft":
+        if action.status not in ("draft", "failed"):
             return {"reply": "That action has already left the draft stage and cannot be discarded here.",
                     "kind": "completion", "action": action.to_dict(),
                     "cards": [_completion("Draft not discarded", action.status, "warning")]}

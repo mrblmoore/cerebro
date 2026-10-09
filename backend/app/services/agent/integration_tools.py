@@ -207,15 +207,19 @@ def dynamics_resolve_case(ctx: ToolContext, case: str = "", resolution: str = ""
 
 # ============================================================ RightAnswers
 @tool("rightanswers_search",
-      "Search the company's RightAnswers knowledge base for solutions and "
-      "articles.",
-      schema(["query"], query=string_param("Keywords, error codes or a short problem description.")),
+      "List articles in the company's RightAnswers knowledge base that match a "
+      "search (titles and snippets only, across several result pages). To "
+      "actually answer a question from the KB, prefer rightanswers_research, "
+      "which also reads the best articles.",
+      schema(["query"], query=string_param("Keywords, error codes or a short problem description."),
+             limit={"type": "integer", "description":
+                    "How many articles to list (default 20, up to 60)."}),
       label="Search RightAnswers", activity="browsing", available=_rightanswers_on)
-def rightanswers_search(ctx: ToolContext, query: str = "", **_) -> dict:
+def rightanswers_search(ctx: ToolContext, query: str = "", limit: int = 20, **_) -> dict:
     connector = _rightanswers()
 
     def run():
-        results = connector.search(query)
+        results = connector.search(query, limit=limit or 20)
         if not results:
             return {"content": f"No RightAnswers articles matched “{query}”.",
                     "summary": "No matches"}
@@ -227,7 +231,84 @@ def rightanswers_search(ctx: ToolContext, query: str = "", **_) -> dict:
             lines.append(f"[{ref}] {item['title']} (id {item.get('id') or 'unknown'}): "
                          f"{item.get('snippet') or ''}")
         return {"content": "\n".join(lines) + "\nUse rightanswers_get_article to read one in full.",
-                "summary": f"{len(results)} article(s)"}
+                "summary": f"{len(results)} article(s)", "max_chars": 12_000}
+
+    return _guard(ctx, connector, run)
+
+
+ARTICLE_CHARS = 2_500
+
+
+@tool("rightanswers_research",
+      "Research a question in RightAnswers the way a person would: search "
+      "several different phrasings (each across multiple result pages), then "
+      "open and read the best-matching articles in full and return their text. "
+      "Use this first for any 'how do I…', error or known-issue question, then "
+      "answer from the articles and cite them.",
+      schema(["queries"],
+             queries={"type": "array", "items": {"type": "string"}, "description":
+                      "2-4 different phrasings: the exact error text, the product and "
+                      "symptom, synonyms, likely article title."},
+             read={"type": "integer", "description":
+                   "Articles to read in full (default 5, up to 8)."}),
+      label="Research RightAnswers", activity="browsing", available=_rightanswers_on)
+def rightanswers_research(ctx: ToolContext, queries: list = None, read: int = 5,
+                          query: str = "", **_) -> dict:
+    connector = _rightanswers()
+    phrasings = [q for q in (queries or []) if isinstance(q, str) and q.strip()]
+    if query and query.strip():
+        phrasings.append(query)
+    if not phrasings:
+        return {"content": "Give at least one search phrasing.", "summary": "Needs a query"}
+
+    def run():
+        found = connector.research(phrasings, read=read if read is not None else 5)
+        results, articles = found["results"], found["articles"]
+        if not results:
+            return {"content": "No RightAnswers articles matched: "
+                               + "; ".join(f"“{q}”" for q in phrasings)
+                               + ". Try different words.", "summary": "No matches"}
+
+        from app.services.rag_service import RAGService
+
+        rag = RAGService(ctx.db)
+        read_keys = set()
+        blocks = []
+        for item in articles:
+            read_keys.update(filter(None, (item.get("id"), item.get("url"))))
+            try:
+                rag.upsert_document({"title": item["title"], "content": item["body"],
+                                     "source": "RightAnswers", "url": item.get("url"),
+                                     "tags": ["rightanswers"]})
+            except Exception:  # noqa: BLE001 - keeping a copy is a bonus
+                pass
+            ref = ctx.cite({"title": item["title"], "kind": "rightanswers", "uri": item.get("url"),
+                            "locator": f"Article {item.get('id') or ''}".strip(),
+                            "excerpt": item["body"][:1000]}, "RA")
+            text = item["body"]
+            if len(text) > ARTICLE_CHARS:
+                text = text[:ARTICLE_CHARS].rsplit(" ", 1)[0] + " …[article continues; "\
+                    "use rightanswers_get_article for the rest]"
+            blocks.append(f"[{ref}] {item['title']} (id {item.get('id') or 'unknown'})\n{text}")
+
+        others = []
+        for item in results:
+            if item.get("id") in read_keys or item.get("url") in read_keys:
+                continue
+            ref = ctx.cite({"title": item["title"], "kind": "rightanswers",
+                            "uri": item.get("url"),
+                            "locator": f"Article {item.get('id') or ''}".strip(),
+                            "excerpt": item.get("snippet") or ""}, "RA")
+            others.append(f"[{ref}] {item['title']} (id {item.get('id') or 'unknown'})")
+        parts = [f"Searched {len(phrasings)} phrasing(s); {len(results)} distinct article(s) "
+                 f"found; read {len(articles)} in full.", *blocks]
+        if others:
+            parts.append("Other matches, not read (rightanswers_get_article opens one):\n"
+                         + "\n".join(others[:30]))
+        if found.get("failures"):
+            parts.append("Problems: " + " | ".join(found["failures"][:5]))
+        return {"content": "\n\n".join(parts), "max_chars": 24_000,
+                "summary": f"{len(results)} found, {len(articles)} read"}
 
     return _guard(ctx, connector, run)
 

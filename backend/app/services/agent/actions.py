@@ -119,6 +119,8 @@ def approve(db: Session, action_id: int, automatic: bool = False) -> Dict[str, A
     if action is None:
         return {"reply": "That change no longer exists.", "kind": "completion",
                 "cards": [_completion("Change not found", status="error")]}
+    if action.status == "failed":
+        action.status, action.error = "draft", None     # approving again retries it
     if action.status != "draft":
         return {"reply": f"That change is already {action.status}.", "kind": "completion",
                 "agent_action": action.to_dict(),
@@ -214,6 +216,17 @@ def refresh_cards(db: Session, cards: list) -> list:
     A card is saved with the status it had when the answer was written, so
     without this an approved change would still offer Approve after reload.
     """
+    drafts = [c.get("action_id") for c in cards or []
+              if isinstance(c, dict) and c.get("type") == "draft" and c.get("action_id")]
+    if drafts:
+        from app.models.enterprise import EnterpriseAction
+        from app.services.ask_tools import _draft_card
+
+        current = {row.id: row for row in db.query(EnterpriseAction)
+                   .filter(EnterpriseAction.id.in_(drafts))}
+        cards = [{**c, **_draft_card(current[c["action_id"]])}
+                 if isinstance(c, dict) and c.get("type") == "draft" and c.get("action_id") in current
+                 else c for c in cards]
     ids = [c.get("action_id") for c in cards or []
            if isinstance(c, dict) and c.get("kind") == "agent" and c.get("action_id")]
     if not ids:
@@ -227,7 +240,7 @@ def discard(db: Session, action_id: int) -> Dict[str, Any]:
     action = db.get(AgentAction, action_id)
     if action is None:
         return {"reply": "That change no longer exists.", "kind": "completion"}
-    if action.status != "draft":
+    if action.status not in ("draft", "failed"):
         return {"reply": f"That change is already {action.status} and can't be discarded.",
                 "kind": "completion", "agent_action": action.to_dict()}
     action.status = "discarded"

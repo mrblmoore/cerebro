@@ -3053,7 +3053,8 @@ def test_browser_integrations():
             listed = client.get("/api/integrations").json()
         check("Integrations are listed over the API",
               {item["name"] for item in listed["integrations"]}
-              == {"dynamics", "rightanswers", "sharepoint", "outlook", "teams"})
+              == {"dynamics", "rightanswers", "sharepoint", "outlook", "teams",
+                  "beyondtrust", "genesys"})
     finally:
         browser.engine().shutdown()
         for patch in reversed(patches):
@@ -4625,6 +4626,360 @@ document.getElementById('send').onclick = async () => {
     return servers, state, me
 
 
+def test_ask_reliability_and_scoping():
+    """Fuzzy people, failed-send retry, message scoping, relevance gating, new tools."""
+    print("\nAsk reliability — people, retries, scoping, relevance")
+    import os
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.models.enterprise import EnterpriseAction, EnterpriseMessage
+    from app.services import contacts, message_filter
+    from app.services.agent import loop
+    from app.services.agent.analysis_tools import summarise_log
+    from app.services.ask_tools import AskToolService
+    from app.services.browser.teams import name_pattern
+    import re as _re
+
+    check("Name matches in any order", contacts.matches("Anthony Oddo", "Oddo, Anthony")
+          and contacts.matches("oddo anth", "Anthony Oddo") and not contacts.matches("Bob", "Anthony Oddo"))
+    check("Teams chat pattern ignores word order",
+          bool(name_pattern("Anthony Oddo").search("Oddo Anthony (Dexis)")))
+
+    db = session()
+    db.add(EnterpriseMessage(source="teams", sender="x", sender_name="Anthony Oddo",
+                             thread_id="19:abc@unq.gbl.spaces", direct=True, external_id="fz-1"))
+    db.add(EnterpriseMessage(source="outlook", sender="jo.ann@x.example", sender_name="Joanne Lee",
+                             external_id="fz-2"))
+    db.add(EnterpriseMessage(source="outlook", sender="jo.bob@x.example", sender_name="Joanne Smith",
+                             external_id="fz-3"))
+    db.commit()
+    found = contacts.resolve(db, "anthony oddo")
+    check("A known person resolves to their chat",
+          found["status"] == "found" and found["person"]["chat"] == "19:abc@unq.gbl.spaces")
+    check("A partial name resolves", contacts.resolve(db, "Oddo")["status"] == "found")
+    check("Two matches are ambiguous", contacts.resolve(db, "Joanne")["status"] == "ambiguous")
+    check("An unknown name is none", contacts.resolve(db, "Zed Nobody")["status"] == "none")
+
+    saved = (settings.TEAMS_WATCH, settings.TEAMS_WATCH_CHATS, settings.OUTLOOK_WATCH,
+             settings.OUTLOOK_SKIP_BULK, settings.OUTLOOK_MUTE_SENDERS)
+    try:
+        settings.TEAMS_WATCH = "direct"
+        check("Direct-only drops channel posts",
+              not message_filter.allow("teams", {"chat": "Ops", "direct": False})[0]
+              and message_filter.allow("teams", {"chat": "Sam", "direct": True})[0])
+        settings.TEAMS_WATCH, settings.TEAMS_WATCH_CHATS = "selected", "ops"
+        check("Selected keeps listed chats and @mentions only",
+              message_filter.allow("teams", {"chat": "Ops room"})[0]
+              and message_filter.allow("teams", {"chat": "Other", "mentioned": True})[0]
+              and not message_filter.allow("teams", {"chat": "Other"})[0])
+        settings.OUTLOOK_WATCH, settings.OUTLOOK_SKIP_BULK = "all", True
+        settings.OUTLOOK_MUTE_SENDERS = "spam.example"
+        check("Ads and muted senders are dropped",
+              not message_filter.allow("outlook", {"sender": "no-reply@shop.example", "subject": "50% off"})[0]
+              and not message_filter.allow("outlook", {"sender": "a@spam.example", "subject": "hi"})[0]
+              and message_filter.allow("outlook", {"sender": "bob@x.example", "subject": "Server down"})[0])
+        check("A message naming a case always gets through",
+              message_filter.allow("outlook", {"sender": "no-reply@shop.example",
+                                               "subject": "Update on INC0012345"})[0])
+    finally:
+        (settings.TEAMS_WATCH, settings.TEAMS_WATCH_CHATS, settings.OUTLOOK_WATCH,
+         settings.OUTLOOK_SKIP_BULK, settings.OUTLOOK_MUTE_SENDERS) = saved
+
+    action = EnterpriseAction(action="send_teams_message", source="teams", chat_or_channel="Nobody",
+                              body="hi", status="failed", status_detail="no chat")
+    db.add(action)
+    db.commit()
+    service = AskToolService(db)
+    check("A just-failed send is still the pending action",
+          service.pending_action() is not None and service.pending_action().id == action.id)
+    def fake_dispatch(item):
+        item.status = "sent"
+        db.commit()
+        return item
+
+    with mock.patch.object(service.enterprise, "dispatch_action", side_effect=fake_dispatch):
+        result = service.approve(action.id, destination="Anthony Oddo")
+    db.refresh(action)
+    check("Retrying a failed send with a new destination works",
+          action.status == "sent" and action.chat_or_channel == "Anthony Oddo" and "Sent" in result["reply"],
+          f"{action.status} / {action.chat_or_channel} / {result.get('reply')}")
+
+    check("A plain 'message X on Teams' request is messaging-only",
+          loop.messaging_only("Send Anthony Oddo a message on Teams saying hi"))
+    check("A research request is not",
+          not loop.messaging_only("Search the KB for the Teams error and email me the steps"))
+
+    log = "\n".join(f"2026-01-02 10:00:{i:02d} ERROR db timeout id {i}" for i in range(5)) + \
+          "\n2026-01-02 10:01:00 INFO ok\n2026-01-02 10:02:00 WARN disk low"
+    summary = summarise_log(log)
+    check("Log review groups repeats with counts", "5 · 2026-01-02" in summary and "disk low" in summary, summary)
+    from app.services.agent.registry import REGISTRY
+    check("The analysis tools are registered", "review_log" in REGISTRY and "compare_cases" in REGISTRY)
+
+
+def test_system_tools_and_robustness():
+    """File/URL/command tools, sign-in isolation, connector backups."""
+    print("\nGeneral Ask tools — files, URLs, commands, backups")
+    import http.server
+    import tempfile
+    import threading
+    from pathlib import Path as _P
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.models.agent_action import AgentAction
+    from app.services import browser, connector_backup
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext, available_tools
+    from app.services.browser.engine import BrowserBusy, BrowserEngine
+
+    db = session()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _P(tmp)
+        (root / "app.log").write_text(
+            "\n".join(f"2026-01-02 10:00:{i:02d} ERROR db timeout {i}" for i in range(4)), encoding="utf-8")
+        (root / "notes.txt").write_text("alpha\nneedle here\n", encoding="utf-8")
+        ctx = ToolContext(db=db, context={})
+        listing = REGISTRY["list_folder"].handler(ctx, path=str(root))
+        check("list_folder shows files", "app.log" in listing["content"], listing)
+        check("read_file reads text", "needle" in REGISTRY["read_file"].handler(
+            ToolContext(db=db, context={}), path=str(root / "notes.txt"))["content"])
+        check("find_in_files finds text", "notes.txt" in REGISTRY["find_in_files"].handler(
+            ToolContext(db=db, context={}), path=str(root), text="needle")["content"])
+        check("review_logs_in_folder summarises errors", "ERROR" in REGISTRY["review_logs_in_folder"].handler(
+            ToolContext(db=db, context={}), path=str(root), days="3650")["content"])
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html><body><p>Hello web</p></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            got = REGISTRY["fetch_url"].handler(ToolContext(db=db, context={}),
+                                                url=f"http://127.0.0.1:{server.server_port}/")
+            check("fetch_url returns page text", "Hello web" in got["content"], got)
+        finally:
+            server.shutdown()
+
+        target = root / "out.txt"
+        target.write_text("old", encoding="utf-8")
+        wctx = ToolContext(db=db, context={})
+        REGISTRY["write_file"].handler(wctx, path=str(target), content="new")
+        check("write_file waits for approval", target.read_text(encoding="utf-8") == "old"
+              and len(wctx.drafts) == 1)
+        action_id = wctx.drafts[0]["action_id"]
+        actions.approve(db, action_id)
+        check("Approved write changes the file", target.read_text(encoding="utf-8") == "new")
+        actions.undo(db, action_id)
+        check("Undo restores the file", target.read_text(encoding="utf-8") == "old")
+
+    with mock.patch.object(settings, "ASK_SHELL_ENABLED", False):
+        check("run_command hidden by default",
+              "run_command" not in {t.name for t in available_tools(ToolContext(db=db))})
+    with mock.patch.object(settings, "ASK_SHELL_ENABLED", True):
+        check("run_command available when enabled",
+              "run_command" in {t.name for t in available_tools(ToolContext(db=db))})
+
+    eng = BrowserEngine()
+    eng.hold_visible, eng.hold_owner = True, "Outlook"
+    with mock.patch.object(settings, "BROWSER_AUTOMATION_ENABLED", True), \
+            mock.patch("app.services.browser.engine.playwright_installed", return_value=True), \
+            mock.patch.object(eng, "_ensure_thread"):
+        try:
+            eng.submit(lambda e: 1)
+            busy = False
+        except BrowserBusy:
+            busy = True
+    check("Other systems wait while a sign-in window is open", busy)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cdir = _P(tmp) / "connectors"
+        bdir = _P(tmp) / "backups"
+        cdir.mkdir()
+        (cdir / "genesys.json").write_text('{"x": 1}', encoding="utf-8")
+        with mock.patch.object(connector_backup, "CONNECTORS_DIR", cdir), \
+                mock.patch.object(connector_backup, "BACKUP_DIR", bdir):
+            made = connector_backup.create_backup("test")
+            check("Backup captures connectors", made["connectors"] == 1)
+            connector_backup.reset_connector("genesys")
+            check("Reset removes the layout", not (cdir / "genesys.json").exists())
+            connector_backup.restore_backup(made["name"])
+            check("Restore brings it back", (cdir / "genesys.json").exists())
+
+
+def test_beyondtrust_and_genesys():
+    """BeyondTrust and Genesys through the hidden browser: config, sign-in rules, call matching."""
+    print("\nBeyondTrust & Genesys Cloud — through the hidden browser")
+    from app.core.config import settings
+    from app.services import browser
+    from app.services.agent import systems_tools
+    from app.services.agent.registry import REGISTRY
+
+    bt, gc = browser.get("beyondtrust"), browser.get("genesys")
+    check("Both are registered with the browser", {"beyondtrust", "genesys"} <= {c.name for c in browser.connectors()})
+    check("Genesys is pre-filled and BeyondTrust waits for an address",
+          gc.base_url == "https://apps.mypurecloud.com" and not bt.base_url)
+    check("They are off by default", not bt.enabled and not gc.enabled)
+    check("Genesys' API host follows its app host", gc.api_base() == "https://api.mypurecloud.com")
+    settings.BEYONDTRUST_URL = "support.example.com/login/reports"
+    check("BeyondTrust keeps only the host", bt.base_url == "https://support.example.com")
+    check("BeyondTrust's own /login console is not a sign-in page",
+          not bt.looks_like_login("https://support.example.com/login") and
+          bt.looks_like_login("https://acme.okta.com/app/x"))
+    check("Ask tools are registered",
+          {"beyondtrust_search", "beyondtrust_read_page", "genesys_search_conversations",
+           "genesys_get_conversation", "link_call_to_remote_session"} <= set(REGISTRY))
+
+    call = {"id": "CONV-1", "customer": "Ada Lovelace", "phone": "tel:+15551234567", "agent": "Sam Rivera"}
+    rows = [{"id": "L1", "text": "L1 Ada Lovelace 555-123-4567 Sam Rivera 10:05"},
+            {"id": "L2", "text": "L2 Someone Else 555-000-1111 Pat Doe 15:00"}]
+    ranked = systems_tools.match_sessions(call, rows)
+    check("The call is matched to the right remote session",
+          len(ranked) == 1 and ranked[0][1]["id"] == "L1" and ranked[0][0] >= 8, ranked)
+    check("A conversation ID in a row is the strongest evidence",
+          systems_tools.match_sessions(call, [{"id": "L3", "text": "ref conv-1"}])[0][0] == 10)
+    settings.BEYONDTRUST_URL = None
+
+    from app.services.browser.engine import playwright_installed
+
+    if not playwright_installed():
+        print("  - skipped browser part: Playwright is not installed")
+        return
+    import importlib
+    import sys as _sys
+    from unittest import mock
+
+    server = _fake_bt_and_genesys()
+    base = f"http://127.0.0.1:{server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    overrides = {"BROWSER_AUTOMATION_ENABLED": True, "BROWSER_MODE": "headless",
+                 "BROWSER_TIMEOUT_SECONDS": 15,
+                 "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium",
+                 "BEYONDTRUST_ENABLED": True, "BEYONDTRUST_URL": f"{base}/login/sessions",
+                 "GENESYS_ENABLED": True, "GENESYS_URL": base}
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches.append(mock.patch.object(engine_module, "BROWSER_PROFILE_DIR",
+                                     Path(_TEMP_DIR) / "bt_profile"))
+    for patch in patches:
+        patch.start()
+    try:
+        try:
+            found = bt.search("Ada")
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+        check("BeyondTrust's sessions page is read as rows",
+              [s["id"] for s in found["sessions"]] == ["a1b2c3d4e5f60718293a4b5c6d7e8f90"], found["sessions"])
+        check("A search narrows the rows", all("Ada" in s["text"] for s in found["sessions"]))
+        everything = bt.search("")
+        check("An empty search lists every row", len(everything["sessions"]) == 2)
+        page = bt.read_page("/login/session/a1b2c3d4e5f60718293a4b5c6d7e8f90")
+        check("A session page is read", "Ada Lovelace" in page["text"] and "Remote Support" in page["title"])
+        try:
+            bt.read_page("https://evil.example.com/x")
+            check("Only the configured BeyondTrust site can be opened", False)
+        except Exception:
+            check("Only the configured BeyondTrust site can be opened", True)
+
+        conversations = gc.search("1555")
+        check("Genesys conversations are fetched with the page's own token",
+              [c["id"] for c in conversations] == ["CONV-1"], conversations)
+        check("…with customer, phone and agent",
+              conversations[0]["customer"] == "Ada Lovelace" and conversations[0]["agent"] == "Sam Rivera")
+        check("A search that matches nothing returns nothing", gc.search("zzz-none") == [])
+        detail = gc.conversation("CONV-1")
+        check("One conversation is read in full", detail["source"] == "api" and detail["raw"]["conversationId"] == "CONV-1")
+        check("The signed-in account is named", gc.check().get("account") == "Sam Rivera")
+
+        # The two together: a call is linked to its remote session.
+        ranked = systems_tools.match_sessions(conversations[0], found["sessions"])
+        check("The call links to the remote session read from the console",
+              ranked and ranked[0][1]["id"] == "a1b2c3d4e5f60718293a4b5c6d7e8f90", ranked)
+    finally:
+        browser.engine().shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        server.shutdown()
+
+
+def _fake_bt_and_genesys():
+    """A BeyondTrust console (session table) and a Genesys web app + API on one host."""
+    import http.server
+    import json as _json
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    rows = [("a1b2c3d4e5f60718293a4b5c6d7e8f90", "Ada Lovelace", "555-123-4567", "Sam Rivera"),
+            ("f6e5d4c3b2a10918273a4b5c6d7e8f01", "Someone Else", "555-000-1111", "Pat Doe")]
+    conversation = {"conversationId": "CONV-1", "conversationStart": "2026-10-09T10:00:00.000Z",
+                    "conversationEnd": "2026-10-09T10:20:00.000Z",
+                    "participants": [{"purpose": "customer", "participantName": "Ada Lovelace",
+                                      "sessions": [{"ani": "tel:+15551234567", "mediaType": "voice",
+                                                    "direction": "inbound"}]},
+                                     {"purpose": "agent", "participantName": "Sam Rivera",
+                                      "sessions": []}]}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, status, body, kind="text/html; charset=utf-8"):
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _authorised(self):
+            return self.headers.get("Authorization") == "Bearer tok-123"
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            if url.path.startswith("/login/session/"):
+                return self._send(200, "<title>Remote Support session</title>"
+                                       "<main>Session a1b2c3d4e5f60718293a4b5c6d7e8f90 · Ada Lovelace · Sam Rivera</main>")
+            if url.path.startswith("/login/sessions"):
+                query = (parse_qs(url.query).get("q") or [""])[0].lower()
+                body = "".join(f"<tr><td>{a}</td><td>{b}</td><td>{c}</td><td>{d}</td></tr>"
+                               for a, b, c, d in rows if query in f"{a}{b}{c}{d}".lower())
+                return self._send(200, "<form><input type='search' name='q' placeholder='Search sessions'>"
+                                       f"</form><table><tbody>{body}</tbody></table>")
+            if url.path == "/api/v2/users/me":
+                return self._send(200, _json.dumps({"name": "Sam Rivera"}), "application/json") \
+                    if self._authorised() else self._send(401, "{}", "application/json")
+            if url.path.endswith("/details") and "CONV-1" in url.path:
+                return self._send(200, _json.dumps(conversation), "application/json") \
+                    if self._authorised() else self._send(401, "{}", "application/json")
+            if url.path == "/":
+                return self._send(200, "<title>Genesys Cloud</title><h1>Genesys</h1>"
+                                       "<script>localStorage.setItem('gc_auth', "
+                                       "JSON.stringify({accessToken: 'tok-123'}));"
+                                       "localStorage.setItem('gc_token_old', 'stale');</script>")
+            return self._send(404, "Not found")
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if not self._authorised():
+                return self._send(401, "{}", "application/json")
+            if urlparse(self.path).path == "/api/v2/analytics/conversations/details/query":
+                return self._send(200, _json.dumps({"conversations": [conversation]}), "application/json")
+            return self._send(404, "{}", "application/json")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 def test_outlook_and_teams():
     """Outlook and Teams through the hidden browser: read, watch, notify, help, send."""
     print("\nOutlook and Teams — through the hidden browser")
@@ -4725,8 +5080,9 @@ def test_outlook_and_teams():
         first = inbox_monitor.check_once(db)
         check("The first check only catches up", first["outlook"]["catching_up"]
               and not activity_state.recent_notices())
-        check("Messages are stored like any other", db.query(EnterpriseMessage)
-              .filter(EnterpriseMessage.source == "outlook").count() == 2)
+        check("Messages are stored like any other (newsletters are filtered out)",
+              db.query(EnterpriseMessage)
+              .filter(EnterpriseMessage.source == "outlook").count() == 1)
         state["mail"].insert(0, {
             "ItemId": {"Id": "AAMk-9"}, "Subject": "URGENT: CAS-01234-ABCDE imaging down",
             "From": {"Mailbox": {"Name": "Dr Patel", "EmailAddress": "patel@clinic.example"}},
@@ -4909,7 +5265,7 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_tray_notices):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
