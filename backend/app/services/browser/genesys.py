@@ -61,10 +61,11 @@ class GenesysConnector(BrowserConnector):
         self._token: Optional[str] = None
 
     def api_base(self) -> str:
-        host = urlparse(self.base_url).netloc
+        parsed = urlparse(self.base_url)
+        host = parsed.netloc
         if host.startswith("apps."):
             host = "api." + host[len("apps."):]
-        return f"https://{host}"
+        return f"{parsed.scheme or 'https'}://{host}"
 
     def sign_in_url(self) -> str:
         return self.base_url

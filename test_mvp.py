@@ -4659,6 +4659,136 @@ def test_beyondtrust_and_genesys():
           systems_tools.match_sessions(call, [{"id": "L3", "text": "ref conv-1"}])[0][0] == 10)
     settings.BEYONDTRUST_URL = None
 
+    from app.services.browser.engine import playwright_installed
+
+    if not playwright_installed():
+        print("  - skipped browser part: Playwright is not installed")
+        return
+    import importlib
+    import sys as _sys
+    from unittest import mock
+
+    server = _fake_bt_and_genesys()
+    base = f"http://127.0.0.1:{server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    overrides = {"BROWSER_AUTOMATION_ENABLED": True, "BROWSER_MODE": "headless",
+                 "BROWSER_TIMEOUT_SECONDS": 15,
+                 "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium",
+                 "BEYONDTRUST_ENABLED": True, "BEYONDTRUST_URL": f"{base}/login/sessions",
+                 "GENESYS_ENABLED": True, "GENESYS_URL": base}
+    patches = [mock.patch.object(settings, key, value) for key, value in overrides.items()]
+    patches.append(mock.patch.object(engine_module, "BROWSER_PROFILE_DIR",
+                                     Path(_TEMP_DIR) / "bt_profile"))
+    for patch in patches:
+        patch.start()
+    try:
+        try:
+            found = bt.search("Ada")
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+        check("BeyondTrust's sessions page is read as rows",
+              [s["id"] for s in found["sessions"]] == ["a1b2c3d4e5f60718293a4b5c6d7e8f90"], found["sessions"])
+        check("A search narrows the rows", all("Ada" in s["text"] for s in found["sessions"]))
+        everything = bt.search("")
+        check("An empty search lists every row", len(everything["sessions"]) == 2)
+        page = bt.read_page("/login/session/a1b2c3d4e5f60718293a4b5c6d7e8f90")
+        check("A session page is read", "Ada Lovelace" in page["text"] and "Remote Support" in page["title"])
+        try:
+            bt.read_page("https://evil.example.com/x")
+            check("Only the configured BeyondTrust site can be opened", False)
+        except Exception:
+            check("Only the configured BeyondTrust site can be opened", True)
+
+        conversations = gc.search("1555")
+        check("Genesys conversations are fetched with the page's own token",
+              [c["id"] for c in conversations] == ["CONV-1"], conversations)
+        check("…with customer, phone and agent",
+              conversations[0]["customer"] == "Ada Lovelace" and conversations[0]["agent"] == "Sam Rivera")
+        check("A search that matches nothing returns nothing", gc.search("zzz-none") == [])
+        detail = gc.conversation("CONV-1")
+        check("One conversation is read in full", detail["source"] == "api" and detail["raw"]["conversationId"] == "CONV-1")
+        check("The signed-in account is named", gc.check().get("account") == "Sam Rivera")
+
+        # The two together: a call is linked to its remote session.
+        ranked = systems_tools.match_sessions(conversations[0], found["sessions"])
+        check("The call links to the remote session read from the console",
+              ranked and ranked[0][1]["id"] == "a1b2c3d4e5f60718293a4b5c6d7e8f90", ranked)
+    finally:
+        browser.engine().shutdown()
+        for patch in reversed(patches):
+            patch.stop()
+        server.shutdown()
+
+
+def _fake_bt_and_genesys():
+    """A BeyondTrust console (session table) and a Genesys web app + API on one host."""
+    import http.server
+    import json as _json
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    rows = [("a1b2c3d4e5f60718293a4b5c6d7e8f90", "Ada Lovelace", "555-123-4567", "Sam Rivera"),
+            ("f6e5d4c3b2a10918273a4b5c6d7e8f01", "Someone Else", "555-000-1111", "Pat Doe")]
+    conversation = {"conversationId": "CONV-1", "conversationStart": "2026-10-09T10:00:00.000Z",
+                    "conversationEnd": "2026-10-09T10:20:00.000Z",
+                    "participants": [{"purpose": "customer", "participantName": "Ada Lovelace",
+                                      "sessions": [{"ani": "tel:+15551234567", "mediaType": "voice",
+                                                    "direction": "inbound"}]},
+                                     {"purpose": "agent", "participantName": "Sam Rivera",
+                                      "sessions": []}]}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, status, body, kind="text/html; charset=utf-8"):
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _authorised(self):
+            return self.headers.get("Authorization") == "Bearer tok-123"
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            if url.path.startswith("/login/session/"):
+                return self._send(200, "<title>Remote Support session</title>"
+                                       "<main>Session a1b2c3d4e5f60718293a4b5c6d7e8f90 · Ada Lovelace · Sam Rivera</main>")
+            if url.path.startswith("/login/sessions"):
+                query = (parse_qs(url.query).get("q") or [""])[0].lower()
+                body = "".join(f"<tr><td>{a}</td><td>{b}</td><td>{c}</td><td>{d}</td></tr>"
+                               for a, b, c, d in rows if query in f"{a}{b}{c}{d}".lower())
+                return self._send(200, "<form><input type='search' name='q' placeholder='Search sessions'>"
+                                       f"</form><table><tbody>{body}</tbody></table>")
+            if url.path == "/api/v2/users/me":
+                return self._send(200, _json.dumps({"name": "Sam Rivera"}), "application/json") \
+                    if self._authorised() else self._send(401, "{}", "application/json")
+            if url.path.endswith("/details") and "CONV-1" in url.path:
+                return self._send(200, _json.dumps(conversation), "application/json") \
+                    if self._authorised() else self._send(401, "{}", "application/json")
+            if url.path == "/":
+                return self._send(200, "<title>Genesys Cloud</title><h1>Genesys</h1>"
+                                       "<script>localStorage.setItem('gc_auth', "
+                                       "JSON.stringify({accessToken: 'tok-123'}));"
+                                       "localStorage.setItem('gc_token_old', 'stale');</script>")
+            return self._send(404, "Not found")
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if not self._authorised():
+                return self._send(401, "{}", "application/json")
+            if urlparse(self.path).path == "/api/v2/analytics/conversations/details/query":
+                return self._send(200, _json.dumps({"conversations": [conversation]}), "application/json")
+            return self._send(404, "{}", "application/json")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
 
 def test_outlook_and_teams():
     """Outlook and Teams through the hidden browser: read, watch, notify, help, send."""
