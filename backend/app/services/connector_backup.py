@@ -34,7 +34,7 @@ def _env_lines() -> List[str]:
 
 def create_backup(reason: str = "manual") -> Dict[str, Any]:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    name = f"integrations-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+    name = f"integrations-{time.strftime('%Y%m%d-%H%M%S')}-{int(time.time() * 1000) % 1000:03d}.zip"
     path = BACKUP_DIR / name
     count = 0
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:

@@ -5080,8 +5080,9 @@ def test_outlook_and_teams():
         first = inbox_monitor.check_once(db)
         check("The first check only catches up", first["outlook"]["catching_up"]
               and not activity_state.recent_notices())
-        check("Messages are stored like any other", db.query(EnterpriseMessage)
-              .filter(EnterpriseMessage.source == "outlook").count() == 2)
+        check("Messages are stored like any other (newsletters are filtered out)",
+              db.query(EnterpriseMessage)
+              .filter(EnterpriseMessage.source == "outlook").count() == 1)
         state["mail"].insert(0, {
             "ItemId": {"Id": "AAMk-9"}, "Subject": "URGENT: CAS-01234-ABCDE imaging down",
             "From": {"Mailbox": {"Name": "Dr Patel", "EmailAddress": "patel@clinic.example"}},
