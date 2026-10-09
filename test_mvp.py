@@ -3053,7 +3053,8 @@ def test_browser_integrations():
             listed = client.get("/api/integrations").json()
         check("Integrations are listed over the API",
               {item["name"] for item in listed["integrations"]}
-              == {"dynamics", "rightanswers", "sharepoint", "outlook", "teams"})
+              == {"dynamics", "rightanswers", "sharepoint", "outlook", "teams",
+                  "beyondtrust", "genesys"})
     finally:
         browser.engine().shutdown()
         for patch in reversed(patches):
@@ -4626,59 +4627,37 @@ document.getElementById('send').onclick = async () => {
 
 
 def test_beyondtrust_and_genesys():
-    """API connectors: token handling, parsing and matching a call to a remote session."""
-    print("\nBeyondTrust & Genesys Cloud")
-    from unittest import mock
-
+    """BeyondTrust and Genesys through the hidden browser: config, sign-in rules, call matching."""
+    print("\nBeyondTrust & Genesys Cloud — through the hidden browser")
     from app.core.config import settings
-    from app.services import systems
+    from app.services import browser
     from app.services.agent import systems_tools
-    from app.services.systems import beyondtrust as bt, genesys as gc
-    from app.services.systems.base import NotConfigured
+    from app.services.agent.registry import REGISTRY
 
-    check("Both systems are registered", [c.name for c in systems.connectors()] == ["beyondtrust", "genesys"])
-    check("They are off by default", not any(c.enabled for c in systems.connectors()))
-    check("Status has the Connect-tab shape",
-          {"name", "label", "enabled", "url", "configured", "signed_in", "sign_in"} <= set(bt.connector.status()))
-    try:
-        bt.connector.require_enabled()
-        check("A switched-off system refuses to run", False)
-    except NotConfigured:
-        check("A switched-off system refuses to run", True)
+    bt, gc = browser.get("beyondtrust"), browser.get("genesys")
+    check("Both are registered with the browser", {"beyondtrust", "genesys"} <= {c.name for c in browser.connectors()})
+    check("Genesys is pre-filled and BeyondTrust waits for an address",
+          gc.base_url == "https://apps.mypurecloud.com" and not bt.base_url)
+    check("They are off by default", not bt.enabled and not gc.enabled)
+    check("Genesys' API host follows its app host", gc.api_base() == "https://api.mypurecloud.com")
+    settings.BEYONDTRUST_URL = "support.example.com/login/reports"
+    check("BeyondTrust keeps only the host", bt.base_url == "https://support.example.com")
+    check("BeyondTrust's own /login console is not a sign-in page",
+          not bt.looks_like_login("https://support.example.com/login") and
+          bt.looks_like_login("https://acme.okta.com/app/x"))
+    check("Ask tools are registered",
+          {"beyondtrust_search", "beyondtrust_read_page", "genesys_search_conversations",
+           "genesys_get_conversation", "link_call_to_remote_session"} <= set(REGISTRY))
 
-    settings.GENESYS_REGION = "https://login.usw2.pure.cloud/"
-    check("A pasted Genesys URL becomes the region", gc.connector.api_base() == "https://api.usw2.pure.cloud")
-    settings.BEYONDTRUST_URL = "support.example.com/"
-    check("BeyondTrust gets https and no trailing slash", bt.connector.api_base() == "https://support.example.com")
-
-    xml = ("<sessions><session lsid='L1'><start_time>2025-01-01T10:05:00Z</start_time>"
-           "<customer_name>Ada Lovelace</customer_name><external_key>CONV-1</external_key></session>"
-           "<session lsid='L2'><start_time>2025-01-01T15:00:00Z</start_time>"
-           "<customer_name>Someone Else</customer_name></session></sessions>")
-    rows = bt.parse_sessions(xml)
-    check("Remote sessions are parsed", [bt.summary(r)["id"] for r in rows] == ["L1", "L2"])
-
-    conversation = {"conversationId": "CONV-1", "conversationStart": "2025-01-01T10:00:00.000Z",
-                    "conversationEnd": "2025-01-01T10:20:00.000Z",
-                    "participants": [{"purpose": "customer", "participantName": "Ada Lovelace",
-                                      "sessions": [{"ani": "tel:+15551234567", "mediaType": "voice"}]},
-                                     {"purpose": "agent", "participantName": "Sam", "sessions": []}]}
-    ranked = systems_tools.match_sessions(conversation, rows)
+    call = {"id": "CONV-1", "customer": "Ada Lovelace", "phone": "tel:+15551234567", "agent": "Sam Rivera"}
+    rows = [{"id": "L1", "text": "L1 Ada Lovelace 555-123-4567 Sam Rivera 10:05"},
+            {"id": "L2", "text": "L2 Someone Else 555-000-1111 Pat Doe 15:00"}]
+    ranked = systems_tools.match_sessions(call, rows)
     check("The call is matched to the right remote session",
-          len(ranked) == 1 and ranked[0][1]["id"] == "L1" and ranked[0][0] >= 12, ranked)
-
-    class Reply:
-        ok, status_code = True, 200
-        text = ""
-        def json(self):
-            return {"access_token": "tok", "expires_in": 3600}
-
-    settings.GENESYS_ENABLED, settings.GENESYS_CLIENT_ID, settings.GENESYS_CLIENT_SECRET = True, "id", "secret"
-    gc.connector.forget_token()
-    with mock.patch("app.services.systems.base.requests.post", return_value=Reply()) as post:
-        first, second = gc.connector.bearer(), gc.connector.bearer()
-    check("The token is fetched once and cached", first == second == "tok" and post.call_count == 1)
-    settings.GENESYS_ENABLED = False
+          len(ranked) == 1 and ranked[0][1]["id"] == "L1" and ranked[0][0] >= 8, ranked)
+    check("A conversation ID in a row is the strongest evidence",
+          systems_tools.match_sessions(call, [{"id": "L3", "text": "ref conv-1"}])[0][0] == 10)
+    settings.BEYONDTRUST_URL = None
 
 
 def test_outlook_and_teams():

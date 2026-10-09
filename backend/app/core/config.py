@@ -186,17 +186,12 @@ class Settings(BaseSettings):
     DYNAMICS_ENABLED: bool = False
     #: The company's Dynamics 365 organisation (host only, as above).
     DYNAMICS_URL: Optional[str] = "https://dental.crm.dynamics.com"
-    #: BeyondTrust Remote Support and Genesys Cloud, through their own APIs
-    #: (an OAuth client created by an administrator), not the hidden browser.
+    #: BeyondTrust Remote Support and Genesys Cloud, through the same hidden
+    #: browser and the user's own sign-in (no API client needed). Read-only.
     BEYONDTRUST_ENABLED: bool = False
     BEYONDTRUST_URL: Optional[str] = None
-    BEYONDTRUST_CLIENT_ID: Optional[str] = None
-    BEYONDTRUST_CLIENT_SECRET: Optional[str] = None
     GENESYS_ENABLED: bool = False
-    #: Region domain, e.g. mypurecloud.com, usw2.pure.cloud, mypurecloud.ie.
-    GENESYS_REGION: Optional[str] = "mypurecloud.com"
-    GENESYS_CLIENT_ID: Optional[str] = None
-    GENESYS_CLIENT_SECRET: Optional[str] = None
+    GENESYS_URL: Optional[str] = "https://apps.mypurecloud.com"
     #: SharePoint through the same hidden browser and sign-in: open pasted
     #: links, read documents and pages, and change them with approval. Needs
     #: no app registration (unlike SHAREPOINT_GRAPH_ENABLED below).

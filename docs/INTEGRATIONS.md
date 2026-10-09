@@ -376,22 +376,35 @@ your portal, add a `next_page` selector (the "next" link) to
 
 ## BeyondTrust Remote Support and Genesys Cloud
 
-These two use their **APIs**, not the hidden browser, and are **read-only**.
-Create an API client in each (administrator task), then enter it in Settings →
-*BeyondTrust & Genesys Cloud* and press **Test connection** on the Connect tab.
+Both work like Dynamics and Teams: the hidden browser, your own sign-in, no
+API account, **read-only**. Turn each on from the Connect tab (BeyondTrust
+needs its site address first, e.g. `https://yourcompany.beyondtrustcloud.com`;
+Genesys is pre-filled with `https://apps.mypurecloud.com`, so change it for
+other regions such as `apps.usw2.pure.cloud`), then **Sign in** once.
 
-| System | Create | Settings |
-|---|---|---|
-| BeyondTrust | *Configuration → API Configuration → Add API Account*, with Reporting access | site address, client ID, client secret |
-| Genesys Cloud | *Admin → Integrations → OAuth → Add Client*, Client Credentials, with `analytics:conversationDetail:view` and `conversation:conversation:view` | region (e.g. `mypurecloud.com`), client ID, client secret |
-
-Ask tools: `beyondtrust_list_sessions`, `beyondtrust_get_session`,
+Ask tools: `beyondtrust_search`, `beyondtrust_read_page`,
 `genesys_search_conversations`, `genesys_get_conversation`, and
 `link_call_to_remote_session`, which matches a Genesys conversation to its
-BeyondTrust session by conversation ID (in the session's external key), phone
-number, customer name and time. Report field names vary by appliance version;
-unknown fields are passed through unchanged.
+BeyondTrust session by conversation ID, phone number, customer name and agent.
 
+**Genesys** reads conversations through the signed-in web app's own session
+token (found in the page, never stored). If your organisation blocks that, it
+falls back to reading the interactions page. Your Genesys role needs
+conversation/analytics view permission.
+
+**BeyondTrust** consoles differ by version, so it reads whatever tables the
+configured page shows. Set the address to the page that lists sessions (for
+example your Session Search or reports page) or paste report links into Ask. To
+tune it, create `%LOCALAPPDATA%\Cerebro\connectors\beyondtrust.json` with only
+the keys that differ:
+
+```json
+{
+  "search_url": "{base}/login/reports?query={query}",
+  "search_input": "input[name='search']",
+  "row": "table.sessions tbody tr"
+}
+```
 ## Troubleshooting
 
 | Symptom | Fix |

@@ -111,20 +111,12 @@ GROUPS = [
     },
     {
         "id": "integrations",
-        "title": "RightAnswers, Dynamics & SharePoint",
+        "title": "RightAnswers, Dynamics, SharePoint & more",
         "icon": "🌐",
-        "description": "Let Cerebro work in RightAnswers, Dynamics 365 and SharePoint through a hidden "
+        "description": "Let Cerebro work in RightAnswers, Dynamics 365, SharePoint, BeyondTrust and "
+                       "Genesys Cloud through a hidden "
                        "browser that uses your own sign-in. Reads happen straight away; "
                        "every change is shown to you for approval first.",
-    },
-    {
-        "id": "systems",
-        "title": "BeyondTrust & Genesys Cloud",
-        "icon": "📞",
-        "description": "Connect Remote Support sessions and Genesys Cloud calls, chats and "
-                       "emails through their APIs. Create an OAuth client in each system "
-                       "(read-only access is enough) and paste its ID and secret here. "
-                       "Cerebro only reads from these systems.",
     },
     {
         "id": "brain",
@@ -497,30 +489,22 @@ FIELDS: List[Field] = [
                                     ("DYNAMICS_ENABLED", [True])]),
 
     # BeyondTrust & Genesys Cloud
-    Field("BEYONDTRUST_ENABLED", "BeyondTrust Remote Support", "systems",
-          "Look up remote support sessions: who, when, which rep, how long.", type="bool"),
-    Field("BEYONDTRUST_URL", "BeyondTrust site", "systems",
-          "Your appliance or cloud address, e.g. yourcompany.beyondtrustcloud.com.",
-          type="url", show_if=("BEYONDTRUST_ENABLED", [True])),
-    Field("BEYONDTRUST_CLIENT_ID", "BeyondTrust API client ID", "systems",
-          "From Configuration → API Configuration → Add API Account (Reporting access).",
-          show_if=("BEYONDTRUST_ENABLED", [True])),
-    Field("BEYONDTRUST_CLIENT_SECRET", "BeyondTrust API client secret", "systems",
-          "Stored locally in backend/.env and never returned by the settings API.",
-          type="password", show_if=("BEYONDTRUST_ENABLED", [True])),
-    Field("GENESYS_ENABLED", "Genesys Cloud", "systems",
-          "Look up calls, chats and emails, and match them to BeyondTrust sessions.",
-          type="bool"),
-    Field("GENESYS_REGION", "Genesys Cloud region", "systems",
-          "The domain you sign in on: mypurecloud.com, usw2.pure.cloud, mypurecloud.ie, "
-          "mypurecloud.com.au, ...", show_if=("GENESYS_ENABLED", [True])),
-    Field("GENESYS_CLIENT_ID", "Genesys OAuth client ID", "systems",
-          "Admin → Integrations → OAuth → Add Client, grant type Client Credentials, with "
-          "the analytics:conversationDetail:view and conversation:conversation:view permissions.",
-          show_if=("GENESYS_ENABLED", [True])),
-    Field("GENESYS_CLIENT_SECRET", "Genesys OAuth client secret", "systems",
-          "Stored locally in backend/.env and never returned by the settings API.",
-          type="password", show_if=("GENESYS_ENABLED", [True])),
+    Field("BEYONDTRUST_ENABLED", "BeyondTrust Remote Support", "integrations",
+          "Look up remote support sessions and reports in the BeyondTrust console, signed in "
+          "as you. Read-only.", type="bool", show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("BEYONDTRUST_URL", "BeyondTrust address", "integrations",
+          "Your BeyondTrust site, e.g. https://yourcompany.beyondtrustcloud.com.",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("BEYONDTRUST_ENABLED", [True])]),
+    Field("GENESYS_ENABLED", "Genesys Cloud", "integrations",
+          "Look up calls, chats and emails in Genesys Cloud, signed in as you, and match them "
+          "to BeyondTrust sessions. Read-only.", type="bool",
+          show_if=("BROWSER_AUTOMATION_ENABLED", [True])),
+    Field("GENESYS_URL", "Genesys Cloud address", "integrations",
+          "The Genesys Cloud web app for your region: apps.mypurecloud.com, apps.usw2.pure.cloud, "
+          "apps.mypurecloud.ie, ...",
+          type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("GENESYS_ENABLED", [True])]),
 
     # Second brain
     Field("PERSONA", "How Cerebro speaks to you", "brain", type="select", options=[

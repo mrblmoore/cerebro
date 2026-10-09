@@ -1,41 +1,48 @@
 """
-Ask tools for BeyondTrust Remote Support and Genesys Cloud (read-only).
+Ask tools for BeyondTrust Remote Support and Genesys Cloud (read-only), run
+through the hidden browser with the user's own sign-in.
 
 ``link_call_to_remote_session`` ties the two together: given a Genesys
-conversation it finds the BeyondTrust sessions that most likely belong to it.
+conversation it looks for the BeyondTrust sessions that most likely belong to it.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from app.services.agent.integration_tools import _guard
 from app.services.agent.registry import ToolContext, schema, string_param, tool
-from app.services.systems import beyondtrust as bt
-from app.services.systems import genesys as gc
-from app.services.systems.base import NotConfigured, SystemCallError
+from app.services.browser import get
 
 LINK_WINDOW = timedelta(minutes=45)
 
 
+def _beyondtrust():
+    return get("beyondtrust")
+
+
+def _genesys():
+    return get("genesys")
+
+
 def _beyondtrust_on(ctx: ToolContext) -> bool:
-    return bt.connector.enabled and not bt.connector.missing()
+    return _beyondtrust().enabled
 
 
 def _genesys_on(ctx: ToolContext) -> bool:
-    return gc.connector.enabled and not gc.connector.missing()
+    return _genesys().enabled
 
 
 def _both_on(ctx: ToolContext) -> bool:
-    return _beyondtrust_on(ctx) and _genesys_on(ctx)
+    return _beyondtrust().enabled and _genesys().enabled
 
 
-def _guard(connector, fn) -> Dict[str, Any]:
+def _int(value: Any, default: int) -> int:
     try:
-        return fn()
-    except (NotConfigured, SystemCallError) as exc:
-        return {"content": str(exc), "summary": "Failed"}
-    except Exception as exc:  # noqa: BLE001 - explained to the model and user
-        return {"content": f"{connector.label} error: {exc}", "summary": "Failed"}
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _fmt(row: Dict[str, Any]) -> str:
@@ -44,153 +51,167 @@ def _fmt(row: Dict[str, Any]) -> str:
 
 
 def _when(text: Any) -> Optional[datetime]:
-    """Parse the timestamps both systems use; naive ones are taken as UTC."""
     if not text:
         return None
     value = str(text).strip().replace("Z", "+00:00")
-    for candidate in (value, value.replace(" ", "T")):
-        try:
-            parsed = datetime.fromisoformat(candidate)
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _digits(text: Any) -> str:
-    return "".join(ch for ch in str(text or "") if ch.isdigit())[-10:]
+    return re.sub(r"\D", "", str(text or ""))
 
 
 # ============================================================== BeyondTrust
-@tool("beyondtrust_list_sessions",
-      "List recent BeyondTrust Remote Support sessions (customer, representative, "
-      "times, external key). Optionally only those mentioning some text, such as a "
-      "customer name, a representative or a case number.",
-      schema([], query=string_param("Text to look for in the session. Empty lists all."),
-             days=string_param("How many days back, 1-31. Default 1.")),
-      label="List remote support sessions", activity="browsing", available=_beyondtrust_on)
-def beyondtrust_list_sessions(ctx: ToolContext, query: str = "", days: Any = 1, **_) -> dict:
+@tool("beyondtrust_search",
+      "Look up BeyondTrust Remote Support sessions in the console: rows from the "
+      "sessions page matching a customer name, representative, session ID, case number "
+      "or other text. Empty lists what the page shows.",
+      schema([], query=string_param("Text to look for. Empty lists recent rows.")),
+      label="Search remote support sessions", activity="browsing", available=_beyondtrust_on)
+def beyondtrust_search(ctx: ToolContext, query: str = "", **_) -> dict:
+    connector = _beyondtrust()
+
     def run():
-        rows = bt.connector.sessions(days=_int(days, 1), query=query)
+        result = connector.search(query)
+        rows = result["sessions"]
         if not rows:
-            return {"content": "No BeyondTrust sessions matched.", "summary": "No matches"}
-        lines = [_fmt(bt.summary(row)) for row in rows]
-        return {"content": "\n".join(lines), "summary": f"{len(rows)} session(s)"}
-
-    return _guard(bt.connector, run)
-
-
-@tool("beyondtrust_get_session",
-      "Read one BeyondTrust Remote Support session in full, by its session ID (LSID).",
-      schema(["session"], session=string_param("The session ID (lsid).")),
-      label="Read remote support session", activity="browsing", available=_beyondtrust_on)
-def beyondtrust_get_session(ctx: ToolContext, session: str = "", **_) -> dict:
-    def run():
-        row = bt.connector.session(session)
-        text = json.dumps(row, indent=1, default=str)
-        info = bt.summary(row)
-        ref = ctx.cite({"title": f"Remote session {info['id'] or session}",
-                        "kind": "beyondtrust", "uri": f"{bt.connector.display_address()}#{session}",
-                        "locator": "BeyondTrust", "excerpt": text[:1000]}, "BT")
-        return {"content": f"[{ref}]\n{text}", "summary": str(info["id"] or session),
+            ref = ctx.cite({"title": "BeyondTrust console", "kind": "beyondtrust",
+                            "uri": result["url"], "locator": "BeyondTrust",
+                            "excerpt": result["text"][:800]}, "BT")
+            return {"content": f"[{ref}] No session rows were recognised on the page "
+                               f"(it may need a search_url or row selector). Page text:\n"
+                               f"{result['text'][:4000]}", "summary": "No rows"}
+        lines = [f"{r['id'] or '-'} · {r['text']}" + (f" · {r['url']}" if r["url"] else "")
+                 for r in rows]
+        ref = ctx.cite({"title": "BeyondTrust sessions", "kind": "beyondtrust",
+                        "uri": result["url"], "locator": "BeyondTrust",
+                        "excerpt": "\n".join(lines)[:1000]}, "BT")
+        return {"content": f"[{ref}]\n" + "\n".join(lines), "summary": f"{len(rows)} session(s)",
                 "max_chars": 12000}
 
-    return _guard(bt.connector, run)
+    return _guard(ctx, connector, run)
+
+
+@tool("beyondtrust_read_page",
+      "Open a BeyondTrust console page or session/report link (on the user's BeyondTrust "
+      "site) and read it.",
+      schema(["url"], url=string_param("A BeyondTrust page address, or a path on the site.")),
+      label="Read BeyondTrust page", activity="browsing", available=_beyondtrust_on)
+def beyondtrust_read_page(ctx: ToolContext, url: str = "", **_) -> dict:
+    connector = _beyondtrust()
+
+    def run():
+        page = connector.read_page(url)
+        ref = ctx.cite({"title": page["title"] or "BeyondTrust page", "kind": "beyondtrust",
+                        "uri": page["url"], "locator": "BeyondTrust",
+                        "excerpt": page["text"][:1000]}, "BT")
+        return {"content": f"[{ref}]\n{page['text']}", "summary": page["title"] or url,
+                "max_chars": 12000}
+
+    return _guard(ctx, connector, run)
 
 
 # ================================================================= Genesys
 @tool("genesys_search_conversations",
-      "List recent Genesys Cloud conversations (calls, chats, emails): customer, "
-      "phone number, agent, queue and times. Optionally only those matching a phone "
-      "number, name or text.",
+      "List recent Genesys Cloud conversations (calls, chats, emails): customer, phone "
+      "number, agent, queue and times. Optionally only those matching a phone number, "
+      "name or text.",
       schema([], query=string_param("Phone number, name or other text. Empty lists all."),
              days=string_param("How many days back, 1-31. Default 1.")),
       label="Search Genesys conversations", activity="browsing", available=_genesys_on)
 def genesys_search_conversations(ctx: ToolContext, query: str = "", days: Any = 1, **_) -> dict:
+    connector = _genesys()
+
     def run():
-        rows = gc.connector.search_conversations(days=_int(days, 1), query=query)
+        rows = connector.search(query, days=_int(days, 1))
         if not rows:
             return {"content": "No Genesys conversations matched.", "summary": "No matches"}
-        return {"content": "\n".join(_fmt(gc.summary(row)) for row in rows),
-                "summary": f"{len(rows)} conversation(s)"}
+        return {"content": "\n".join(_fmt(row) for row in rows),
+                "summary": f"{len(rows)} conversation(s)", "max_chars": 12000}
 
-    return _guard(gc.connector, run)
+    return _guard(ctx, connector, run)
 
 
 @tool("genesys_get_conversation",
-      "Read one Genesys Cloud conversation in full by its conversation ID: "
-      "participants, queues, hold and talk times, wrap-up codes.",
-      schema(["conversation"], conversation=string_param("The conversation ID (UUID).")),
+      "Read one Genesys Cloud conversation in full by its conversation ID: participants, "
+      "queues, timings and wrap-up.",
+      schema(["conversation"], conversation=string_param("The conversation ID.")),
       label="Read Genesys conversation", activity="browsing", available=_genesys_on)
 def genesys_get_conversation(ctx: ToolContext, conversation: str = "", **_) -> dict:
+    connector = _genesys()
+
     def run():
-        row = gc.connector.conversation(conversation)
-        text = json.dumps(row, indent=1, default=str)
+        record = connector.conversation(conversation)
+        text = (json.dumps(record["raw"], indent=1, default=str) if record.get("raw")
+                else record.get("text", ""))
         ref = ctx.cite({"title": f"Genesys conversation {conversation}", "kind": "genesys",
-                        "uri": f"https://apps.{gc.connector.display_address()}/#{conversation}",
+                        "uri": f"{connector.base_url}/directory/#/engage/admin/interactions/"
+                               f"{conversation}",
                         "locator": "Genesys Cloud", "excerpt": text[:1000]}, "GC")
         return {"content": f"[{ref}]\n{text}", "summary": conversation, "max_chars": 12000}
 
-    return _guard(gc.connector, run)
+    return _guard(ctx, connector, run)
 
 
 # =============================================================== the link
-def match_sessions(conversation: Dict[str, Any], sessions: List[Dict[str, Any]]):
-    """Rank BeyondTrust sessions against a Genesys conversation.
+def match_sessions(call: Dict[str, Any], sessions: List[Dict[str, Any]]):
+    """Rank BeyondTrust session rows against a Genesys conversation summary.
 
-    Evidence, strongest first: the conversation ID in the session's external
-    key; the same customer phone number; the same customer name; and a start
-    time inside the conversation's window.
+    Evidence, strongest first: the conversation ID in the row; the same
+    customer phone number; the same customer name; the same agent name.
+    Returns ``[(score, row, reasons)]`` best first.
     """
-    info = gc.summary(conversation)
-    start, end = _when(info["start"]), _when(info["end"]) or _when(info["start"])
-    phone, name = _digits(info["phone"]), (info["customer"] or "").strip().lower()
+    phone, name = _digits(call.get("phone"))[-10:], (call.get("customer") or "").strip().lower()
+    agent = (call.get("agent") or "").strip().lower()
     scored = []
     for row in sessions:
-        item, reasons, score = bt.summary(row), [], 0
-        blob = json.dumps(row, default=str).lower()
-        if info["id"] and str(info["id"]).lower() in blob:
-            reasons.append("session carries the conversation ID"); score += 10
-        if phone and phone in _digits(blob.replace(" ", "")):
+        text = row.get("text", "").lower()
+        reasons, score = [], 0
+        if call.get("id") and str(call["id"]).lower() in text:
+            reasons.append("row carries the conversation ID"); score += 10
+        if len(phone) >= 7 and phone in _digits(text):
             reasons.append("same phone number"); score += 4
-        if name and len(name) > 3 and name in blob:
+        if len(name) > 3 and name in text:
             reasons.append("same customer name"); score += 3
-        began = _when(item["start"])
-        if start and began and start - LINK_WINDOW <= began <= (end or start) + LINK_WINDOW:
-            reasons.append("started around the call"); score += 2
+        if len(agent) > 3 and agent in text:
+            reasons.append("same agent"); score += 1
         if score:
-            scored.append((score, item, reasons))
+            scored.append((score, row, reasons))
     scored.sort(key=lambda entry: entry[0], reverse=True)
     return scored
 
 
 @tool("link_call_to_remote_session",
       "Find the BeyondTrust remote support session(s) that belong to a Genesys Cloud "
-      "conversation (call, chat or email), matched on conversation ID, phone number, "
-      "customer name and time.",
+      "conversation (call, chat or email), matched on conversation ID, phone number and "
+      "customer name.",
       schema(["conversation"], conversation=string_param("The Genesys conversation ID.")),
       label="Link call to remote session", activity="browsing", available=_both_on)
 def link_call_to_remote_session(ctx: ToolContext, conversation: str = "", **_) -> dict:
+    genesys, beyondtrust = _genesys(), _beyondtrust()
+
     def run():
-        record = gc.connector.conversation(conversation)
-        began = _when(record.get("conversationStart")) or datetime.now(timezone.utc)
-        days = max(1, (datetime.now(timezone.utc) - began).days + 2)
-        sessions = bt.connector.sessions(days=days, limit=500)
-        ranked = match_sessions(record, sessions)
-        call = _fmt(gc.summary(record))
+        record = genesys.conversation(conversation)
+        call = {k: record.get(k) for k in ("id", "customer", "phone", "agent", "start")}
+        call["id"] = call["id"] or conversation
+        sessions: List[Dict[str, Any]] = []
+        for key in (call["customer"], call["phone"], ""):
+            if key or not sessions:
+                sessions = beyondtrust.search(str(key or ""), limit=60)["sessions"]
+            if sessions and key:
+                break
+        ranked = match_sessions(call, sessions)
+        header = f"Call: {_fmt({k: v for k, v in call.items()})}"
         if not ranked:
-            return {"content": f"Call: {call}\nNo BeyondTrust session matched it.",
+            return {"content": f"{header}\nNo BeyondTrust session matched it.",
                     "summary": "No linked session"}
-        lines = [f"{_fmt(item)}  (confidence {score}; {', '.join(why)})"
-                 for score, item, why in ranked[:5]]
-        return {"content": f"Call: {call}\nPossible remote sessions:\n" + "\n".join(lines),
+        lines = [f"{row['id'] or '-'} · {row['text']}  (score {score}: {', '.join(why)})"
+                 for score, row, why in ranked[:5]]
+        return {"content": f"{header}\nPossible remote sessions:\n" + "\n".join(lines),
                 "summary": f"{len(lines)} possible session(s)"}
 
-    return _guard(gc.connector, run)
-
-
-def _int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+    return _guard(ctx, genesys, run)

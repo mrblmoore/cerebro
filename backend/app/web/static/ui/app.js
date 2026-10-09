@@ -528,7 +528,7 @@ function actionCard(card) {
   return null;
 }
 
-const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint' };
+const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint', beyondtrust: 'BeyondTrust', genesys: 'Genesys Cloud' };
 
 function changeCard(card) {
   const node = document.createElement('div');
@@ -1383,8 +1383,8 @@ function integrationCard(item) {
   const waiting = item.sign_in?.status === 'waiting';
   const badge = !item.enabled ? '<span class="badge">Off</span>'
     : waiting ? '<span class="badge warn">Signing in…</span>'
-    : signedIn ? `<span class="badge ok">${item.kind === 'api' ? 'Connected' : 'Signed in'}</span>`
-    : item.signed_in === false ? `<span class="badge err">${item.kind === 'api' ? 'Check failed' : 'Sign-in needed'}</span>`
+    : signedIn ? '<span class="badge ok">Signed in</span>'
+    : item.signed_in === false ? '<span class="badge err">Sign-in needed</span>'
     : '<span class="badge">Not checked</span>';
   card.innerHTML = `
     <div class="logo ${item.name}">${LOGO[item.name] || item.label[0]}</div>
@@ -1403,8 +1403,8 @@ function integrationCard(item) {
           <span class="switch"><input type="checkbox" data-monitor ${state.monitor?.enabled ? 'checked' : ''}><span></span></span>
           Watch for new messages</label>` : ''}</div>
     <div class="btn-row" style="margin:0;flex-direction:column">
-      ${item.enabled ? `<button class="btn sm ${signedIn ? '' : 'primary'}" data-signin>${item.kind === 'api' ? 'Test connection' : signedIn ? 'Sign in again' : 'Sign in'}</button>
-      ${item.kind === 'api' ? '<button class="btn sm ghost" data-settings>Settings</button>' : '<button class="btn sm ghost" data-check>Check</button>'}
+      ${item.enabled ? `<button class="btn sm ${signedIn ? '' : 'primary'}" data-signin>${signedIn ? 'Sign in again' : 'Sign in'}</button>
+      <button class="btn sm ghost" data-check>Check</button>
       ${item.name === 'rightanswers' && signedIn ? '<button class="btn sm ghost" data-teach>Teach</button>' : ''}`
       : item.configured ? '<button class="btn sm primary" data-connect>Connect</button>'
       : '<button class="btn sm" data-settings>Set up</button>'}
@@ -1455,7 +1455,7 @@ function integrationCard(item) {
     toast(result.detail, result.ok ? 'ok' : 'err');
     loadConnect();
   });
-  $('[data-settings]', card)?.addEventListener('click', () => openExternal(`${location.origin}/settings#${item.kind === 'api' ? 'systems' : 'integrations'}`));
+  $('[data-settings]', card)?.addEventListener('click', () => openExternal(`${location.origin}/settings#integrations`));
   return card;
 }
 
@@ -1479,13 +1479,6 @@ async function signIn(name, button) {
   if (button) button.disabled = true;
   const started = await api.post(`/api/integrations/${name}/auth/start`).catch(err => ({ ok: false, detail: err.message }));
   if (!started.ok) { toast(started.detail || 'Sign-in could not start', 'err'); if (button) button.disabled = false; return; }
-  // API systems (BeyondTrust, Genesys) have no window: the credentials were checked right now.
-  if (started.status === 'connected') {
-    toast(started.detail || 'Connected', 'ok');
-    if (state.tab === 'connect') loadConnect();
-    if (button) button.disabled = false;
-    return;
-  }
   toast('A sign-in window opened. Sign in there — it closes by itself.');
   const poll = setInterval(async () => {
     const status = await api.get(`/api/integrations/${name}/auth/status`).catch(() => null);
