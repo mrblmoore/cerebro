@@ -6669,6 +6669,173 @@ def test_offline_voice():
         speech._model, speech._model_name = None, ""
 
 
+def test_install_and_avatars():
+    """0.10: built-in 3D models, the buddy following the agent you talk to, clearing memory, setup from the installer."""
+    print("\nInstall — built-in models, desktop buddy, clearing memory, installer setup")
+    import io
+    import json as _json
+    import sys as _sys
+    import tempfile
+    import zipfile
+    from unittest import mock
+
+    from fastapi.testclient import TestClient
+
+    from app.api import faces as faces_api
+    from app.core.config import settings
+    from app.main import app
+    from app.services import agents, install_setup, reset
+
+    _sys.path.insert(0, str(ROOT))
+    _sys.path.insert(0, str(ROOT / "desktop"))
+    from tests_support import make_vrm
+    import brain_frames
+
+    client = TestClient(app)
+    root = Path(tempfile.mkdtemp(dir=_TEMP_DIR))
+    builtin = root / "builtin"
+    (builtin / "miko").mkdir(parents=True)
+    (builtin / "miko" / "model.vrm").write_bytes(make_vrm.build())
+    (builtin / "miko" / "meta.json").write_text(_json.dumps({
+        "name": "Miko", "author": "pixiv (VRoid)", "license": "CC0-1.0", "framing": {"zoom": 1.2, "y": 0.1},
+        "expressions_map": {"happy": {"name": "happy", "weight": 0.9}}}))
+    faces_dir = root / "faces"
+
+    with mock.patch.object(faces_api, "builtin_dir", lambda: builtin), mock.patch.object(faces_api, "FACES_DIR", faces_dir):
+        listed = client.get("/api/faces").json()["faces"]
+        miko = next((f for f in listed if f["id"] == "builtin-miko"), {})
+        check("Built-in 3D models are listed, with their credit and licence",
+              miko.get("builtin") and miko.get("license") == "CC0-1.0" and miko.get("kind") == "vrm"
+              and miko.get("framing") == {"zoom": 1.2, "y": 0.1}, miko)
+        served = client.get("/faces/builtin-miko/model.vrm")
+        check("…and served to the page", served.status_code == 200 and served.content[:4] == b"glTF")
+        check("…but can't be removed", client.delete("/api/faces/builtin-miko").status_code == 400
+              and (builtin / "miko" / "model.vrm").is_file())
+        check("…nor reached outside their folder", client.get("/faces/builtin-miko/../../secret").status_code == 404)
+
+        db = session()
+        fresh = agents.create(db, "inbox", name="Mei")
+        check("A new agent starts with a built-in 3D model, with its tuned framing and expressions",
+              fresh.face == "vrm" and fresh.style().get("model") == "builtin-miko"
+              and fresh.style().get("expressions", {}).get("happy", {}).get("name") == "happy", (fresh.face, fresh.style()))
+
+        # The desktop buddy follows the agent you're talking to.
+        client.post("/api/faces/active", json={"agent_id": fresh.id})
+        desktop = client.get("/api/faces/desktop").json()
+        check("The desktop buddy shows the agent you're talking to, not only the default one",
+              desktop["agent_id"] == fresh.id and desktop["agent"] == "Mei", desktop)
+        check("…as its anime stand-in until the model's strips exist", desktop["face"] == "anime" and not desktop["strips"])
+
+        def png(width=64, height=64, frames=2):
+            from PIL import Image
+
+            out = io.BytesIO()
+            Image.new("RGBA", (width * frames, height), (255, 128, 160, 255)).save(out, "PNG")
+            return out.getvalue()
+
+        manifest = {"frame": {"width": 64, "height": 64},
+                    "states": {"calm": {"frames": 2, "ms": 150}, "happy": {"frames": 2, "ms": 120},
+                               "talk": {"frames": 2, "ms": 80, "levels": [0, 1]}}}
+        files = {name: (f"{name}.png", png(), "image/png") for name in manifest["states"]}
+        saved = client.post("/api/faces/builtin-miko/strips", data={"manifest": _json.dumps(manifest)}, files=files)
+        check("The app can save a 3D model's strips for the buddy", saved.status_code == 200, saved.text)
+        bad = client.post("/api/faces/builtin-miko/strips", data={"manifest": _json.dumps({"states": {"evil": {}}})},
+                          files={"evil": ("evil.png", png(), "image/png")})
+        check("…only known states, as PNGs", bad.status_code == 400)
+        desktop = client.get("/api/faces/desktop").json()
+        check("Then the buddy shows the 3D model itself", desktop["face"] == "strips"
+              and Path(desktop["strips"]).joinpath("face.json").is_file(), desktop)
+        try:
+            check("The buddy draws the model's strips",
+                  brain_frames.use_face(desktop["face"], strips=desktop["strips"])
+                  and brain_frames.sprite_for("idle") == "calm" and len(brain_frames.frames("idle", 32)) == 2
+                  and brain_frames.talk_frame(1.0, 32) is not None)
+            check("…and its passing reactions", brain_frames.react("happy") and brain_frames.sprite_for("idle") == "happy")
+        finally:
+            brain_frames._REACTION.update(sprite=None, until=0.0)
+            brain_frames.use_face("brain")
+        client.post("/api/faces/active", json={"agent_id": None})
+        check("With no agent chosen, the buddy shows the default agent",
+              client.get("/api/faces/desktop").json()["agent_id"] == agents.default_agent(db).id)
+        check("Built-in models can't take gestures (they're read-only)",
+              client.post("/api/faces/builtin-miko/gestures",
+                          files={"file": ("x.vrma", b"glTF" + b"\0" * 16, "model/gltf-binary")}).status_code == 400)
+
+        # ---- the installer's setup, applied without a window
+        tests = []
+
+        def fake_test(self):
+            tests.append(settings.LLM_PROVIDER)
+            return {"ok": True, "detail": "The model answered."}
+
+        choices = {"settings": {"LLM_PROVIDER": "ollama", "OLLAMA_URL": "http://127.0.0.1:11434",
+                                "VOICE_PERSONALITY": "professional", "VOICE_SPEAK_REPLIES": "false",
+                                "NOT_ALLOWED": "x"},
+                   "agent": {"face": "builtin", "personality": "professional"}}
+        choice_file = root / "choices.json"
+        choice_file.write_text(_json.dumps(choices))
+        import app.services.llm_service as llm_module
+
+        before = dict(LLM_PROVIDER=settings.LLM_PROVIDER, OLLAMA_URL=settings.OLLAMA_URL,
+                      VOICE_PERSONALITY=settings.VOICE_PERSONALITY, VOICE_SPEAK_REPLIES=settings.VOICE_SPEAK_REPLIES)
+        try:
+            with mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.update",
+                               lambda changes: (settings.__dict__.update({k: v for k, v in changes.items()})
+                                                or {"ok": True, "applied": list(changes)})):
+                code = install_setup.run_files(str(choice_file), str(root / "result.json"))
+            result = _json.loads((root / "result.json").read_text())
+            steps = {s["step"]: s for s in result["steps"]}
+            check("The installer's choices are saved (only the allowed ones)",
+                  steps["settings"]["ok"] and settings.LLM_PROVIDER == "ollama" and not hasattr(settings, "NOT_ALLOWED"),
+                  steps.get("settings"))
+            check("…the database, agent and AI provider are checked", steps["database"]["ok"]
+                  and steps["agent"]["ok"] and steps["ai"]["ok"] and tests == ["ollama"], result)
+            default = agents.default_agent(session())
+            check("…the default agent gets the chosen look and personality",
+                  default.face == "vrm" and default.style().get("model") == "builtin-miko"
+                  and default.persona().get("preset") == "professional", (default.face, default.style()))
+            check("…the choices file (it can hold keys) is removed, and a readable summary is written",
+                  not choice_file.exists() and "OK" in (root / "result.txt").read_text() and code in (0, 2))
+        finally:
+            settings.__dict__.update(before)
+            cleanup = session()
+            agents.update(cleanup, agents.default_agent(cleanup), face="brain", face_style={},
+                          personality={"preset": "sweetheart"})
+
+    # ---- clearing parts of the old memory (from the installer), after a backup
+    from app.models.memory import Memory
+    from app.models.conversation import Conversation
+
+    db = session()
+    keep_chat = Conversation(title="Keep me")
+    db.add(keep_chat)
+    db.add(Memory(title="Printer", content="The printer on floor 2 is HP", memory_type="fact"))
+    db.commit()
+    chat_count = db.query(Conversation).count()
+    images = root / "chat_images"
+    images.mkdir()
+    (images / "a.png").write_bytes(b"x")
+    request = root / "reset.json"
+    request.write_text(_json.dumps({"parts": ["memory", "bogus"]}))
+    parts = {**reset.PARTS, "memory": {**reset.PARTS["memory"], "folders": [images]}}
+    with mock.patch.object(reset, "REQUEST_FILE", request), mock.patch.object(reset, "BACKUP_DIR", root / "backups"), \
+            mock.patch.dict(reset.PARTS, parts):
+        done = reset.apply_pending()
+    db.expire_all()
+    check("Clearing memory removes exactly what was ticked", done.get("parts") == ["memory"]
+          and db.query(Memory).count() == 0 and not images.exists(), done)
+    check("…and nothing else", db.query(Conversation).count() == chat_count)
+    with zipfile.ZipFile(done["backup"]) as archive:
+        names = archive.namelist()
+        saved_rows = _json.loads(archive.read("tables/memories.json"))
+    check("…after a backup of the rows and folders", "folders/chat_images/a.png" in names
+          and any("floor 2" in (r.get("content") or "") for r in saved_rows), names)
+    check("…and the request is used once", not request.exists())
+    with mock.patch.object(reset, "REQUEST_FILE", request):
+        check("No request, nothing cleared", reset.apply_pending() == {})
+
+
 def test_browser_worker_shutdown():
     """The hidden browser has one worker thread, even when shutdown can't wait for a slow job."""
     print("\nHidden browser — one worker, even across a slow shutdown")
@@ -7493,6 +7660,44 @@ def test_agents_page():
                   all(v == 0 for v in faces["silent"].values()) and faces["unclear"]["aa"] == 0.8
                   and max(faces["ooh"], key=faces["ooh"].get) == "ou"
                   and max(faces["eee"], key=faces["eee"].get) == "ee", (faces["ooh"], faces["eee"]))
+            # Settings, inside the window.
+            tab.click("[data-tab=settings]")
+            tab.wait_for_selector("#settings-body [data-group=voice]", timeout=8000)
+            tab.click("#settings-body [data-group=voice]")
+            tab.wait_for_selector("#settings-body .st-status", timeout=8000)
+            check("Settings opens inside the app window, with what works on this PC",
+                  "Speech recognition" in tab.inner_text("#settings-body")
+                  and "Offline voice" in tab.inner_text("#settings-body") and not errors, errors)
+            tab.evaluate("location.hash = 'settings:ai'")
+            tab.wait_for_timeout(400)
+            check("…and a link can open a particular group", "AI Provider" in tab.inner_text("#settings-body .st-card h3"))
+            # A 3D model's expressions, rendered into the desktop buddy's strips.
+            import sys as _sys2
+
+            _sys2.path.insert(0, str(ROOT))
+            from tests_support import make_vrm
+
+            from fastapi.testclient import TestClient as _Client
+
+            uploaded = _Client(app).post("/api/faces", files={"file": ("test.vrm", make_vrm.build(), "model/gltf-binary")}).json()
+            made = tab.evaluate("""async (id) => {
+              const f = await import('/static/ui/face.js');
+              const host = document.createElement('div'); host.style.width = host.style.height = '160px';
+              document.body.append(host);
+              const face = f.createFace(host, { face: 'vrm', face_style: { model: id, entry: 'model.vrm' } });
+              await face.ready;
+              const out = await face.capture({ size: 48 });
+              const form = new FormData();
+              form.append('manifest', JSON.stringify(out.manifest));
+              for (const [name, blob] of Object.entries(out.strips)) form.append(name, blob, name + '.png');
+              const saved = await fetch(`/api/faces/${id}/strips`, { method: 'POST', body: form });
+              face.destroy();
+              return { names: face.listExpressions(), states: Object.keys(out.manifest.states), saved: saved.status };
+            }""", uploaded["id"])
+            check("A 3D model's expressions are found and rendered into the buddy's strips",
+                  "happy" in made["names"] and set(made["states"]) >= {"calm", "happy", "sorry", "talk"}
+                  and made["saved"] == 200, made)
+            _Client(app).delete(f"/api/faces/{uploaded['id']}")
             tab.click("[data-tab=home]")
             tab.wait_for_selector(".agent-card", timeout=8000)
             check("Home shows a card per agent", tab.locator(".agent-card").count() >= 1,
@@ -8268,7 +8473,7 @@ def main() -> int:
                   test_screenpipe_current_api, test_chat_service,
                   test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices,
                   test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
-                  test_skills, test_voice, test_voice_expression, test_offline_voice, test_browser_worker_shutdown, test_push_to_talk, test_addons_page,
+                  test_skills, test_voice, test_voice_expression, test_offline_voice, test_install_and_avatars, test_browser_worker_shutdown, test_push_to_talk, test_addons_page,
                   test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
                   test_faces, test_agents_page, test_desktop_apps,
                   test_desktop_apps_notepad, test_keep_it_updated, test_attached_files,

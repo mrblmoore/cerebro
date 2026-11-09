@@ -48,7 +48,7 @@ for name in ("README.md", "GETTING_STARTED.md"):
     if (ROOT / name).exists():
         datas.append((str(ROOT / name), "."))
 for name in ("INSTALL.md", "CONFIGURATION.md", "WIDGET.md", "POWER_AUTOMATE.md",
-             "POWER_AUTOMATE_QUICKSTART.md", "ADDONS.md", "VOICE.md", "AGENTS.md", "FACES.md"):
+             "POWER_AUTOMATE_QUICKSTART.md", "ADDONS.md", "VOICE.md", "AGENTS.md", "FACES.md", "THIRD_PARTY.md"):
     if (ROOT / "docs" / name).exists():
         datas.append((str(ROOT / "docs" / name), "docs"))
 
@@ -132,6 +132,7 @@ hiddenimports = [
     "app.services.personality", "app.services.sonic",
     # 0.10: offline voice and text-to-phoneme.
     "app.services.g2p", "app.services.kokoro_tts", "onnxruntime",
+    "app.services.reset", "app.services.install_setup",
     "edge_tts", "faster_whisper", "ctranslate2", "av", "tokenizers", "numpy",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")

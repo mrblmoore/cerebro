@@ -1110,7 +1110,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Cerebro setup")
     parser.add_argument("--first-run", action="store_true",
                         help="launched by the installer immediately after install")
+    parser.add_argument("--apply", metavar="CHOICES_JSON",
+                        help="apply the installer's choices without a window (see app.services.install_setup)")
+    parser.add_argument("--result", metavar="RESULT_JSON", help="where --apply writes what happened")
+    parser.add_argument("--no-verify", action="store_true", help="with --apply: save only, don't test")
     arguments = parser.parse_args()
+
+    if arguments.apply:
+        from app.services import install_setup
+
+        return install_setup.run_files(arguments.apply, arguments.result or arguments.apply + ".result.json",
+                                       verify=not arguments.no_verify)
 
     try:
         wizard = Wizard(first_run=arguments.first_run)

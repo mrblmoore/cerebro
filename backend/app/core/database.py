@@ -54,6 +54,15 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
+    # Parts of the old memory the user chose to clear while upgrading (installer).
+    from app.services import reset
+
+    try:
+        reset.apply_pending()
+    except Exception as exc:  # noqa: BLE001 - never block start-up; the request stays for next time
+        from app.core import logger
+
+        logger.error("reset", "Couldn't clear what the installer asked for", {"error": str(exc)[:300]})
     _adopt_unfiled_messages()
     from app.services import agents
 

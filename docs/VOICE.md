@@ -79,12 +79,16 @@ Speech is turned into text **on your PC** with
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Nothing you say
 is uploaded to be transcribed.
 
-- **The speech model.** It's downloaded once, the first time you talk, to
-  `%LOCALAPPDATA%\Cerebro\models`. You choose it in **Settings → Voice →
-  Speech recognition**:
-  - `tiny.en`: fastest;
-  - `base.en`: the default;
-  - `small.en`: most accurate.
+- **The speech model ships inside Cerebro.** `base.en` is built in, so speech
+  works straight away, on any network, with nothing downloaded. Cerebro never
+  contacts a model site for it, which matters at work, where those sites are
+  often blocked.
+- **Other sizes.** `tiny.en` (fastest) and `small.en` (most accurate) can be
+  added with **Settings → Voice → Import speech model…**. Import a zip of a
+  faster-whisper model folder (`model.bin`, `config.json`, `tokenizer.json`,
+  `vocabulary.txt`), downloaded on another network, e.g. from
+  `huggingface.co/Systran/faster-whisper-small.en`. Imported models go to
+  `%LOCALAPPDATA%\Cerebro\models\whisper\<name>`.
 - **Silence** is trimmed before transcribing.
 - **Words Cerebro knows** are given to the model as hints so they come out
   spelled right: the open case, recent case numbers, people you message, and
@@ -100,15 +104,46 @@ The full answer is in the chat.
 
 | Choice | What it is |
 |---|---|
-| **Best available** (default) | Polly if it's set up, else Edge voices, else Windows |
-| **Amazon Polly** | Natural AWS voices, with the most control over effects (see below). Uses the AWS access keys, profile or default identity set for Bedrock. A *Bedrock API key* can't call Polly. |
-| **Amazon Nova Sonic** | AWS's speech-to-speech model: the most expressive voice, and the one behind **Talk live**. Same AWS sign-in as Polly. |
-| **Microsoft Edge online voices** | Free, natural, no key. An unofficial Microsoft service, so it can change. |
-| **Windows (offline)** | The voice built into Windows. Always works, sounds robotic. |
-| **Don't speak** | Answers stay silent |
+| Choice | Network | What it is |
+|---|---|---|
+| **Best available** (default) | — | The offline voices first: Kokoro, then Windows. Online voices only if both fail. |
+| **Kokoro** | **None — built in** | A natural neural voice that runs on your PC (see below). Works behind any firewall. |
+| **Amazon Nova Sonic** | Amazon Bedrock | AWS's speech-to-speech model: the most expressive voice, and the one behind **Talk live**. Works wherever Bedrock works. |
+| **Amazon Polly** | polly.*region*.amazonaws.com | Natural AWS voices with the most control over effects (see below). Often blocked on work networks even when Bedrock isn't. Uses the AWS access keys, profile or default identity set for Bedrock; a *Bedrock API key* can't call Polly. |
+| **Microsoft Edge online voices** | speech.platform.bing.com | Free, natural, no key. An unofficial Microsoft service; often blocked at work. |
+| **Windows (offline)** | None | The voice built into Windows. Always works, sounds robotic. |
+| **Don't speak** | — | Answers stay silent. |
 
-If the chosen voice fails, the next one speaks, so an answer is never
-silent because of one service.
+If the chosen voice fails, the offline voices speak instead, so an answer is
+never silent because of one service. A voice that can't be reached says
+exactly which address your network blocked, for example: "edge: couldn't
+reach speech.platform.bing.com — your network probably blocks it."
+
+### Kokoro, the offline voice
+
+Kokoro-82M (by hexgrad, Apache-2.0) is a small neural voice that sounds
+natural and runs on the PC's processor. Cerebro ships it with seven voices:
+
+| Voice | Sounds |
+|---|---|
+| `af_heart` (default) | warm, bright (US) |
+| `af_bella` | sweet, expressive (US) |
+| `af_nicole` | soft, breathy (US) |
+| `af_sky` | light, young (US) |
+| `af_nova` | clear, friendly (US) |
+| `bf_emma` | gentle (UK) |
+| `am_michael` | warm (US, male) |
+
+Voices can be **blended**: `af_heart+af_bella` (equal parts) or
+`af_heart:0.7,af_bella:0.3`. Set this per agent in **Voice & personality**.
+Sound cues are performed by changing speed and loudness: `[excited]` is
+quicker, `[whisper]` quieter and slower, and so on.
+
+Kokoro needs a phoneme converter. The usual ones depend on eSpeak (GPL) or
+download a language model, so Cerebro has its own, built on misaki's American
+English pronunciation dictionaries (Apache-2.0). Unusual names may come out a
+little off; common words, numbers, times, money and case numbers are said
+properly.
 
 Each agent can have its own voice: open the agent editor's **Voice &
 personality** section. **▶ Preview voice** speaks a sample line with the

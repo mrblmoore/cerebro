@@ -65,6 +65,33 @@ rises a little, and the ahoge bobs.
 into the image strips the buddy and tray use, in
 `assets/faces/anime/<colour>/<hairstyle>/`.
 
+## Built-in 3D characters
+
+Cerebro can ship polished anime-style 3D characters (VRM), ready to use with
+nothing to download. They're in `assets/faces/vrm/<name>/`, each with its
+licence and credit (`LICENSE.txt`, `meta.json`). Only models released under
+CC0, free to ship and change, are included. The editor shows them as a
+gallery (**⚙ → Face → VRM 3D model → Built in**), and picking one applies its
+tuned framing and expressions. New agents start with one of them when any are
+installed. Built-in models are read-only: load your own `.vrm` to add
+gestures.
+
+**Adding one:** put `model.vrm` and `meta.json` (name, author, licence,
+`source_url`, optional `framing` and `expressions_map`) in a new folder there,
+then run `python packaging/make_face.py --vrm`. That renders the desktop
+buddy's strips and the gallery preview with the app's own renderer.
+
+## The desktop buddy
+
+The buddy shows **the agent you're talking to** in the app (else the default
+agent). It draws images, not 3D, so:
+
+- **3D models** are rendered into expression strips (calm, thinking, reading,
+  focused, listening, surprised, dizzy, asleep, happy, sorry, plus mouth
+  shapes for talking). The app makes them when you save a VRM face; built-in
+  models ship with them.
+- **Live2D models** show as the anime face.
+
 ## Loaded models: what you can tune
 
 Both VRM and Live2D faces have a **Model** panel in the agent editor.
