@@ -413,10 +413,18 @@ def _touch_document(db: Session, path: Path) -> None:
         db.commit()
 
 
+def _briefing(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
+    """A morning briefing, end-of-day or weekly summary (see app.services.briefings)."""
+    from app.services import briefings
+
+    return briefings.run_job(db, task, spec)
+
+
 HANDLERS = {
     "reminder": _reminder,
     "document_update": _document_update,
     "draft_reply": _draft_reply,
     "summarise": _summarise,
     "agent": _agent,
+    "briefing": _briefing,
 }

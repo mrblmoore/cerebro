@@ -26,6 +26,7 @@ _stop = threading.Event()
 #: retention run less often, counted in ticks.
 _last_nudge_scan = 0
 _last_ideas = 0.0
+_last_followups = 0.0
 _last_retention = 0.0
 _last_copilot_sync = 0.0
 _last_screenpipe_sync = 0.0
@@ -74,7 +75,8 @@ def _scheduler_loop() -> None:
     from app.services.activity_service import apply_retention
 
     logger.info("scheduler", "Task scheduler started")
-    global _last_nudge_scan, _last_retention, _last_copilot_sync, _last_screenpipe_sync, _last_ideas
+    global _last_nudge_scan, _last_retention, _last_copilot_sync, _last_screenpipe_sync, _last_ideas, \
+        _last_followups
 
     while not _stop.is_set():
         now = time.time()
@@ -88,6 +90,15 @@ def _scheduler_loop() -> None:
                 if started:
                     logger.info("scheduler", "Started due jobs", {"count": started})
                 watches.run_due(db)
+                from app.services import briefings
+
+                briefings.tick(db)
+                if now - _last_followups > 600:
+                    from app.services import followups
+
+                    briefings.ensure_jobs(db)
+                    followups.run(db)
+                    _last_followups = now
 
             if settings.IDEAS_ENABLED and now - _last_ideas > 600:
                 from app.services import ideas

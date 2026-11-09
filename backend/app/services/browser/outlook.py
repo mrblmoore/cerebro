@@ -13,6 +13,7 @@ Nothing is sent without the user's approval unless they switched on
 (see :mod:`app.services.inbox_monitor` and the Ask tools).
 """
 
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlencode
 
@@ -39,6 +40,22 @@ DEFAULT_SELECTORS: Dict[str, Any] = {
     "send_button": "button[aria-label='Send'], button[title='Send'], button:has-text('Send')",
     # Who is signed in (the account control in the top-right corner).
     "account": "#mectrl_currentAccount_secondary, #O365_MainLink_Me [aria-label]",
+    # The calendar ({calendar} is the mail address with "mail/" → "calendar/").
+    "calendar_url": "{calendar}view/week?startdt={start}",
+    "event_compose_url": "{calendar}deeplink/compose?{query}",
+    "event_url": "{calendar}deeplink/read/{id}",
+    "calendar_event": "[data-calitemid], div[role='button'][aria-label*=' to ']",
+    "event_send_button": ("button[aria-label='Send'], button[title='Send'], button:has-text('Send'), "
+                          "button[aria-label='Save'], button:has-text('Save')"),
+    "event_edit_button": "button[aria-label='Edit'], button[title='Edit'], button:has-text('Edit')",
+    "event_start_date": "input[aria-label*='Start date' i]",
+    "event_start_time": "input[aria-label*='Start time' i]",
+    "event_end_date": "input[aria-label*='End date' i]",
+    "event_end_time": "input[aria-label*='End time' i]",
+    "event_cancel_button": ("button[aria-label*='Cancel meeting' i], button:has-text('Cancel meeting'), "
+                            "button[aria-label='Delete'], button:has-text('Delete')"),
+    "cancel_message": "div[contenteditable='true'][role='textbox'], textarea",
+    "cancel_send_button": "button:has-text('Send cancellation'), button:has-text('Send'), button:has-text('Delete')",
 }
 
 
@@ -49,7 +66,8 @@ class OutlookConnector(MessagingConnector):
     url_setting = "OUTLOOK_URL"
     auto_apply_setting = "OUTLOOK_AUTO_SEND"
     default_selectors = DEFAULT_SELECTORS
-    capture_pattern = r"service\.svc|/search/api/|/owa/startupdata|/api/v2\.0/me|/api/beta/me"
+    capture_pattern = (r"service\.svc|/search/api/|/owa/startupdata|/api/v2\.0/me|/api/beta/me|"
+                       r"calendarview|/calendar/")
     app_hosts = M365_HOSTS
 
     # ------------------------------------------------------------ helpers
@@ -84,6 +102,15 @@ class OutlookConnector(MessagingConnector):
 
     # ------------------------------------------------------------- parse
     def parse(self, url: str, data: Any) -> List[Dict[str, Any]]:
+        from app.services.calendar import event_from
+
+        events = getattr(self, "_events", None)
+        if events is None:
+            events = self._events = {}
+        for node in walk(data):
+            event = event_from(node)
+            if event:
+                events[event["id"]] = event
         items = [item for item in (outlook_item(node, self.me) for node in walk(data)) if item]
         # A conversation summary is only kept when its messages weren't seen.
         seen = {item.get("conversationId") for item in items if not item.get("summary")}
@@ -150,6 +177,120 @@ class OutlookConnector(MessagingConnector):
                     "subject": (page.title() or "").split(" - ")[0]}
 
         return self.run(work, "Reading an Outlook message")
+
+    # ----------------------------------------------------------- calendar
+    @property
+    def calendar_base(self) -> str:
+        base = self.mail_url
+        return base[:-5] + "calendar/" if base.endswith("/mail/") else base + "calendar/"
+
+    def _cal_url(self, key: str, **values) -> str:
+        return (self.selectors().get(key) or "").format(calendar=self.calendar_base, **values)
+
+    def calendar(self, start, end) -> List[Dict[str, Any]]:
+        """Events between ``start`` and ``end``, from the calendar page's own data."""
+        from datetime import timedelta
+
+        def work(page):
+            self.hook(page)
+            self._events = {}
+            self.drain()
+            week = start
+            while week < end:
+                self.goto(page, self._cal_url("calendar_url", start=quote(week.strftime("%Y-%m-%d"))))
+                self.settle(page)
+                page.wait_for_timeout(1500)
+                self.drain()
+                week += timedelta(days=7)
+            found = list((self._events or {}).values())
+            return found or self._scrape_calendar(page)
+
+        return self.run(work, "Reading your calendar", quiet=True) or []
+
+    def _scrape_calendar(self, page) -> List[Dict[str, Any]]:
+        """Events drawn on the page, from their labels ("Sync, 9:00 AM to 9:30 AM, Monday, …")."""
+        from datetime import datetime
+
+        found = []
+        try:
+            items = page.locator(self.selectors().get("calendar_event"))
+            for index in range(min(items.count(), 80)):
+                item = items.nth(index)
+                label = item.get_attribute("aria-label") or ""
+                match = re.search(r"^(.*?),\s*(\d{1,2}:\d{2}\s*[AP]M)\s*to\s*(\d{1,2}:\d{2}\s*[AP]M),"
+                                  r"\s*\w+,\s*(\w+ \d{1,2},\s*\d{4})", label)
+                if not match:
+                    continue
+                day = datetime.strptime(match.group(4).replace(",", ""), "%B %d %Y")
+                times = [datetime.strptime(t.replace(" ", ""), "%I:%M%p") for t in match.group(2, 3)]
+                start = day.replace(hour=times[0].hour, minute=times[0].minute)
+                end = day.replace(hour=times[1].hour, minute=times[1].minute)
+                found.append({"id": item.get_attribute("data-calitemid") or fingerprint(label),
+                              "subject": match.group(1), "start": start, "end": end, "location": "",
+                              "organizer": {"name": "", "email": ""}, "attendees": [],
+                              "all_day": False, "cancelled": False, "show_as": "busy", "body": "",
+                              "online_url": None})
+        except Exception:  # noqa: BLE001 - nothing drawn yet
+            pass
+        return found
+
+    def create_event(self, subject: str, start, end, attendees: List[str], body: str = "",
+                     location: str = "") -> Dict[str, Any]:
+        """Book an event (an invitation when there are attendees) from Outlook's own form."""
+        def work(page):
+            query = urlencode({"subject": subject, "startdt": start.isoformat(),
+                               "enddt": end.isoformat(), "body": body or "", "location": location or "",
+                               **({"to": ";".join(attendees)} if attendees else {})}, quote_via=quote)
+            self.goto(page, self._cal_url("event_compose_url", query=query))
+            self.settle(page)
+            self._press(page, "event_send_button", "the Send/Save button")
+            return {"detail": f"Booked “{subject}” {start:%a %d %b %H:%M}"
+                              + (f" with {', '.join(attendees)}" if attendees else "")}
+
+        return self.run(work, "Booking a meeting")
+
+    def move_event(self, event_id: str, start, end) -> Dict[str, Any]:
+        def work(page):
+            self.goto(page, self._cal_url("event_url", id=quote(event_id, safe="")))
+            self.settle(page)
+            edit = self.locate(page, "event_edit_button", 5000)
+            if edit is not None:
+                edit.click()
+            for key, value in (("event_start_date", start.strftime("%d/%m/%Y")),
+                               ("event_start_time", start.strftime("%H:%M")),
+                               ("event_end_date", end.strftime("%d/%m/%Y")),
+                               ("event_end_time", end.strftime("%H:%M"))):
+                field = self.locate(page, key, 3000)
+                if field is not None:
+                    field.fill(value)
+                    field.press("Enter")
+            self._press(page, "event_send_button", "the Send/Save button")
+            return {"detail": f"Moved to {start:%a %d %b %H:%M}"}
+
+        return self.run(work, "Moving a meeting")
+
+    def cancel_event(self, event_id: str, message: str = "") -> Dict[str, Any]:
+        def work(page):
+            self.goto(page, self._cal_url("event_url", id=quote(event_id, safe="")))
+            self.settle(page)
+            self.require(page, "event_cancel_button", "the Cancel meeting button").click()
+            if message:
+                box = self.locate(page, "cancel_message", 3000)
+                if box is not None:
+                    self.type_text(box, message)
+            self._press(page, "cancel_send_button", "the Send cancellation button")
+            return {"detail": "Cancelled"}
+
+        return self.run(work, "Cancelling a meeting")
+
+    def _press(self, page, key: str, what: str) -> None:
+        button = self.require(page, key, what)
+        button.click()
+        try:
+            button.wait_for(state="detached", timeout=15000)
+        except Exception:  # noqa: BLE001 - it may still have worked: never retried
+            self.capture(page, key)
+            raise MessagingError("Outlook didn't confirm it. Check your calendar before trying again.")
 
     # ------------------------------------------------------------ writing
     # Called for approved (or auto-send) EnterpriseActions only.

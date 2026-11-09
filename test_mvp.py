@@ -7304,6 +7304,228 @@ def test_keep_website_updated():
         server.shutdown()
 
 
+
+class FakeCalendar:
+    """A stand-in calendar: events in memory, and what was booked/moved/cancelled."""
+
+    def __init__(self, events):
+        self.items = {e["id"]: e for e in events}
+        self.booked, self.moved, self.cancelled = [], [], []
+
+    def calendar(self, start, end):
+        return [dict(e) for e in self.items.values()]
+
+    def create_event(self, subject, start, end, attendees, body="", location=""):
+        self.booked.append({"subject": subject, "start": start, "end": end, "attendees": attendees})
+        return {"detail": f"Booked {subject}"}
+
+    def move_event(self, event_id, start, end):
+        self.moved.append((event_id, start))
+        self.items[event_id] = {**self.items[event_id], "start": start, "end": end}
+        return {"detail": "Moved"}
+
+    def cancel_event(self, event_id, message=""):
+        self.cancelled.append((event_id, message))
+        self.items.pop(event_id, None)
+        return {"detail": "Cancelled"}
+
+
+def test_secretary():
+    """Secretary: calendar, free time, booking with approval, meeting briefs, follow-ups, briefings."""
+    print("\nSecretary — calendar, follow-ups and briefings")
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.models.enterprise import EnterpriseAction, EnterpriseMessage
+    from app.models.work import Briefing, FollowUp
+    from app.services import briefings, calendar, followups
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext, available_tools
+
+    db = session()
+    now = datetime.now()
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # An OWA-shaped event, as Outlook's own calendar page fetches it.
+    owa = calendar.event_from({
+        "ItemId": {"Id": "AAMk-1"}, "Subject": "Smile Dental review",
+        "Start": (now + timedelta(minutes=8)).isoformat(), "End": (now + timedelta(minutes=38)).isoformat(),
+        "Location": {"DisplayName": "Teams"}, "Organizer": {"Mailbox": {"Name": "Priya Shah",
+                                                                         "EmailAddress": "priya@smiledental.com"}},
+        "RequiredAttendees": [{"Mailbox": {"Name": "Priya Shah", "EmailAddress": "priya@smiledental.com"}}],
+        "Body": {"Value": "<p>Agenda: sensor replacement</p>"}})
+    graph = calendar.event_from({
+        "id": "g-2", "subject": "1:1", "start": {"dateTime": (day + timedelta(days=1, hours=10)).isoformat(),
+                                                 "timeZone": "UTC"},
+        "end": {"dateTime": (day + timedelta(days=1, hours=11)).isoformat()}, "attendees": [],
+        "showAs": "busy"})
+    check("Outlook's calendar JSON is read (OWA and REST shapes)",
+          owa and owa["subject"] == "Smile Dental review" and owa["attendees"][0]["email"] ==
+          "priya@smiledental.com" and "sensor replacement" in owa["body"] and graph and graph["subject"] == "1:1",
+          (owa, graph))
+    fake = FakeCalendar([owa, graph])
+    calendar.set_source(fake)
+    try:
+        ctx = ToolContext(db=db, context={"_user_text": "what's on today"})
+        names = {t.name for t in available_tools(ctx)}
+        check("The calendar tools are offered once a calendar is connected",
+              {"calendar_today", "find_free_time", "book_meeting"} <= names)
+        agenda = REGISTRY["calendar_today"].handler(ctx)
+        check("calendar_today lists today's meetings with who's coming",
+              "Smile Dental review" in agenda["content"] and "Priya Shah" in agenda["content"]
+              and "1:1" not in agenda["content"], agenda)
+        free = calendar.free_slots(60, days=3, after=day + timedelta(days=1, hours=9))
+        tomorrow = [s for s in free if s["start"].date() == (day + timedelta(days=1)).date()]
+        check("Free time skips meetings",
+              not tomorrow or all(not (s["start"] < graph["end"] and s["end"] > graph["start"]) for s in tomorrow),
+              tomorrow)
+        booked = REGISTRY["book_meeting"].handler(ctx, subject="Sensor follow-up", start="tomorrow 2pm",
+                                                  length_minutes=30, attendees="priya@smiledental.com")
+        card = ctx.drafts[-1]
+        check("Booking a meeting waits for approval", booked["summary"] == "Waiting for approval"
+              and not fake.booked and card["tool"] == "book_meeting", booked)
+        actions.approve(db, card["action_id"])
+        check("…and books it when approved", fake.booked and fake.booked[0]["attendees"] ==
+              ["priya@smiledental.com"] and fake.booked[0]["start"].hour == 14, fake.booked)
+        moved = REGISTRY["reschedule_meeting"].handler(ctx, meeting="1:1", start="tomorrow 15:00")
+        actions.approve(db, ctx.drafts[-1]["action_id"])
+        check("Rescheduling finds the meeting by name and moves it once approved",
+              moved["summary"] == "Waiting for approval" and fake.moved and fake.moved[0][0] == "g-2")
+
+        # A brief before the meeting, with who's coming and what's been happening with them.
+        db.add(EnterpriseMessage(source="outlook", type="email", sender="priya@smiledental.com",
+                                 sender_name="Priya Shah", subject="Sensor still failing",
+                                 body="The sensor at reception still fails.", timestamp=now - timedelta(days=1),
+                                 external_id="sec-1", customer="Smile Dental", direct=True))
+        db.commit()
+        with mock.patch.object(settings, "MEETING_BRIEF_MINUTES", 10):
+            posted = briefings.meeting_briefs(db, now)
+            again = briefings.meeting_briefs(db, now)
+        brief = db.query(Briefing).filter(Briefing.kind == "meeting").first()
+        check("A brief is posted before a meeting, once",
+              posted == 1 and again == 0 and brief is not None, (posted, again))
+        check("…with who's coming, recent mail with them and the agenda",
+              brief and "Priya Shah" in brief.content and "Sensor still failing" in brief.content
+              and "sensor replacement" in brief.content, brief.content if brief else None)
+
+        # Follow-ups from what you sent and what you were asked.
+        db.add(EnterpriseAction(action="send_email", source="outlook", to="sam@contoso.com",
+                                subject="Licence count", status="sent",
+                                body="Hi Sam, could you send me the licence count for the Leeds office? "
+                                     "I'll update the renewal quote by Friday.",
+                                created_at=now - timedelta(days=4), updated_at=now - timedelta(days=4)))
+        db.add(EnterpriseMessage(source="teams", type="message", sender="ana@contoso.com", sender_name="Ana",
+                                 body="Can you check the backup report for Leeds when you get a chance?",
+                                 timestamp=now - timedelta(hours=2), external_id="sec-2", direct=True))
+        db.commit()
+        found = followups.detect(db)
+        kinds = {i.kind: i for i in followups.open_items(db)}
+        check("An unanswered request you sent becomes 'waiting on'",
+              "waiting_on" in kinds and "licence count" in kinds["waiting_on"].what
+              and kinds["waiting_on"].who == "sam@contoso.com", found)
+        check("A promise you made becomes 'promised', due when you said",
+              "promised" in kinds and kinds["promised"].due_at and kinds["promised"].due_at.weekday() == 4,
+              kinds.get("promised") and kinds["promised"].to_dict())
+        check("Something you were asked becomes a to-do", "asked" in kinds and kinds["asked"].who == "Ana")
+        followups.detect(db)
+        check("…found once, not again on the next pass",
+              db.query(FollowUp).filter(FollowUp.kind == "waiting_on").count() == 1)
+        with mock.patch.object(settings, "FOLLOWUP_CHASE_DAYS", 3):
+            check("After the chase days it's due to chase", followups.chase_due(kinds["waiting_on"]))
+            chased = REGISTRY["chase_followup"].handler(ctx, id=kinds["waiting_on"].id)
+        check("Chase drafts a follow-up for approval",
+              chased["summary"] == "Waiting for approval" and ctx.drafts[-1].get("type") == "draft"
+              and "following up" in (ctx.drafts[-1].get("body") or ctx.drafts[-1].get("preview", {})
+                                     .get("body", "") or str(ctx.drafts[-1])).lower(), ctx.drafts[-1])
+        REGISTRY["add_todo"].handler(ctx, what="Order a spare sensor", due="tomorrow")
+        listed = REGISTRY["todo_list"].handler(ctx)
+        check("The to-do list has everything", "Order a spare sensor" in listed["content"]
+              and "Waiting on sam@contoso.com" in listed["content"], listed["content"])
+        spare = db.query(FollowUp).filter(FollowUp.what == "Order a spare sensor").first()
+        REGISTRY["done_todo"].handler(ctx, id=spare.id)
+        check("…and ticks things off", "Order a spare sensor" not in REGISTRY["todo_list"].handler(ctx)["content"])
+
+        made = briefings.make(db, "morning", now, force=True)
+        check("The morning briefing has today's meetings, urgent mail and follow-ups due",
+              "Smile Dental review" in made.content and "Follow-ups due" in made.content, made.content)
+        check("…and a short spoken version", "meeting" in (made.to_dict()["data"].get("spoken") or ""))
+        weekly = briefings.make(db, "weekly", now, force=True)
+        check("The weekly summary says what got done and what's open",
+              "Done" in weekly.content and "Still open" in weekly.content, weekly.content)
+        briefings.ensure_jobs(db)
+        from app.models.task import Task
+
+        jobs_made = {t.source: t for t in db.query(Task).filter(Task.kind == "briefing")}
+        check("The briefings are jobs you can edit or switch off",
+              "briefing:morning" in jobs_made and jobs_made["briefing:morning"].schedule == "weekdays")
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        board = TestClient(app).get("/api/today").json()
+        check("Home → Today has the agenda, to-dos and the briefing",
+              board.get("agenda") and board.get("todos") and board.get("briefing"), list(board))
+    finally:
+        calendar.set_source(None)
+
+
+def test_notes_and_templates():
+    """Meeting notes become follow-ups; a Word template is filled, with a backup."""
+    print("\nSecretary — meeting notes and templates")
+    from unittest import mock
+
+    import docx
+
+    from app.core.config import settings
+    from app.models.work import FollowUp
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext
+
+    db = session()
+    folder = Path(_TEMP_DIR) / "secretary"
+    folder.mkdir(exist_ok=True)
+    vtt = folder / "standup.vtt"
+    vtt.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n<v Priya>Priya: I'll send the new sensor "
+                   "tomorrow.</v>\n\n00:00:05.000 --> 00:00:09.000\n<v Alex>Alex: I'll update the "
+                   "Leeds tracker by Friday.</v>\n", encoding="utf-8")
+    ctx = ToolContext(db=db, context={"_user_text": "take notes from the standup"})
+    with mock.patch.object(settings, "INBOX_MY_NAMES", "Alex"):
+        notes = REGISTRY["meeting_notes"].handler(ctx, source=str(vtt))
+    items = {f.kind: f for f in db.query(FollowUp).filter(FollowUp.source == "meeting")}
+    check("Meeting notes pick out the action items", "Action items" in notes["content"], notes["content"])
+    check("…yours become promises, others' become 'waiting on'",
+          "promised" in items and "Leeds tracker" in items["promised"].what
+          and "waiting_on" in items and items["waiting_on"].who == "Priya", {k: v.to_dict() for k, v in items.items()})
+
+    templates = folder / "templates"
+    templates.mkdir(exist_ok=True)
+    template = templates / "Site visit template.docx"
+    document = docx.Document()
+    document.add_heading("Site visit — {{customer}}", 1)
+    document.add_paragraph("Date: {{date}}")
+    table = document.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text = "Engineer"
+    table.rows[0].cells[1].text = "{{engineer}}"
+    document.save(str(template))
+    with mock.patch.object(settings, "TEMPLATES_FOLDER", str(templates)):
+        needs = REGISTRY["draft_document"].handler(ctx, template="site visit")
+        check("draft_document finds the template by name and says what it needs",
+              all(n in needs["content"] for n in ("customer", "date", "engineer")), needs)
+        drafted = REGISTRY["draft_document"].handler(
+            ctx, template="site visit", save_to=str(folder / "out"),
+            data='{"customer": "Smile Dental", "date": "10 Nov", "engineer": "Alex"}')
+    card = ctx.drafts[-1]
+    target = folder / "out" / "Site visit - Smile Dental.docx"
+    check("…prepared for approval", drafted["summary"] == "Waiting for approval" and not target.exists(), drafted)
+    actions.approve(db, card["action_id"])
+    filled = docx.Document(str(target))
+    text = "\n".join(p.text for p in filled.paragraphs) + filled.tables[0].rows[0].cells[1].text
+    check("Approving makes the document with every placeholder filled",
+          "Site visit — Smile Dental" in text and "Date: 10 Nov" in text and "Alex" in text and "{{" not in text,
+          text)
+    check("…and it can be undone", actions.undo(db, card["action_id"]) and not target.exists())
+
+
 def main() -> int:
     print("Running Cerebro tests…")
     init_db()
@@ -7342,7 +7564,7 @@ def main() -> int:
                   test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
                   test_faces, test_agents_page, test_desktop_apps,
                   test_desktop_apps_notepad, test_keep_it_updated, test_attached_files,
-                  test_keep_website_updated):
+                  test_keep_website_updated, test_secretary, test_notes_and_templates):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

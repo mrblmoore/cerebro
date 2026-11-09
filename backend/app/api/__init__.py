@@ -3,6 +3,7 @@
 from app.api.addons import router as addons_router
 from app.api.agents import router as agents_router
 from app.api.faces import router as faces_router
+from app.api.secretary import router as secretary_router
 from app.api.audio import router as audio_router
 from app.api.cases import router as cases_router
 from app.api.activity import router as activity_router
@@ -42,6 +43,7 @@ ROUTERS = [
     voice_router,
     agents_router,
     faces_router,
+    secretary_router,
 ]
 
 __all__ = [
@@ -66,4 +68,5 @@ __all__ = [
     "voice_router",
     "agents_router",
     "faces_router",
+    "secretary_router",
 ]

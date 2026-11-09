@@ -23,7 +23,7 @@ from app.core.config import settings
 from app.models.task import Task
 
 SCHEDULES = ("once", "hourly", "daily", "weekdays", "weekly", "manual")
-KINDS = ("reminder", "document_update", "draft_reply", "summarise", "agent", "custom")
+KINDS = ("reminder", "document_update", "draft_reply", "summarise", "agent", "custom", "briefing")
 
 TIME_RE = re.compile(r"\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 

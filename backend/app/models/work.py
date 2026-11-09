@@ -141,3 +141,64 @@ class Idea(Base):
                 "reason": self.reason or "", "evidence": _load(self.evidence, []),
                 "prompt": self.prompt, "status": self.status, "task_id": self.task_id,
                 "created_at": _iso(self.created_at)}
+
+
+class FollowUp(Base):
+    """Something to chase or deliver: the secretary's to-do list.
+
+    ``kind`` is ``waiting_on`` (you asked someone; no reply yet), ``promised``
+    (you said you'd do something), ``asked`` (someone asked you) or ``todo``
+    (added by you, a meeting's action items, a reminder).
+    """
+
+    __tablename__ = "followups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String, default="todo", index=True)
+    who = Column(String, nullable=True)
+    what = Column(Text)
+    due_at = Column(DateTime, nullable=True, index=True)
+    #: mail | teams | chat | meeting | manual
+    source = Column(String, nullable=True)
+    #: The words it came from, so the user can see why it's here.
+    evidence = Column(Text, nullable=True)
+    #: What it's about ("action:5", "message:12", "meeting:<id>"), for de-duplication.
+    ref = Column(String, nullable=True, index=True)
+    thread_id = Column(String, nullable=True, index=True)
+    #: open | done | snoozed
+    status = Column(String, default="open", index=True)
+    snooze_until = Column(DateTime, nullable=True)
+    chased_at = Column(DateTime, nullable=True)
+    done_at = Column(DateTime, nullable=True)
+    agent_id = Column(Integer, nullable=True, index=True)
+    conversation_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "kind": self.kind, "who": self.who, "what": self.what,
+                "due_at": _iso(self.due_at), "source": self.source, "evidence": self.evidence,
+                "ref": self.ref, "thread_id": self.thread_id, "status": self.status,
+                "snooze_until": _iso(self.snooze_until), "chased_at": _iso(self.chased_at),
+                "done_at": _iso(self.done_at), "agent_id": self.agent_id,
+                "conversation_id": self.conversation_id, "created_at": _iso(self.created_at)}
+
+
+class Briefing(Base):
+    """A briefing Cerebro put together: morning, end of day, weekly, or before a meeting."""
+
+    __tablename__ = "briefings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    #: morning | evening | weekly | meeting
+    kind = Column(String, index=True)
+    #: One per day / week / meeting ("morning:2026-11-09", "meeting:<event id>").
+    key = Column(String, unique=True, index=True)
+    title = Column(String)
+    content = Column(Text)
+    data = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "kind": self.kind, "key": self.key, "title": self.title,
+                "content": self.content, "data": _load(self.data, {}),
+                "created_at": _iso(self.created_at)}

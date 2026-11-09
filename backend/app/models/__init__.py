@@ -17,7 +17,7 @@ from app.models.style import StyleProfile
 from app.models.nudge import Nudge
 from app.models.task import Task
 from app.models.tracked_document import TrackedDocument
-from app.models.work import Idea, Project, TaskEvent, Watch
+from app.models.work import Briefing, FollowUp, Idea, Project, TaskEvent, Watch
 
 __all__ = [
     "Agent",
