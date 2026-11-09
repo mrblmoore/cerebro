@@ -98,8 +98,10 @@ def from_nudges(db) -> int:
             prompt = (f"Case {nudge.case_id} was worked on but never written up. Summarise what "
                       "was done and prepare the case note for approval.")
             kind = "case"
+        # Keyed on what the nudge is about (e.g. "unanswered:<message id>"), not its row id:
+        # row ids are reused once nudges are cleared, which would hide new ideas.
         if raise_idea(db, kind, nudge.title, nudge.body or "", prompt, evidence,
-                      f"nudge:{nudge.id}"):
+                      f"nudge:{nudge.dedupe_key or nudge.id}"):
             made += 1
     return made
 
@@ -229,7 +231,10 @@ def decide(db, idea, action: str, prompt: str = None, agent_id: int = None) -> D
     if idea.status != "new":
         return {"ok": False, "detail": f"It was already {idea.status}."}
     if idea.dedupe_key.startswith("nudge:"):
-        nudge = db.get(Nudge, int(idea.dedupe_key.split(":")[1]))
+        key = idea.dedupe_key.split(":", 1)[1]
+        # "nudge:<the nudge's own key>" (current) or "nudge:<row id>" (before 0.10).
+        nudge = (db.query(Nudge).filter(Nudge.dedupe_key == key).order_by(Nudge.id.desc()).first()
+                 if not key.isdigit() else db.get(Nudge, int(key)))
         if nudge is not None and nudge.status == "open":
             nudge.status = "acted" if action == "accept" else "dismissed"
             nudge.acted_at = datetime.utcnow()

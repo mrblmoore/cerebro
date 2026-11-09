@@ -562,7 +562,8 @@ def test_everything_is_explained():
     # A "Test connection" button wired to a target the backend does not handle
     # returns a 404 that reads as a broken integration.
     import re
-    html = (ROOT / "backend" / "app" / "web" / "settings.html").read_text(encoding="utf-8")
+    # The settings view (in the app window and on /settings) lives in one module.
+    html = (ROOT / "backend" / "app" / "web" / "static" / "ui" / "settings-view.js").read_text(encoding="utf-8")
     block = html.split("TEST_TARGETS = {")[1].split("}")[0]
     ui_targets = dict(re.findall(r"(\w+):\s*'(\w+)'", block))
     api = (ROOT / "backend" / "app" / "api" / "system.py").read_text(encoding="utf-8")
@@ -6784,7 +6785,7 @@ def test_install_and_avatars():
                                lambda changes: (settings.__dict__.update({k: v for k, v in changes.items()})
                                                 or {"ok": True, "applied": list(changes)})):
                 code = install_setup.run_files(str(choice_file), str(root / "result.json"))
-            result = _json.loads((root / "result.json").read_text())
+            result = _json.loads((root / "result.json").read_text(encoding="utf-8"))
             steps = {s["step"]: s for s in result["steps"]}
             check("The installer's choices are saved (only the allowed ones)",
                   steps["settings"]["ok"] and settings.LLM_PROVIDER == "ollama" and not hasattr(settings, "NOT_ALLOWED"),
@@ -6796,7 +6797,7 @@ def test_install_and_avatars():
                   default.face == "vrm" and default.style().get("model") == "builtin-miko"
                   and default.persona().get("preset") == "professional", (default.face, default.style()))
             check("…the choices file (it can hold keys) is removed, and a readable summary is written",
-                  not choice_file.exists() and "OK" in (root / "result.txt").read_text() and code in (0, 2))
+                  not choice_file.exists() and "OK" in (root / "result.txt").read_text(encoding="utf-8") and code in (0, 2))
         finally:
             settings.__dict__.update(before)
             cleanup = session()
@@ -6818,7 +6819,8 @@ def test_install_and_avatars():
     (images / "a.png").write_bytes(b"x")
     request = root / "reset.json"
     request.write_text(_json.dumps({"parts": ["memory", "bogus"]}))
-    parts = {**reset.PARTS, "memory": {**reset.PARTS["memory"], "folders": [images]}}
+    # Only the memories table here: the test database is shared with the rest of the suite.
+    parts = {**reset.PARTS, "memory": {**reset.PARTS["memory"], "tables": ["memories"], "folders": [images]}}
     with mock.patch.object(reset, "REQUEST_FILE", request), mock.patch.object(reset, "BACKUP_DIR", root / "backups"), \
             mock.patch.dict(reset.PARTS, parts):
         done = reset.apply_pending()
@@ -6834,6 +6836,19 @@ def test_install_and_avatars():
     check("…and the request is used once", not request.exists())
     with mock.patch.object(reset, "REQUEST_FILE", request):
         check("No request, nothing cleared", reset.apply_pending() == {})
+
+    # Ideas from nudges are keyed on what the nudge is about, not its row id
+    # (row ids are reused after nudges are cleared, which used to hide new ideas).
+    from app.models.nudge import Nudge
+    from app.models.work import Idea
+    from app.services import ideas as ideas_service
+
+    db.add(Nudge(kind="unanswered_email", title="Unanswered: Pat", body="We never replied to Pat.",
+                 priority="high", dedupe_key="unanswered:424242", status="open"))
+    db.commit()
+    ideas_service.from_nudges(db)
+    check("An idea from a nudge is keyed on what it's about",
+          db.query(Idea).filter(Idea.dedupe_key == "nudge:unanswered:424242").count() == 1)
 
 
 def test_browser_worker_shutdown():
