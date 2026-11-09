@@ -24,9 +24,11 @@ TITLE_WORDS = 7
 TITLE_CHARS = 48
 
 
-def create(db: Session, title: str = None, instructions: str = None) -> Conversation:
+def create(db: Session, title: str = None, instructions: str = None,
+           agent_id: int = None) -> Conversation:
     chat = Conversation(title=(title or "").strip()[:120] or None,
-                        instructions=(instructions or "").strip() or None)
+                        instructions=(instructions or "").strip() or None,
+                        agent_id=agent_id or None)
     db.add(chat)
     db.commit()
     db.refresh(chat)
@@ -57,9 +59,18 @@ def _most_recent_open(db: Session) -> Optional[Conversation]:
 
 
 def listing(db: Session, archived: bool = False, query: str = None,
-            limit: int = 100) -> List[dict]:
-    """Chats for the sidebar: pinned first, then most recently active."""
+            limit: int = 100, agent_id: int = None) -> List[dict]:
+    """Chats for the sidebar: pinned first, then most recently active.
+
+    With ``agent_id``, only that agent's chats (the default agent also owns
+    chats with no agent).
+    """
     rows = db.query(Conversation).filter(Conversation.archived.is_(bool(archived))).all()
+    if agent_id:
+        from app.services import agents
+
+        default_id = agents.default_agent(db).id
+        rows = [c for c in rows if (c.agent_id or default_id) == int(agent_id)]
     if query:
         needle = query.lower().strip()
         matching_ids = {cid for (cid,) in db.query(ChatMessage.conversation_id)
@@ -130,7 +141,7 @@ def end(db: Session, chat: Conversation) -> tuple:
     chat.archived = True
     chat.pinned = False
     db.commit()
-    return create(db), stopped
+    return create(db, agent_id=chat.agent_id), stopped
 
 
 def delete(db: Session, chat: Conversation) -> None:

@@ -24,7 +24,8 @@ _stop = threading.Event()
 
 #: How often the scheduler checks for due tasks (seconds). Nudge scans and
 #: retention run less often, counted in ticks.
-_last_nudge_scan = 0.0
+_last_nudge_scan = 0
+_last_ideas = 0.0
 _last_retention = 0.0
 _last_copilot_sync = 0.0
 _last_screenpipe_sync = 0.0
@@ -69,20 +70,30 @@ def _scheduler_loop() -> None:
     """Drive tasks, nudges and retention on a timer."""
     import time
 
-    from app.services import copilot_bridge, nudge_service, task_service
+    from app.services import copilot_bridge, nudge_service
     from app.services.activity_service import apply_retention
 
     logger.info("scheduler", "Task scheduler started")
-    global _last_nudge_scan, _last_retention, _last_copilot_sync, _last_screenpipe_sync
+    global _last_nudge_scan, _last_retention, _last_copilot_sync, _last_screenpipe_sync, _last_ideas
 
     while not _stop.is_set():
         now = time.time()
         db = SessionLocal()
         try:
             if settings.TASKS_ENABLED:
-                result = task_service.run_due_tasks(db)
-                if result.get("ran"):
-                    logger.info("scheduler", "Ran due tasks", {"count": result["ran"]})
+                # Jobs run on their own threads, so a slow one holds nothing up.
+                from app.services import jobs, watches
+
+                started = jobs.dispatch(db)
+                if started:
+                    logger.info("scheduler", "Started due jobs", {"count": started})
+                watches.run_due(db)
+
+            if settings.IDEAS_ENABLED and now - _last_ideas > 600:
+                from app.services import ideas
+
+                ideas.refresh(db)
+                _last_ideas = now
 
             # Scan for nudges every ~2 minutes.
             if settings.NUDGES_ENABLED and now - _last_nudge_scan > 120:

@@ -14,6 +14,10 @@ def register(connector: BrowserConnector) -> BrowserConnector:
     return connector
 
 
+def unregister(name: str) -> None:
+    _CONNECTORS.pop(name, None)
+
+
 def connectors() -> List[BrowserConnector]:
     _load()
     return list(_CONNECTORS.values())
@@ -40,3 +44,7 @@ def _load() -> None:
         return
     from app.services.browser import beyondtrust, dynamics, genesys, outlook, rightanswers, sharepoint, teams  # noqa: F401
     _LOADED = True
+    # Websites added at runtime (sites/<name>.json) register themselves too.
+    from app.services.browser import generic
+
+    generic.load_files()

@@ -61,6 +61,16 @@ BROWSER_PROFILE_DIR = DATA_DIR / "browser_profile"
 CONNECTORS_DIR = DATA_DIR / "connectors"
 #: Screenshots taken when a browser step fails, for diagnosis.
 BROWSER_SCREENSHOTS_DIR = DATA_DIR / "browser_screenshots"
+#: Add-ons Cerebro (or the user) added at runtime: ``mcp/<name>.json``,
+#: ``sites/<name>.json`` and ``skills/<slug>/SKILL.md``.
+CAPABILITIES_DIR = DATA_DIR / "capabilities"
+#: Downloaded on first use, never bundled: speech models and helper tools (uv).
+MODELS_DIR = DATA_DIR / "models"
+TOOLS_DIR = DATA_DIR / "tools"
+#: Live2D and VRM models the user loaded for an agent's face.
+FACES_DIR = DATA_DIR / "faces"
+#: Third-party runtimes Cerebro may not ship, fetched with the user's consent.
+VENDOR_DIR = DATA_DIR / "vendor"
 
 ENV_EXAMPLE = BACKEND_DIR / ".env.example"
 

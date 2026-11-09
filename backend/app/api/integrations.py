@@ -78,8 +78,12 @@ def enable(name: str) -> Dict[str, Any]:
     from app.core import settings_store
 
     connector = _connector(name)
-    result = settings_store.update({"BROWSER_AUTOMATION_ENABLED": True,
-                                    connector.enabled_setting: True})
+    changes = {"BROWSER_AUTOMATION_ENABLED": True}
+    if connector.enabled_setting:
+        changes[connector.enabled_setting] = True
+    elif hasattr(connector, "set_enabled"):
+        connector.set_enabled(True)          # a website added at runtime
+    result = settings_store.update(changes)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("errors"))
     return {"ok": True, "integration": connector.status()}

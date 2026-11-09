@@ -6,6 +6,8 @@
   <title>Cerebro</title>
   <link rel="icon" href="/static/cerebro-256.png">
   <link rel="stylesheet" href="/static/ui/app.css">
+  <!-- Three.js and its add-ons (VRM faces) import "three" by name. -->
+  <script type="importmap">{"imports": {"three": "/static/vendor/three/three.module.js", "three/addons/": "/static/vendor/three/addons/"}}</script>
   <script>
     // Apply the saved theme before first paint, so there is no flash.
     try {
@@ -22,6 +24,9 @@
 
   <div class="app">
     <header class="titlebar pywebview-drag-region">
+      <button class="icon-btn" id="agents-btn" title="Agents" aria-label="Show agents">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
       <div class="brand pywebview-drag-region">
         <div class="brain-host" id="brand-brain"></div>
         <div style="min-width:0">
@@ -51,17 +56,36 @@
       </div>
     </header>
 
+    <div class="workspace">
+    <aside class="sidebar" id="sidebar" aria-label="Agents">
+      <div class="side-head"><span class="side-title">Agents</span>
+        <button class="icon-btn" id="agent-new" title="New agent" aria-label="New agent">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button></div>
+      <div class="agent-list" id="agent-list"></div>
+      <nav class="tabs" role="tablist" id="tabs">
+        <div class="tab-indicator" id="tab-indicator"></div>
+        <button class="tab" role="tab" data-tab="home" title="Home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1Z"/></svg><span class="tab-label">Home</span></button>
+        <button class="tab" role="tab" data-tab="ask" aria-selected="true" title="Chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/></svg><span class="tab-label">Chat</span></button>
+        <button class="tab" role="tab" data-tab="work" title="Work"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/></svg><span class="tab-label">Work</span> <span class="count" id="work-count"></span></button>
+        <button class="tab" role="tab" data-tab="activity" title="Activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span class="tab-label">Activity</span> <span class="count" id="approval-count"></span></button>
+        <button class="tab" role="tab" data-tab="sources" title="Sources"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-2Z"/><path d="M8 7h6"/></svg><span class="tab-label">Sources</span></button>
+        <button class="tab" role="tab" data-tab="connect" title="Connect"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0Z"/><path d="M12 16v5"/></svg><span class="tab-label">Connect</span></button>
+      </nav>
+    </aside>
+    <div class="side-scrim" id="side-scrim"></div>
+    <div class="main-col">
     <section class="context-strip" id="context-strip" aria-label="Current context"></section>
 
-    <nav class="tabs glass" role="tablist" id="tabs">
-      <div class="tab-indicator" id="tab-indicator"></div>
-      <button class="tab" role="tab" data-tab="ask" aria-selected="true">Ask</button>
-      <button class="tab" role="tab" data-tab="activity">Activity <span class="count" id="approval-count"></span></button>
-      <button class="tab" role="tab" data-tab="sources">Sources</button>
-      <button class="tab" role="tab" data-tab="connect">Connect</button>
-    </nav>
-
     <main>
+      <section class="panel" id="panel-home" role="tabpanel">
+        <div class="scroll" id="home-body"></div>
+      </section>
+
+      <section class="panel" id="panel-work" role="tabpanel">
+        <div class="scroll" id="work-body"></div>
+      </section>
+
       <section class="panel active" id="panel-ask" role="tabpanel">
         <aside class="chats" id="chats" aria-label="Chats">
           <div class="chats-head">
@@ -76,6 +100,20 @@
         </aside>
         <div class="chats-scrim" id="chats-scrim"></div>
         <div class="ask-main">
+        <div class="agent-stage" id="agent-stage">
+          <div class="stage-face" id="stage-face"></div>
+          <div class="stage-text">
+            <div class="stage-name" id="stage-name">Cerebro</div>
+            <div class="stage-role" id="stage-role"></div>
+            <div class="stage-status" id="stage-status"></div>
+          </div>
+          <button class="icon-btn" id="stage-edit" title="Edit this agent" aria-label="Edit this agent">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+          </button>
+          <button class="icon-btn" id="stage-toggle" title="Smaller / bigger" aria-label="Collapse the face">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 15 6-6 6 6"/></svg>
+          </button>
+        </div>
         <div class="chat-bar">
           <button class="icon-btn" id="chats-btn" title="Chats (Ctrl+K)" aria-label="Chats">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/></svg>
@@ -97,12 +135,15 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/></svg>
             </button>
             <input type="file" id="file-input" accept="image/*" hidden>
+            <button type="button" class="icon-btn mic" id="mic-btn" title="Talk to Cerebro — click, speak, click again (or hold Ctrl+Space anywhere)" aria-label="Talk to Cerebro">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            </button>
             <textarea id="input" rows="1" placeholder="Ask anything — or tell Cerebro what to do…" aria-label="Message"></textarea>
             <button class="send" id="send" type="submit" aria-label="Send" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
             </button>
           </form>
-          <div class="hint"><span><span class="kbd">Enter</span> send · <span class="kbd">Shift</span>+<span class="kbd">Enter</span> new line · paste an image</span><span id="ai-hint"></span></div>
+          <div class="hint"><span><span class="kbd">Enter</span> send · <span class="kbd">Shift</span>+<span class="kbd">Enter</span> new line · hold <span class="kbd">Ctrl</span>+<span class="kbd">Space</span> to talk</span><span id="ai-hint"></span></div>
         </div>
         </div>
       </section>
@@ -123,6 +164,8 @@
         <div class="scroll" id="connect-body"></div>
       </section>
     </main>
+    </div>
+    </div>
   </div>
 
   <div class="sheet-host" id="sheet-host" hidden>

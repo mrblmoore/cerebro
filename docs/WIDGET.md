@@ -142,6 +142,32 @@ not disappear between tabs.
 
 ---
 
+## Agents and faces
+
+**The left side** lists your agents. Pick one to chat with it; its face sits
+above the chat. Under the agents are **Home** (every agent's work at a
+glance), **Chat**, **Work** (the selected agent's jobs, projects, watches and
+ideas), **Activity**, **Sources** and **Connect**.
+
+**In a narrow window** the list becomes a rail of faces; narrower still, it
+sits behind the ☰ button.
+
+See [AGENTS.md](AGENTS.md) and [FACES.md](FACES.md).
+
+## Talking to it, and add-ons
+
+There are two ways to talk to Cerebro:
+
+- **Hold Ctrl+Space** anywhere and speak. The tray brain and the buddy show
+  **Listening…**, and the answer is spoken and arrives as a notification.
+- **Click the 🎙** in the Ask box and speak.
+
+See [VOICE.md](VOICE.md).
+
+**Connect → Add-ons** lists the MCP servers, websites and skills Cerebro
+has been given. You can add more there, or just ask in chat ("connect to
+Jira") and Cerebro adds what it needs. See [ADDONS.md](ADDONS.md).
+
 ## Making it fit your desktop
 
 **Resize it** — drag any edge of the window, or the ◢ grip in the
@@ -190,6 +216,7 @@ Position, size, tab and every preference are remembered between sessions.
 | `Ctrl+N` | New chat |
 | `Ctrl +` / `Ctrl −` / `Ctrl 0` | Text size bigger / smaller / reset |
 | `Ctrl+K` | Chat list and search |
+| Hold `Ctrl+Space` (anywhere) | Talk to Cerebro — see [VOICE.md](VOICE.md) |
 | `Ctrl+Q` | Quit |
 
 ---

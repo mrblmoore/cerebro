@@ -298,6 +298,7 @@ class TaskService:
             schedule=schedule, at_time=at_time or None,
             conversation_id=conversation_id, status="active", source="chat",
             next_run=compute_next_run(schedule, at_time or None),
+            agent_id=_chat_agent(self.db, conversation_id),
         )
         self.db.add(task)
         self.db.commit()
@@ -315,7 +316,14 @@ class TaskService:
                 .all())
 
     def run(self, task: Task) -> Dict[str, Any]:
-        """Execute one task and reschedule or close it."""
+        """Execute one task (job) and reschedule, park or close it.
+
+        Executors return a status: ``waiting_input`` / ``waiting_approval``
+        park the job until the user answers or decides; ``needs_review``
+        parks a one-off; ``failed`` retries a recurring job with backoff and
+        pauses it after a few failures in a row.
+        """
+        from app.services import jobs
         from app.services.task_executors import execute
 
         try:
@@ -324,25 +332,57 @@ class TaskService:
             logger.error("tasks", "Task failed", {"id": task.id, "error": str(exc)})
             result = {"ok": False, "detail": str(exc), "status": "failed"}
 
+        self.db.refresh(task)
         task.last_run = datetime.now()
         task.run_count = (task.run_count or 0) + 1
         task.last_result = (result.get("detail") or result.get("summary") or "")[:2000]
 
         outcome = result.get("status")
-        # A one-off task is finished once it has fired — the only thing that
-        # keeps it around is the executor explicitly parking it for the user.
-        if task.schedule == "once":
-            task.status = outcome if outcome in ("needs_review", "failed") else "done"
-        elif outcome:
+        controlled = task.status in ("paused", "cancelled")   # changed while it ran
+        if controlled:
+            pass
+        elif outcome in ("waiting_input", "waiting_approval"):
             task.status = outcome
+        elif outcome == "failed":
+            task.attempts = (task.attempts or 0) + 1
+            task.error = (result.get("detail") or "It failed")[:1000]
+            if task.schedule == "once" or task.schedule == "manual":
+                task.status = "failed"
+            elif task.attempts >= jobs.MAX_FAILURES:
+                task.status = "paused"
+                jobs.set_state(task, paused_from="active")
+                _notify_paused(task)
+            else:
+                task.status = "active"
+        elif task.schedule == "once":
+            task.status = outcome if outcome == "needs_review" else "done"
+        else:
+            task.status = outcome or "active"
+        if outcome != "failed" and not controlled:
+            task.attempts = 0
+            task.error = None
+        if outcome not in ("waiting_input",):
+            task.answer = None if outcome != "waiting_approval" else task.answer
 
         if task.status == "active":
-            task.next_run = compute_next_run(task.schedule, task.at_time,
-                                             after=task.last_run)
-        else:
+            if outcome == "failed":
+                # Back off: 5, 10, 20 … minutes, at most 6 hours.
+                from datetime import timedelta
+
+                delay = min(5 * (2 ** ((task.attempts or 1) - 1)), 360)
+                task.next_run = task.last_run + timedelta(minutes=delay)
+            else:
+                task.next_run = compute_next_run(task.schedule, task.at_time,
+                                                 after=task.last_run)
+        elif task.status not in ("queued",):
             task.next_run = None
 
         self.db.commit()
+        jobs.event(self.db, task.id, "error" if outcome == "failed" else "result",
+                   {"failed": "Failed", "waiting_input": "Waiting for your answer",
+                    "waiting_approval": "Waiting for your approval",
+                    "needs_review": "Waiting for review"}.get(outcome, "Finished"),
+                   task.last_result[:600])
         return result
 
     def list_tasks(self, status: str = None, limit: int = 100) -> List[Task]:
@@ -365,11 +405,34 @@ class TaskService:
 
 
 def run_due_tasks(db: Session) -> Dict[str, Any]:
-    """Called by the scheduler each tick."""
+    """Run every due job now, one after another, each under a lease.
+
+    The scheduler uses :func:`app.services.jobs.dispatch` instead (jobs on
+    their own threads); this stays for callers that want it done inline.
+    """
+    from app.services import jobs
+
     if not settings.TASKS_ENABLED:
         return {"ran": 0}
-    service = TaskService(db)
-    due = service.due()
-    for task in due:
-        service.run(task)
-    return {"ran": len(due)}
+    jobs.recover(db)
+    ran = 0
+    for task_id in jobs.due(db):
+        if jobs.run(task_id) is not None:
+            ran += 1
+    db.expire_all()
+    return {"ran": ran}
+
+
+def _chat_agent(db: Session, conversation_id: int):
+    from app.models.conversation import Conversation
+
+    chat = db.get(Conversation, conversation_id) if conversation_id else None
+    return chat.agent_id if chat is not None else None
+
+
+def _notify_paused(task: Task) -> None:
+    from app.core import activity_state
+
+    activity_state.notice(f"Paused: {task.title}", f"It failed {task.attempts} times in a row: "
+                          f"{(task.error or '')[:160]}", kind="job",
+                          link={"tab": "ask", "conversation_id": task.conversation_id})

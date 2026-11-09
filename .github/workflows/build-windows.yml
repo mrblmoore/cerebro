@@ -86,6 +86,10 @@ jobs:
           pip install -r backend/requirements-browser.txt
           pip install -r desktop/requirements.txt
           pip install -r desktop/requirements-capture.txt
+          pip install -r desktop/requirements-voice.txt
+          # Test only (not bundled): the official MCP SDK's server, to check
+          # Cerebro's MCP client against it.
+          pip install "mcp>=2,<3"
           pip install pyinstaller
 
       - name: Run the test suite

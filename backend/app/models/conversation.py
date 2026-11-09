@@ -23,6 +23,8 @@ class Conversation(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=True)
+    #: The agent this chat belongs to (empty: the default agent).
+    agent_id = Column(Integer, nullable=True, index=True)
     #: Standing instructions the agent follows for every message in this chat.
     instructions = Column(Text, nullable=True)
     archived = Column(Boolean, default=False, index=True)
@@ -39,6 +41,7 @@ class Conversation(Base):
             "instructions": self.instructions or "",
             "archived": bool(self.archived),
             "pinned": bool(self.pinned),
+            "agent_id": self.agent_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,

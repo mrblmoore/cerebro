@@ -35,6 +35,41 @@ SPRITE_FOR = {
 }
 
 
+#: Activity state -> anime-face expression strip (``assets/faces/anime/<palette>/``).
+ANIME_FOR = {
+    "idle": "calm", "thinking": "thinking", "browsing": "focused", "writing": "focused",
+    "syncing": "focused", "searching": "reading", "listening": "listening",
+    "awaiting_approval": "alert", "error": "dizzy", "offline": "asleep",
+}
+ANIME_PALETTES = ("pink", "black", "silver", "blue", "brown", "green")
+
+#: Which face the tray and the buddy show (the default agent's): set by use_face().
+FACE = {"face": "brain", "palette": "pink"}
+
+
+def use_face(face: str = "brain", palette: str = None) -> bool:
+    """Switch the desktop face. Live2D/VRM can't be drawn here: they use the anime face.
+
+    Returns True when it changed (callers then redraw).
+    """
+    face = "anime" if face in ("anime", "live2d", "vrm") else "brain"
+    palette = palette if palette in ANIME_PALETTES else "pink"
+    wanted = {"face": face, "palette": palette if face == "anime" else FACE["palette"]}
+    if wanted == FACE:
+        return False
+    FACE.update(wanted)
+    manifest.cache_clear()
+    raw_frames.cache_clear()
+    frames.cache_clear()
+    return True
+
+
+def face_dir():
+    if FACE["face"] == "anime":
+        return mascot_dir().parent / "faces" / "anime" / FACE["palette"]
+    return mascot_dir()
+
+
 def mascot_dir():
     try:
         from branding import assets_dir
@@ -46,11 +81,23 @@ def mascot_dir():
 
 @lru_cache(maxsize=1)
 def manifest() -> Dict:
-    return json.loads((mascot_dir() / "mascot.json").read_text(encoding="utf-8"))
+    name = "face.json" if FACE["face"] == "anime" else "mascot.json"
+    return json.loads((face_dir() / name).read_text(encoding="utf-8"))
 
 
 def sprite_for(state: str) -> str:
+    if FACE["face"] == "anime":
+        return ANIME_FOR.get(state, "calm")
     return SPRITE_FOR.get(state, "dozing")
+
+
+def talk_frame(level: float, size: int = 64):
+    """The anime face's mouth open by ``level`` (0..1); ``None`` for the brain."""
+    if FACE["face"] != "anime" or "talk" not in manifest()["states"]:
+        return None
+    talk = raw_frames("talk")
+    index = min(len(talk) - 1, max(0, round(level * (len(talk) - 1))))
+    return _square(talk[index], size)
 
 
 @lru_cache(maxsize=None)
@@ -60,7 +107,7 @@ def raw_frames(sprite: str) -> Tuple:
 
     info = manifest()["states"][sprite]
     width, height = manifest()["frame"]["width"], manifest()["frame"]["height"]
-    strip = Image.open(mascot_dir() / info["file"]).convert("RGBA")
+    strip = Image.open(face_dir() / info["file"]).convert("RGBA")
     return tuple(strip.crop((index * width, 0, (index + 1) * width, height))
                  for index in range(info["frames"]))
 
@@ -68,17 +115,22 @@ def raw_frames(sprite: str) -> Tuple:
 @lru_cache(maxsize=None)
 def frames(state: str, size: int = 64) -> Tuple:
     """The animation loop for an activity ``state``, as square RGBA images."""
+    return tuple(_square(frame, size)
+                 for frame in raw_frames(sprite_for(state if state in STATES else "idle")))
+
+
+def _square(frame, size: int):
     from PIL import Image
 
-    out = []
-    for frame in raw_frames(sprite_for(state if state in STATES else "idle")):
-        side = max(frame.size)
-        square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-        square.alpha_composite(frame, ((side - frame.width) // 2, side - frame.height))
-        # BOX keeps pixel art legible when shrinking; NEAREST when growing.
+    side = max(frame.size)
+    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    square.alpha_composite(frame, ((side - frame.width) // 2, side - frame.height))
+    # Pixel art: BOX when shrinking, NEAREST when growing. The drawn face: LANCZOS.
+    if FACE["face"] == "anime":
+        method = Image.LANCZOS
+    else:
         method = Image.BOX if size < side else Image.NEAREST
-        out.append(square.resize((size, size), method))
-    return tuple(out)
+    return square.resize((size, size), method)
 
 
 def frame_seconds(state: str) -> float:

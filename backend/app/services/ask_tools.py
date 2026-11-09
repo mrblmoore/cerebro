@@ -380,6 +380,18 @@ class AskToolService:
         }
 
     def approve(self, action_id: int, destination: str = None) -> dict:
+        result = self._approve(action_id, destination)
+        _job_decided(self.db, action_id, "approved" if (result.get("kind") == "completion"
+                                                        and "couldn't" not in (result.get("reply") or ""))
+                     else "not sent")
+        return result
+
+    def discard(self, action_id: int) -> dict:
+        result = self._discard(action_id)
+        _job_decided(self.db, action_id, "discarded")
+        return result
+
+    def _approve(self, action_id: int, destination: str = None) -> dict:
         action = self.db.query(EnterpriseAction).get(action_id)
         if not action:
             return {"reply": "That draft no longer exists.", "kind": "completion",
@@ -429,7 +441,7 @@ class AskToolService:
             "notify": True,
         }
 
-    def discard(self, action_id: int) -> dict:
+    def _discard(self, action_id: int) -> dict:
         action = self.db.query(EnterpriseAction).get(action_id)
         if not action:
             return {"reply": "That draft no longer exists.", "kind": "completion"}
@@ -443,3 +455,13 @@ class AskToolService:
             "reply": "Draft discarded. Nothing was sent.", "kind": "completion",
             "cards": [_completion("Draft discarded", "Nothing was sent")],
         }
+
+
+def _job_decided(db, action_id: int, outcome: str) -> None:
+    """Let a job waiting on this draft carry on."""
+    try:
+        from app.services import jobs
+
+        jobs.decided(db, "draft", action_id, outcome)
+    except Exception:  # noqa: BLE001 - the decision itself already happened
+        pass

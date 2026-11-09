@@ -127,6 +127,7 @@ class Shell:
         self.window = None
         self.tray = None
         self.buddy = None
+        self.voice = None
         self.compact = False
         self._quitting = False
         self._save_timer = None
@@ -328,9 +329,45 @@ class Shell:
             return None
         self.buddy = buddy_module.Buddy(on_open=lambda: self.show(None), avoid=self._window_rect)
         self.buddy.set_enabled(bool(self.config.get("desktop_buddy", True)))
+        threading.Thread(target=self._follow_face, daemon=True, name="cerebro-face").start()
         self.tray.listeners.append(self.buddy.feed)
         self.buddy.start()
         return self.buddy
+
+    # --------------------------------------------------------- voice
+    def start_voice(self):
+        """Push-to-talk from anywhere (Ctrl+Space by default)."""
+        try:
+            import voice as voice_module
+
+            self.voice = voice_module.VoiceService(
+                self.api_url, on_levels=self.buddy.say if self.buddy else None)
+            if not self.voice.start():
+                self.voice = None
+        except Exception as exc:  # noqa: BLE001 - Cerebro works without a microphone
+            print(f"Push-to-talk unavailable: {exc}")
+            self.voice = None
+        return self.voice
+
+    def _follow_face(self):
+        """Show the default agent's face on the desktop (checked every minute)."""
+        import time
+
+        import requests
+
+        import brain_frames
+
+        while not self._quitting:
+            try:
+                face = requests.get(f"{self.api_url}/api/faces/desktop", timeout=5).json()
+                # The tray reads brain_frames.FACE on its next frame; the buddy
+                # also redraws its cached frames.
+                brain_frames.use_face(face.get("face"), face.get("palette"))
+                if self.buddy:
+                    self.buddy.set_face(face.get("face"), face.get("palette"))
+            except Exception:  # noqa: BLE001 - the server may be starting
+                pass
+            time.sleep(60)
 
     def set_buddy(self, enabled: bool):
         self.config["desktop_buddy"] = bool(enabled)
@@ -371,6 +408,8 @@ class Shell:
             self.tray.stop()
         if self.buddy:
             self.buddy.stop()
+        if self.voice:
+            self.voice.stop()
         if self.window is not None:
             self.window.destroy()
 
@@ -379,6 +418,7 @@ class Shell:
 
         self.create_window()
         tray = self.start_tray()
+        self.start_voice()
         if tray is None and self.start_hidden:
             self.window.show()   # no tray to bring it back from: never start hidden
         if tray is None:

@@ -55,6 +55,9 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
     _adopt_unfiled_messages()
+    from app.services import agents
+
+    agents.ensure_default()
 
 
 def _adopt_unfiled_messages() -> None:

@@ -16,6 +16,16 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 
 
+def _json(text, default):
+    import json
+
+    try:
+        value = json.loads(text) if text else default
+    except ValueError:
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -35,7 +45,8 @@ class Task(Base):
     #: HH:MM local time for day-based schedules.
     at_time = Column(String, nullable=True)
 
-    #: pending | active | needs_review | done | failed | cancelled
+    #: active (scheduled) | queued | running | waiting_input | waiting_approval |
+    #: paused | needs_review | done | failed | cancelled.
     #: needs_review means Cerebro produced something waiting on the user.
     status = Column(String, default="active", index=True)
 
@@ -54,6 +65,23 @@ class Task(Base):
     run_count = Column(Integer, default=0)
 
     source = Column(String, default="user")  # user | nudge | system
+    # ---- 0.7: agents and durable jobs (OpenMuse-style) ----
+    #: The agent doing this job (empty: the default agent).
+    agent_id = Column(Integer, nullable=True, index=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    milestone_id = Column(String, nullable=True)
+    #: JSON list of {"title", "status": pending|running|done|failed|waiting, "detail"}.
+    plan = Column(Text, nullable=True)
+    #: What the job is asking the user, while it waits for input; and the answer.
+    question = Column(Text, nullable=True)
+    answer = Column(Text, nullable=True)
+    #: Failed runs in a row (reset on success) — for backoff and pausing.
+    attempts = Column(Integer, nullable=True)
+    #: Held by a worker until this time; an expired lease means the run was interrupted.
+    lease_until = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+    #: JSON: approval ids it waits on, whether it already made an automatic change…
+    state = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -83,7 +111,23 @@ class Task(Base):
             "run_count": self.run_count,
             "source": self.source,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "agent_id": self.agent_id,
+            "project_id": self.project_id,
+            "milestone_id": self.milestone_id,
+            "plan": _json(self.plan, []),
+            "question": self.question,
+            "answer": self.answer,
+            "attempts": self.attempts or 0,
+            "error": self.error,
+            "state": _json(self.state, {}),
         }
+
+    def state_dict(self) -> dict:
+        return _json(self.state, {})
+
+    def plan_list(self) -> list:
+        return _json(self.plan, [])
 
     def __repr__(self):
         return f"<Task {self.title} ({self.status})>"

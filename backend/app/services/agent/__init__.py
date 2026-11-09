@@ -6,3 +6,7 @@ from app.services.agent import integration_tools as _integration_tools  # noqa: 
 from app.services.agent import systems_tools as _systems_tools  # noqa: F401,E402
 from app.services.agent import analysis_tools as _analysis_tools  # noqa: F401,E402
 from app.services.agent import system_tools as _system_tools  # noqa: F401,E402
+from app.services.agent import capability_tools as _capability_tools  # noqa: F401,E402
+from app.services.agent import web_tools as _web_tools  # noqa: F401,E402
+from app.services.agent import plan_tools as _plan_tools  # noqa: F401,E402
+from app.services.agent import agent_tools as _agent_tools  # noqa: F401,E402

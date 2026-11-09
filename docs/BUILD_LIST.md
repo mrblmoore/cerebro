@@ -188,3 +188,53 @@ template replies.
 - [ ] **B9.5 Real-tenant check** of Outlook and Teams on a work machine:
   connect both, receive a test email and @mention, approve a reply in each.
 
+## Phase 10 — Add-ons and voice (0.7.0)
+
+- [x] **B10.1 Add-ons at runtime.** A capabilities store under
+  `capabilities\`, with tools that appear and disappear without a restart,
+  and `find_tools` when there are many.
+- [x] **B10.2 MCP client.** Streamable HTTP, SSE and stdio; OAuth sign-in
+  with discovery, client registration and PKCE; keys and tokens encrypted
+  with DPAPI; uv downloaded on demand. Read-only tools run; others need
+  approval unless the server is set to auto-approve.
+- [x] **B10.3 Any website.** A connector made from an address that learns its
+  own search, plus `browse_*` tools. A click that submits becomes an approval
+  card with a screenshot. **Take control** hands the browser to the user.
+- [x] **B10.4 Skills.** Agent Skills `SKILL.md`: saved, imported and used by
+  name.
+- [x] **B10.5 Cerebro adds what it needs.** `find_connector` (the MCP
+  Registry), `add_mcp_server`, `add_website` and `save_skill`, with an
+  "Added" card that can be removed. A local program it chose itself asks
+  once.
+- [x] **B10.6 Add-ons UI.** A Connect-tab section with Add, enable,
+  auto-approve, keys, sign-in, export and import.
+- [x] **B10.7 Voice in.** Push-to-talk (Ctrl+Space) and a mic button, with
+  faster-whisper on the PC and domain-word hints.
+- [x] **B10.8 Voice mode.** Short spoken answers, a plan card for bigger
+  jobs, 12 steps, and spoken approvals ("yes, send it").
+- [x] **B10.9 Voice out.** Polly, then Edge voices, then the Windows voice.
+- [ ] **B10.10 Real-world check** on a work PC: add a real MCP server from the
+  Registry, connect an intranet site, and run a push-to-talk reply end to end.
+
+## Phase 11 — Agents, faces and OpenMuse-style work (0.7.0)
+
+- [x] **B11.1 Agents.** Named agents sharing one memory and the same tools,
+  each with its own role, instructions, chats, jobs, face, voice and tool
+  scope. They can hand work to each other, and a spoken name sends a request
+  to that agent.
+- [x] **B11.2 Durable jobs.** Plans, a run log, questions for you, approval
+  waits that resume, pause/resume/cancel/retry, leases, backoff, and
+  recovery after a restart (no retry after an automatic change).
+- [x] **B11.3 Projects and milestones.**
+- [x] **B11.4 Watches.** Change, contains, absent, below and above
+  conditions; one alert per change; follow-up jobs; backoff and pause.
+- [x] **B11.5 Ideas.** From nudges, quiet cases, repeated questions and
+  watches (plus an optional AI pass), routed by scope; accept or dismiss.
+- [x] **B11.6 Grok-style layout.** Agents sidebar (full, rail, or drawer),
+  Home board, Work view, the face stage, and the agent editor.
+- [x] **B11.7 Faces.** An original anime face (six colours, expressions,
+  lip sync); Live2D and VRM models you load; desktop strips for the buddy
+  and tray, with the buddy's mouth moving in time with speech.
+- [ ] **B11.8 Real-world check** on a work PC: three agents running jobs
+  side by side, a watch on a real case, and a VRM face speaking a reply.
+

@@ -69,6 +69,15 @@ class MessageIn(BaseModel):
     image: Optional[str] = None
     #: The chat this message belongs to; the latest open chat when omitted.
     conversation_id: Optional[int] = None
+    #: Spoken (the mic button): Ask answers briefly and acts on it.
+    voice: bool = False
+
+
+def _message_context(db: Session, request: MessageIn) -> Dict[str, Any]:
+    context = _context(db)
+    if request.voice:
+        context["voice"] = True
+    return context
 
 
 @router.post("/message", dependencies=[Depends(require_local_origin)])
@@ -78,7 +87,7 @@ def send_message(request: MessageIn, db: Session = Depends(get_db)) -> Dict[str,
     service = _service(db, request.conversation_id)
     _working(service.conversation_id, 1)
     try:
-        result = service.handle_message(request.message, context=_context(db),
+        result = service.handle_message(request.message, context=_message_context(db, request),
                                         image=request.image)
     finally:
         _working(service.conversation_id, -1)
@@ -121,7 +130,7 @@ def stream_message(request: MessageIn):
         try:
             service = ChatService(db, conversation_id)
             result = service.handle_message(
-                request.message, context=_context(db), image=request.image,
+                request.message, context=_message_context(db, request), image=request.image,
                 emit=lambda card: events.put(("card", card)))
             result["conversation"] = service.conversation.to_dict()
             events.put(("message", result))
@@ -164,6 +173,7 @@ def history(limit: int = Query(50, ge=1, le=200),
 class ConversationIn(BaseModel):
     title: Optional[str] = None
     instructions: Optional[str] = None
+    agent_id: Optional[int] = None
 
 
 class ConversationPatch(BaseModel):
@@ -171,6 +181,7 @@ class ConversationPatch(BaseModel):
     instructions: Optional[str] = None
     pinned: Optional[bool] = None
     archived: Optional[bool] = None
+    agent_id: Optional[int] = None
 
 
 def _chat_or_404(db: Session, conversation_id: int):
@@ -189,13 +200,14 @@ def _with_status(item: Dict[str, Any], busy: Set[int]) -> Dict[str, Any]:
 
 @router.get("/conversations", dependencies=[Depends(require_local_origin)])
 def list_conversations(archived: bool = False, q: Optional[str] = None,
+                       agent_id: Optional[int] = None,
                        db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Chats, pinned first then most recent; ``q`` searches titles and messages."""
     from app.models.task import Task
     from app.services import conversations
 
     busy = _busy()
-    items = [_with_status(item, busy) for item in conversations.listing(db, archived, q)]
+    items = [_with_status(item, busy) for item in conversations.listing(db, archived, q, agent_id=agent_id)]
     scheduled = {cid for (cid,) in db.query(Task.conversation_id)
                  .filter(Task.conversation_id.isnot(None), Task.status == "active")}
     for item in items:
@@ -209,7 +221,8 @@ def create_conversation(request: ConversationIn = None,
     from app.services import conversations
 
     request = request or ConversationIn()
-    return conversations.create(db, request.title, request.instructions).to_dict()
+    return conversations.create(db, request.title, request.instructions,
+                                agent_id=request.agent_id).to_dict()
 
 
 @router.get("/conversations/{conversation_id}", dependencies=[Depends(require_local_origin)])
@@ -224,7 +237,11 @@ def update_conversation(conversation_id: int, request: ConversationPatch,
     from app.services import conversations
 
     chat = _chat_or_404(db, conversation_id)
-    return conversations.update(db, chat, **request.dict()).to_dict()
+    fields = request.dict()
+    if fields.pop("agent_id", None) is not None:
+        chat.agent_id = request.agent_id
+        db.commit()
+    return conversations.update(db, chat, **fields).to_dict()
 
 
 @router.post("/conversations/{conversation_id}/end", dependencies=[Depends(require_local_origin)])
@@ -316,7 +333,6 @@ def run_conversation_task(conversation_id: int, task_id: int,
 def run_task_in_background(task_id: int) -> None:
     from app.core.database import SessionLocal
     from app.models.task import Task
-    from app.services.task_service import TaskService
 
     with SessionLocal() as db:
         task = db.query(Task).get(task_id)
@@ -325,11 +341,14 @@ def run_task_in_background(task_id: int) -> None:
         _working(conversation_id, 1)
 
     def work():
+        from app.services import jobs
+
         db = SessionLocal()
         try:
             task = db.query(Task).get(task_id)
             if task is not None:
-                TaskService(db).run(task)
+                jobs.make_runnable(db, task)
+                jobs.run(task_id)
         finally:
             if conversation_id:
                 _working(conversation_id, -1)

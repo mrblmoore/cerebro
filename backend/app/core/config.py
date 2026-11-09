@@ -273,6 +273,30 @@ class Settings(BaseSettings):
     #: Learn the user's writing voice from their sent messages and transcripts.
     STYLE_LEARNING_ENABLED: bool = True
 
+    # ---------------------------------------------------------------- voice
+    #: Talk to Cerebro: hold the hotkey (or press the mic button), speak, let go.
+    #: Speech is turned into text on this PC (faster-whisper); nothing is sent
+    #: anywhere to be transcribed.
+    VOICE_ENABLED: bool = True
+    #: Push-to-talk keys, e.g. "ctrl+space", "ctrl+shift+space", "f9".
+    VOICE_HOTKEY: str = "ctrl+space"
+    #: Speech model: tiny.en (fastest) | base.en | small.en (most accurate).
+    #: Downloaded once, on first use.
+    VOICE_MODEL: str = "base.en"
+    #: Read Cerebro's short spoken summary aloud after a spoken request.
+    VOICE_SPEAK_REPLIES: bool = True
+    #: auto | polly | edge | windows | off. "auto" tries Amazon Polly (when AWS
+    #: access is set up for Bedrock), then Microsoft Edge's online voices, then
+    #: the voice built into Windows.
+    VOICE_PROVIDER: str = "auto"
+    #: Voice name for the chosen provider ("" = a natural default).
+    VOICE_NAME: str = ""
+    #: Speaking speed, 0.5–2.0.
+    VOICE_RATE: float = 1.0
+    #: The mic button in Ask: "review" puts the words in the box to check;
+    #: "send" sends them straight away.
+    VOICE_MIC_MODE: str = "review"
+
     # ------------------------------------------------- copilot studio bridge
     #: Entirely optional. Cerebro is complete without it; this shares a slice of
     #: what it knows with a Microsoft Copilot Studio agent, and lets that agent
@@ -298,6 +322,14 @@ class Settings(BaseSettings):
     TASK_TICK_SECONDS: int = 30
     #: Surface proactive nudges (unanswered mail, cases resolved but not updated).
     NUDGES_ENABLED: bool = True
+    #: How many agent jobs may run at the same time.
+    JOBS_PARALLEL: int = 2
+    #: Suggest jobs ("ideas") from mail, cases and watches.
+    IDEAS_ENABLED: bool = True
+    #: Also let the AI read recent mail for ideas (at most hourly; uses the AI provider).
+    IDEAS_AI: bool = False
+    #: A case with nothing happening for this many days gets a follow-up idea.
+    IDEAS_QUIET_DAYS: int = 5
 
     # ------------------------------------------------------------- browser
     #: Report every page visited, not just recognised CRM cases.

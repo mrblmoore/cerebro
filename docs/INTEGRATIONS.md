@@ -15,6 +15,10 @@ messages. It watches Outlook and Teams for new messages, tells you about the
 important ones, and looks into them for you (see
 [Outlook and Teams](#outlook-and-teams)).
 
+> **Something else?** Cerebro can connect to systems beyond these by
+> itself: any MCP server, or any website you sign in to. Ask for what you
+> need, or see [ADDONS.md](ADDONS.md).
+
 ## Your setup
 
 | System | Address (pre-filled) |
