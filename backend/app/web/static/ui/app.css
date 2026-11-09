@@ -941,3 +941,36 @@ body.maximized .app { max-width: none; }
 .md.brief ul { padding-left: 18px; margin: 4px 0; }
 .todo-row .badge { white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
 .logo.addon-app { background: linear-gradient(135deg, #475569, #0ea5e9); }
+
+/* ---------------------------------------------------------------- 0.9
+ * Agent editor: live face preview, hairstyles, model expressions, voice & personality; Talk live. */
+.face-editor { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 14px; margin-top: 8px; align-items: start; }
+@media (max-width: 560px) { .face-editor { grid-template-columns: minmax(0, 1fr); } }
+.face-preview-wrap { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.face-preview { width: 150px; height: 150px; border-radius: 18px; background: var(--glass); border: 1px solid var(--stroke); overflow: hidden; }
+.face-preview > svg, .face-preview > canvas { width: 100%; height: 100%; display: block; }
+.expr-row { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; max-width: 170px; }
+.chip { border: 1px solid var(--stroke); background: var(--glass); color: var(--text-dim); border-radius: 999px;
+  padding: 2px 8px; font: inherit; font-size: 11px; cursor: pointer; }
+.chip:hover { color: var(--text); border-color: var(--stroke-strong); }
+.mini-label { font-size: 11.5px; color: var(--text-faint); margin: 2px 0 6px; display: flex; align-items: center; gap: 8px; }
+.face-options .palette-row { margin-bottom: 10px; }
+.mapping { margin-top: 10px; }
+.map-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) 70px 28px; gap: 6px; align-items: center; font-size: 12px; margin-bottom: 4px; }
+.map-row .input.sm, .input.sm { padding: 4px 6px; font-size: 12px; min-width: 0; }
+.voice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; font-size: 12px; color: var(--text-dim); }
+.voice-grid label, .slider-grid label { display: flex; flex-direction: column; gap: 4px; }
+.slider-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 6px 14px; margin: 10px 0 6px; font-size: 12px; color: var(--text-dim); }
+.slider-grid input[type=range] { accent-color: var(--accent); width: 100%; }
+.slider-grid label.check { flex-direction: row; align-items: center; }
+.check-row { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+.icon-btn.live.on { color: #fff; background: var(--accent-grad); }
+.icon-btn.live.on::after { content: ""; position: absolute; inset: -3px; border-radius: inherit; border: 2px solid var(--accent); animation: live-ring 1.4s ease-out infinite; }
+.icon-btn.live { position: relative; }
+@keyframes live-ring { from { opacity: .8; transform: scale(1); } to { opacity: 0; transform: scale(1.35); } }
+@media (prefers-reduced-motion: reduce) { .icon-btn.live.on::after { animation: none; } }
+.live-strip { display: flex; align-items: center; gap: 8px; margin: 0 4px 8px; padding: 6px 10px; border-radius: 12px;
+  background: var(--accent-soft); font-size: 12.5px; }
+.live-strip .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn[hidden] { display: none !important; }
+.palette-row .face-avatar.hair-thumb { width: 44px; height: 44px; margin: 0; display: block; }

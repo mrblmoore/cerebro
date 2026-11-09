@@ -116,6 +116,8 @@ hiddenimports = [
     "app.services.briefings", "app.services.secretary_docs",
     "app.services.agent.app_tools", "app.services.agent.keep_tools",
     "app.services.agent.secretary_tools", "app.api.secretary",
+    # 0.9: personality and expressive voice, Nova Sonic.
+    "app.services.personality", "app.services.sonic",
     "edge_tts", "faster_whisper", "ctranslate2", "av", "tokenizers", "numpy",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
@@ -138,6 +140,21 @@ for package in ("pywinauto", "comtypes"):
         datas += collect_data_files(package)
     except Exception:  # not installed at build time: desktop apps are simply unavailable
         pass
+# Nova Sonic: AWS's async SDK (Smithy) and the CRT, whose native module is
+# the top-level _awscrt extension.
+for package in ("aws_sdk_bedrock_runtime", "aws_sdk_signers", "smithy_core", "smithy_http",
+                "smithy_aws_core", "smithy_aws_event_stream", "smithy_json", "awscrt"):
+    try:
+        hiddenimports += collect_submodules(package)
+        datas += collect_data_files(package)
+    except Exception:  # not installed at build time: Nova Sonic is simply unavailable
+        pass
+try:
+    import _awscrt  # noqa: F401
+
+    hiddenimports.append("_awscrt")
+except ImportError:
+    pass
 for package in ("faster_whisper", "ctranslate2", "av", "edge_tts"):
     try:
         hiddenimports += collect_submodules(package)

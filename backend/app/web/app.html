@@ -129,12 +129,16 @@
         <div class="chat-extras" id="chat-extras"></div>
         <div class="scroll" id="ask-scroll"><div class="thread" id="thread"></div></div>
         <div class="composer-wrap">
+          <div id="live-strip" hidden></div>
           <div id="attachment"></div>
           <form class="composer glass" id="composer">
             <button type="button" class="icon-btn" id="attach-btn" title="Attach an image or a document (Word, Excel, PDF, logs…) — or drop it here" aria-label="Attach a file">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/></svg>
             </button>
             <input type="file" id="file-input" multiple accept="image/*,.docx,.xlsx,.pptx,.pdf,.txt,.csv,.md,.log,.zip,.json,.xml,.vtt,.srt,.tsv,.html,.htm,.eml" hidden>
+            <button type="button" class="icon-btn live" id="live-btn" title="Talk live — just talk; it answers right away and you can interrupt (Amazon Nova Sonic)" aria-label="Talk live" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h2M7 8v8M11 5v14M15 8v8M19 11v2"/></svg>
+            </button>
             <button type="button" class="icon-btn mic" id="mic-btn" title="Talk to Cerebro — click, speak, click again (or hold Ctrl+Space anywhere)" aria-label="Talk to Cerebro">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
             </button>

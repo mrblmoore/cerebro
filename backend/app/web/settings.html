@@ -153,6 +153,7 @@ function renderPanel() {
         <span class="gicon">${groupIcon(group)}</span>
         <h2>${esc(group.title)}</h2>
         ${testTarget ? `<button type="button" class="btn-sm" id="test">Test connection</button>` : ''}
+        ${active === 'voice' ? `<button type="button" class="btn-sm" id="test-voice">Test voice</button>` : ''}
       </header>
       <div class="body">
         <p style="margin-top:-4px">${esc(group.description)}</p>
@@ -232,6 +233,27 @@ function renderPanel() {
     } catch (error) {
       toast(error.message, 'err', 7000);
     } finally { test.disabled = false; test.textContent = original; }
+  };
+
+  // Say a line with the chosen voice, and report exactly what the service answered.
+  const testVoice = document.getElementById('test-voice');
+  if (testVoice) testVoice.onclick = async () => {
+    if (isDirty() && !(await save())) return;
+    testVoice.disabled = true;
+    const original = testVoice.textContent;
+    testVoice.textContent = 'Speaking…';
+    try {
+      const result = await API.post('/api/voice/test', {});
+      if (result.ok) {
+        new Audio(`data:${result.mime};base64,${result.audio}`).play().catch(() => {});
+        toast(`Spoken by ${result.provider}.`, 'ok', 5000);
+      } else {
+        const why = result.status?.sonic_detail ? ` Nova Sonic: ${result.status.sonic_detail}` : '';
+        toast(`${result.detail}${why}`, 'err', 12000);
+      }
+    } catch (error) {
+      toast(error.message, 'err', 7000);
+    } finally { testVoice.disabled = false; testVoice.textContent = original; }
   };
 
   if (active === 'copilot') renderCopilotGuide();

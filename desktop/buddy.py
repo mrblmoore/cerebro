@@ -112,9 +112,9 @@ class Buddy(threading.Thread):
     def set_enabled(self, enabled: bool) -> None:
         self.logic.enabled = bool(enabled)
 
-    def set_face(self, face: str, palette: str = None) -> None:
+    def set_face(self, face: str, palette: str = None, hair: str = None) -> None:
         """Show the brain or the anime face (Live2D/VRM show as the anime face)."""
-        self._face_request = (face, palette)
+        self._face_request = (face, palette, hair)
 
     def say(self, levels, step: float) -> None:
         """Move the mouth in time with speech: ``levels`` (0..1) every ``step`` seconds."""
@@ -216,10 +216,10 @@ class Buddy(threading.Thread):
             except queue.Empty:
                 break
         if self._face_request is not None:
-            face, palette = self._face_request
+            face, palette, hair = self._face_request
             self._face_request = None
-            brain_frames.use_face(face, palette)
-            current = (brain_frames.FACE["face"], brain_frames.FACE["palette"])
+            brain_frames.use_face(face, palette, hair)
+            current = (brain_frames.FACE["face"], brain_frames.FACE["palette"], brain_frames.FACE["hair"])
             if current != getattr(self, "_face", None):
                 self._face = current
                 self._frames.clear()

@@ -269,3 +269,35 @@ template replies.
   updated from a synced Excel export, drive an in-house desktop tool, and
   get a morning briefing from the real calendar.
 
+## Phase 13 — A cuter face, expressive models and an expressive voice (0.9.0)
+
+- [x] **B13.1 Idol-style anime face.** Redrawn: glossy sparkle eyes,
+  layered shiny hair with an ahoge, a sailor collar and a heart headset.
+  Four hairstyles (long, twin-tails, bob, side ponytail) and 14 expressions.
+- [x] **B13.2 Reactions.** The face reacts to how things turned out (done,
+  failed, needs approval, approved, discarded, thanked), on the stage and on
+  the desktop buddy.
+- [x] **B13.3 Model expressions.** VRM and Live2D expressions are matched to
+  Cerebro's states by name, editable with weights and a preview; framing
+  (zoom, height, mirror).
+- [x] **B13.4 Model life and lip sync.** Natural blinks, gaze and head
+  following the cursor, breathing, nods; vowel lip sync from five speech
+  bands; Live2D parameters and tap motions.
+- [x] **B13.5 VRMA gestures.** `.vrma` files per VRM model, played on
+  events, via three-vrm-animation (MIT, vendored).
+- [x] **B13.6 Desktop strips** for every colour × hairstyle, quantized
+  (about 4 MB in all).
+- [x] **B13.7 Personality.** Presets (sweetheart by default: cute,
+  cheerful, teasing), sliders and custom text in each agent's system
+  prompt, with guardrails; customer drafts keep the user's style.
+- [x] **B13.8 Expressive speech.** A cue language (giggle, gasp, whisper,
+  tease…), never shown in chat, rendered per voice: Polly SSML per engine
+  (generative, neural, long-form, standard) with fallbacks, Edge and
+  Windows prosody.
+- [x] **B13.9 Amazon Nova Sonic.** Replies voiced in character, and **Talk
+  live**: a WebSocket with a bidirectional Nova Sonic stream, barge-in, and
+  `ask_cerebro` handing real work to the agent loop with approvals.
+- [ ] **B13.10 Real-world check** with AWS credentials: Polly generative
+  with cues, Nova Sonic reading a reply, and a Talk live session; a real
+  VRM with a `.vrma` gesture and a real Live2D model.
+

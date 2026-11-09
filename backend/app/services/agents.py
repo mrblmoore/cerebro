@@ -66,25 +66,25 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "and SharePoint for the cause and fix; cite what you find; suggest the "
                         "next step and a note for the case.",
         "tool_scope": ["knowledge", "cases", "kb", "sharepoint", "files", "web"],
-        "face": "anime", "face_style": {"palette": "blue"}, "color": "#38bdf8"},
+        "face": "anime", "face_style": {"palette": "blue", "hair": "bob"}, "color": "#38bdf8"},
     "inbox": {
         "name": "Inbox assistant", "role": "Keeps on top of Outlook and Teams",
         "instructions": "Triage new mail and chats, draft replies in the user's voice, and "
                         "flag anything urgent. Never send without approval.",
         "tool_scope": ["knowledge", "messaging", "cases"],
-        "face": "anime", "face_style": {"palette": "pink"}, "color": "#f472b6"},
+        "face": "anime", "face_style": {"palette": "pink", "hair": "twintails"}, "color": "#f472b6"},
     "kb-writer": {
         "name": "KB writer", "role": "Turns fixes into knowledge articles",
         "instructions": "Write clear, step-by-step knowledge articles from resolved cases and "
                         "repeated questions. Check RightAnswers for an existing article first.",
         "tool_scope": ["knowledge", "kb", "sharepoint", "cases", "files"],
-        "face": "anime", "face_style": {"palette": "brown"}, "color": "#f59e0b"},
+        "face": "anime", "face_style": {"palette": "brown", "hair": "long"}, "color": "#f59e0b"},
     "watcher": {
         "name": "Watcher", "role": "Keeps an eye on pages and statuses",
         "instructions": "Set up watches for what the user wants followed, and when one fires, "
                         "say plainly what changed and what to do about it.",
         "tool_scope": ["knowledge", "web", "files", "cases"],
-        "face": "anime", "face_style": {"palette": "green"}, "color": "#34d399"},
+        "face": "anime", "face_style": {"palette": "green", "hair": "sideponytail"}, "color": "#34d399"},
     "blank": {"name": "New agent", "role": "", "instructions": "", "tool_scope": [],
               "face": "anime", "face_style": {"palette": "silver"}, "color": "#a78bfa"},
 }
@@ -216,7 +216,17 @@ def _apply(agent, fields: Dict[str, Any]) -> None:
                 continue
             setattr(agent, key, value)
     if fields.get("face_style") is not None:
-        agent.face_style = json.dumps(fields["face_style"])
+        from app.services.personality import clean_face_style
+
+        agent.face_style = json.dumps(clean_face_style(fields["face_style"]))
+    if fields.get("voice_style") is not None:
+        from app.services.personality import clean_voice
+
+        agent.voice_style = json.dumps(clean_voice(fields["voice_style"]))
+    if fields.get("personality") is not None:
+        from app.services.personality import clean_personality
+
+        agent.personality = json.dumps(clean_personality(fields["personality"]))
     if fields.get("tool_scope") is not None:
         scope = [s for s in fields["tool_scope"] if s in GROUPS or str(s).startswith(("mcp:", "site:"))]
         agent.tool_scope = json.dumps(scope)
@@ -255,6 +265,11 @@ def identity_block(db, agent) -> str:
         lines.append("You may use only these kinds of tools: " + ", ".join(
             GROUPS.get(s, s) for s in scope) + ". If a request needs something else, say so "
             "and offer to hand it to an agent that can.")
+    from app.services.personality import persona_block
+
+    persona = persona_block(agent)
+    if persona:
+        lines.append(persona)
     if (agent.instructions or "").strip():
         lines.append("Your standing instructions from the user:\n" + agent.instructions.strip())
     return "\n".join(lines)

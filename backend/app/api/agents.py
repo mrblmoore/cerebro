@@ -28,6 +28,8 @@ class AgentIn(BaseModel):
     face_style: Optional[Dict[str, Any]] = None
     voice_name: Optional[str] = None
     voice_rate: Optional[float] = None
+    voice_style: Optional[Dict[str, Any]] = None
+    personality: Optional[Dict[str, Any]] = None
     tool_scope: Optional[List[str]] = None
     color: Optional[str] = None
     sort: Optional[int] = None

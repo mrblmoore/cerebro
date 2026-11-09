@@ -1,0 +1,70 @@
+{
+  "frame": {
+    "width": 128,
+    "height": 128
+  },
+  "states": {
+    "calm": {
+      "frames": 12,
+      "ms": 150,
+      "file": "calm.png"
+    },
+    "thinking": {
+      "frames": 8,
+      "ms": 150,
+      "file": "thinking.png"
+    },
+    "reading": {
+      "frames": 8,
+      "ms": 160,
+      "file": "reading.png"
+    },
+    "focused": {
+      "frames": 8,
+      "ms": 140,
+      "file": "focused.png"
+    },
+    "listening": {
+      "frames": 8,
+      "ms": 150,
+      "file": "listening.png"
+    },
+    "surprised": {
+      "frames": 8,
+      "ms": 95,
+      "file": "surprised.png"
+    },
+    "dizzy": {
+      "frames": 8,
+      "ms": 90,
+      "file": "dizzy.png"
+    },
+    "asleep": {
+      "frames": 12,
+      "ms": 220,
+      "file": "asleep.png"
+    },
+    "happy": {
+      "frames": 8,
+      "ms": 120,
+      "file": "happy.png"
+    },
+    "sorry": {
+      "frames": 8,
+      "ms": 140,
+      "file": "sorry.png"
+    },
+    "talk": {
+      "frames": 5,
+      "ms": 80,
+      "file": "talk.png",
+      "levels": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ]
+    }
+  }
+}

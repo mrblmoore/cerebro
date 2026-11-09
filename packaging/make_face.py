@@ -4,8 +4,9 @@ for the desktop buddy and the tray, which can only show image frames.
 
     python packaging/make_face.py
 
-For each palette it writes ``assets/faces/anime/<palette>/<sprite>.png`` (one
-horizontal strip per expression) and ``face.json`` in the same format as
+For each palette and hairstyle it writes
+``assets/faces/anime/<palette>/<hair>/<sprite>.png`` (one horizontal strip per
+expression, quantized to keep the installer small) and ``face.json`` in the same format as
 ``assets/mascot/mascot.json``. ``talk`` holds mouth shapes from closed to wide
 open, picked by speech level rather than by time. Run it after changing the
 face; the output is committed, so building Cerebro doesn't need a browser.
@@ -29,20 +30,24 @@ SPRITES = {
     "reading": ("reading", 8, 160, 3600),
     "focused": ("focused", 8, 140, 3600),
     "listening": ("listening", 8, 150, 3600),
-    "alert": ("alert", 8, 95, 0),
+    "surprised": ("surprised", 8, 95, 0),
     "dizzy": ("dizzy", 8, 90, 0),
     "asleep": ("asleep", 12, 220, 0),
+    # Passing reactions the buddy shows for a few seconds.
+    "happy": ("happy", 8, 120, 0),
+    "sorry": ("sorry", 8, 140, 0),
 }
 TALK = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 SHEET = """<!doctype html><html><body style="margin:0;background:transparent">
 <div id="host" style="width:{size}px;height:{size}px"></div>
 <script type="module">
-  import {{ animeSVG, poseAnime, PALETTE_NAMES }} from '/ui/face.js';
+  import {{ animeSVG, poseAnime, PALETTE_NAMES, HAIR_NAMES }} from '/ui/face.js';
   window.PALETTES = PALETTE_NAMES;
-  window.draw = (palette, expr, t, mouth) => {{
+  window.HAIRS = HAIR_NAMES;
+  window.draw = (palette, hair, expr, t, mouth) => {{
     const host = document.getElementById('host');
-    host.innerHTML = animeSVG(palette, expr);
+    host.innerHTML = animeSVG({{ palette, hair }}, expr);
     const svg = host.querySelector('svg');
     svg.setAttribute('width', {size}); svg.setAttribute('height', {size});
     poseAnime(svg, t, mouth);
@@ -84,25 +89,30 @@ def build() -> dict:
             page.goto(f"http://127.0.0.1:{server.server_port}/sheet.html")
             page.wait_for_function("window.ready === true")
             palettes = page.evaluate("window.PALETTES")
+            hairs = page.evaluate("window.HAIRS")
 
-            def shot(palette, expr, t, mouth):
-                page.evaluate("([p, e, t, m]) => window.draw(p, e, t, m)", [palette, expr, t, mouth])
+            def shot(palette, hair, expr, t, mouth):
+                page.evaluate("([p, h, e, t, m]) => window.draw(p, h, e, t, m)", [palette, hair, expr, t, mouth])
                 return Image.open(BytesIO(page.locator("#host").screenshot(omit_background=True))).convert("RGBA")
 
             for palette in palettes:
-                target = OUT / palette
-                target.mkdir(parents=True, exist_ok=True)
-                manifest = {"frame": {"width": SIZE, "height": SIZE}, "states": {}}
-                for sprite, (expr, count, ms, start) in SPRITES.items():
-                    frames = [shot(palette, expr, start + i * ms, 0.0) for i in range(count)]
-                    _strip(frames, target / f"{sprite}.png")
-                    manifest["states"][sprite] = {"frames": count, "ms": ms, "file": f"{sprite}.png"}
-                frames = [shot(palette, "calm", 1200, level) for level in TALK]
-                _strip(frames, target / "talk.png")
-                manifest["states"]["talk"] = {"frames": len(TALK), "ms": 80, "file": "talk.png",
-                                              "levels": list(TALK)}
-                (target / "face.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-                summary[palette] = len(manifest["states"])
+                for old in (OUT / palette).glob("*.png") if (OUT / palette).is_dir() else ():
+                    old.unlink()                          # the pre-0.9 single-hairstyle strips
+                (OUT / palette / "face.json").unlink(missing_ok=True)
+                for hair in hairs:
+                    target = OUT / palette / hair
+                    target.mkdir(parents=True, exist_ok=True)
+                    manifest = {"frame": {"width": SIZE, "height": SIZE}, "states": {}}
+                    for sprite, (expr, count, ms, start) in SPRITES.items():
+                        frames = [shot(palette, hair, expr, start + i * ms, 0.0) for i in range(count)]
+                        _strip(frames, target / f"{sprite}.png")
+                        manifest["states"][sprite] = {"frames": count, "ms": ms, "file": f"{sprite}.png"}
+                    frames = [shot(palette, hair, "calm", 1200, level) for level in TALK]
+                    _strip(frames, target / "talk.png")
+                    manifest["states"]["talk"] = {"frames": len(TALK), "ms": 80, "file": "talk.png",
+                                                  "levels": list(TALK)}
+                    (target / "face.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+                    summary[f"{palette}/{hair}"] = len(manifest["states"])
             browser.close()
     finally:
         server.shutdown()
@@ -115,7 +125,8 @@ def _strip(frames, path: Path) -> None:
     strip = Image.new("RGBA", (SIZE * len(frames), SIZE), (0, 0, 0, 0))
     for index, frame in enumerate(frames):
         strip.paste(frame.resize((SIZE, SIZE)), (index * SIZE, 0))
-    strip.save(path, optimize=True)
+    # 128 colours with alpha: about a quarter of the size, and indistinguishable at buddy size.
+    strip.quantize(colors=128, method=Image.Quantize.FASTOCTREE).save(path, optimize=True)
 
 
 if __name__ == "__main__":

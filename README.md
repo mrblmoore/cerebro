@@ -103,14 +103,18 @@ drafts the chaser. It takes notes from calls and fills in your Word and Excel
 templates. See [docs/SECRETARY.md](docs/SECRETARY.md).
 
 **Faces**
-Pick the pixel brain, an original anime-style face that reacts and lip-syncs
-as it speaks, or load your own Live2D or VRM model. See
-[docs/FACES.md](docs/FACES.md).
+Pick the pixel brain, an original idol-style anime face (six colours, four
+hairstyles, 14 expressions) that reacts to how things turn out and lip-syncs
+as it speaks, or load your own Live2D or VRM model and map its expressions,
+framing and `.vrma` gestures. See [docs/FACES.md](docs/FACES.md).
 
 **Talk to it**
 Hold **Ctrl+Space** anywhere (or click the mic), say what you want, let go.
 Speech is turned into text on your PC; Cerebro acts and answers aloud.
-"Yes, send it" approves. See [docs/VOICE.md](docs/VOICE.md).
+"Yes, send it" approves. Each agent has a personality (cute, cheerful and
+teasing by default) and an expressive voice: Amazon Polly with per-engine
+effects, or Amazon Nova Sonic, which also powers **Talk live**, a hands-free
+conversation you can interrupt. See [docs/VOICE.md](docs/VOICE.md).
 
 **Browser extension**
 Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases and the SharePoint
@@ -210,10 +214,10 @@ from that one state.
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting and what it does |
 | [docs/WIDGET.md](docs/WIDGET.md) | The desktop widget in detail |
 | [docs/ADDONS.md](docs/ADDONS.md) | MCP servers, websites, desktop apps and skills added at runtime |
-| [docs/VOICE.md](docs/VOICE.md) | Push-to-talk, the mic button and spoken replies |
+| [docs/VOICE.md](docs/VOICE.md) | Push-to-talk, the mic button, spoken replies, personality, Polly, Nova Sonic and Talk live |
 | [docs/AGENTS.md](docs/AGENTS.md) | Agents, jobs, keeping things updated, attachments, projects, watches and ideas |
 | [docs/SECRETARY.md](docs/SECRETARY.md) | Calendar, follow-ups and to-dos, briefings, meeting notes, templates |
-| [docs/FACES.md](docs/FACES.md) | The anime face, and loading Live2D or VRM models |
+| [docs/FACES.md](docs/FACES.md) | The anime face, reactions, and loading and tuning Live2D or VRM models |
 | [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md) | Outlook and Teams integration, flow by flow |
 | [docs/DOCUMENTS.md](docs/DOCUMENTS.md) | Reading and editing Word, Excel and PDF |
 | [docs/SECOND_BRAIN.md](docs/SECOND_BRAIN.md) | Memory, writing voice, tasks, nudges, activity capture |

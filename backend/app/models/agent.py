@@ -36,6 +36,11 @@ class Agent(Base):
     face_style = Column(Text, nullable=True)
     voice_name = Column(String, nullable=True)
     voice_rate = Column(Float, nullable=True)
+    #: JSON: how it sounds — provider, engine, pitch, volume, timbre, effects
+    #: (see app.services.personality.clean_voice).
+    voice_style = Column(Text, nullable=True)
+    #: JSON: who it is — preset and sliders (see app.services.personality).
+    personality = Column(Text, nullable=True)
     #: JSON list of tool groups it may use; empty means everything.
     tool_scope = Column(Text, nullable=True)
     color = Column(String, nullable=True)
@@ -51,12 +56,19 @@ class Agent(Base):
     def scope(self) -> list:
         return _load(self.tool_scope, [])
 
+    def voice(self) -> dict:
+        return _load(self.voice_style, {})
+
+    def persona(self) -> dict:
+        return _load(self.personality, {})
+
     def to_dict(self) -> dict:
         return {
             "id": self.id, "name": self.name, "role": self.role or "",
             "instructions": self.instructions or "", "face": self.face or "brain",
             "face_style": self.style(), "voice_name": self.voice_name or "",
-            "voice_rate": self.voice_rate, "tool_scope": self.scope(),
+            "voice_rate": self.voice_rate, "voice_style": self.voice(),
+            "personality": self.persona(), "tool_scope": self.scope(),
             "color": self.color or "#8b7cf6", "template": self.template,
             "is_default": bool(self.is_default), "archived": bool(self.archived),
             "sort": self.sort or 0,
