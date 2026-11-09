@@ -331,7 +331,10 @@ def meeting_briefs(db, now: datetime = None) -> int:
         return 0
     now = now or datetime.now()
     try:
-        upcoming = calendar.events(now, now + timedelta(minutes=lead + 1))
+        # The whole day (cached for a few minutes), not a window that moves every
+        # minute — that would open Outlook on every scheduler pass.
+        upcoming = [e for e in calendar.today(now)
+                    if now - timedelta(minutes=1) <= e["start"] <= now + timedelta(minutes=lead + 1)]
     except Exception as exc:  # noqa: BLE001
         logger.warn("briefing", "Couldn't read the calendar", {"error": str(exc)[:200]})
         return 0

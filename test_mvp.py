@@ -41,6 +41,9 @@ os.environ["SHAREPOINT_SYNC_ROOTS"] = str(Path(_TEMP_DIR) / "sync")
 os.environ["MEMORY_ENABLED"] = "true"
 os.environ["STYLE_LEARNING_ENABLED"] = "true"
 os.environ["TASKS_ENABLED"] = "true"
+# Meeting briefs read the calendar in the background; tests that need them turn
+# them on themselves, so the scheduler never drives the hidden browser mid-test.
+os.environ["MEETING_BRIEF_MINUTES"] = "0"
 os.environ["NUDGES_ENABLED"] = "true"
 os.environ["COPILOT_BRIDGE_ENABLED"] = "true"
 os.environ["COPILOT_BRIDGE_DIR"] = str(Path(_TEMP_DIR) / "copilot")
@@ -7042,6 +7045,8 @@ def test_keep_it_updated():
     bad = [t.name for t in REGISTRY.values() if t.activity not in STATES]
     check("Every tool shows a real activity while it runs", not bad, bad)
     root, patches = _addon_dirs()
+    # The test runs these jobs itself; the background scheduler mustn't take them first.
+    patches.append(mock.patch.object(jobs, "due", return_value=[]))
     for patch in patches:
         patch.start()
     db = session()
@@ -7223,6 +7228,7 @@ def test_keep_website_updated():
     from app.services.browser.engine import playwright_installed
 
     root, patches = _addon_dirs()
+    patches.append(mock.patch.object(jobs, "due", return_value=[]))
     for patch in patches:
         patch.start()
     db = session()

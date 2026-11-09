@@ -18,7 +18,6 @@ offers "Let it update by itself from now on" — the target's own switch.
 """
 
 import json
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from app.core import logger
@@ -112,6 +111,7 @@ def start(db, target_text: str, instructions: str, source: str = "", when: str =
     """Connect the target, create the job (and source watch), return the card."""
     from app.models.task import Task
     from app.services import jobs, targets, watches
+    from app.services.task_service import compute_next_run
 
     target = targets.classify(db, target_text)
     connected = targets.connect(db, target, user_named)
@@ -130,8 +130,9 @@ def start(db, target_text: str, instructions: str, source: str = "", when: str =
                 kind="agent", spec=json.dumps(spec), schedule=timing["schedule"],
                 at_time=timing["at_time"], status="active", source="keep",
                 agent_id=agent_id, conversation_id=conversation_id,
-                # The first run happens now, with approval as usual.
-                next_run=datetime.now())
+                # Next by its schedule; the first run is started straight away by
+                # keep_updated (jobs.start_now), with approval as usual.
+                next_run=compute_next_run(timing["schedule"], timing["at_time"]))
     db.add(task)
     db.commit()
     db.refresh(task)
