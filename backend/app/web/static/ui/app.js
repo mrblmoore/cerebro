@@ -445,7 +445,8 @@ function messageNode(message) {
   node.className = `msg ${message.role === 'user' ? 'user' : 'assistant'}`;
   if (message.role === 'user') {
     const image = message.image_path ? `<img class="attached" src="/api/chat/image/${encodeURIComponent(message.image_path)}" alt="">` : '';
-    node.innerHTML = `<div class="bubble">${image}${esc(message.content).replace(/\n/g, '<br>')}</div>`;
+    const files = (meta.attachments || []).length ? `<div class="file-chips">${meta.attachments.map(f => fileChip(f)).join('')}</div>` : '';
+    node.innerHTML = `<div class="bubble">${image}${files}${esc(message.content).replace(/\n/g, '<br>')}</div>`;
     return node;
   }
   (meta.sources || []).forEach(source => source.ref && state.sources.set(source.ref, source));
@@ -539,11 +540,68 @@ function actionCard(card) {
   if (card.type === 'signin') return signinCard(card);
   if (card.type === 'addon_signin') return addonSigninCard(card);
   if (card.type === 'plan') return planCard(card);
+  if (card.type === 'keep_updated') return keepCard(card);
+  if (card.type === 'todo') return todoCard(card);
   return null;
 }
 
-const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint', beyondtrust: 'BeyondTrust', genesys: 'Genesys Cloud', addons: 'Add-ons', browser: 'Website', files: 'Files', computer: 'This PC' };
-const integrationLabel = name => INTEGRATION_LABEL[name] || (String(name || '').startsWith('mcp:') ? String(name).slice(4) : name) || 'Change';
+const KEEP_KIND = { file: 'Document', site: 'Website', web: 'Website', sharepoint: 'SharePoint', app: 'Desktop app', addon: 'Add-on' };
+function keepCard(card) {
+  const node = document.createElement('div');
+  node.className = `action-card keep ${card.status === 'paused' ? 'paused' : ''}`;
+  const paint = c => {
+    const paused = c.status === 'paused', stopped = c.status === 'cancelled';
+    node.innerHTML = `
+      <div class="action-head"><span class="title">Keeping ${esc(c.label || 'it')} updated</span>
+        <span class="badge accent">${esc(KEEP_KIND[c.kind] || 'Update')}</span>
+        ${stopped ? '<span class="badge">Stopped</span>' : paused ? '<span class="badge">Paused</span>'
+          : c.status === 'waiting_approval' ? '<span class="badge warn">Needs approval</span>'
+          : c.status === 'running' ? '<span class="badge accent">Updating…</span>' : '<span class="badge ok">On</span>'}</div>
+      <div class="keep-grid">
+        <span class="meta">How often</span><span>${esc(c.when || '')}</span>
+        ${c.source ? `<span class="meta">From</span><span class="keep-path" title="${esc(c.source)}">${esc(c.source.split(/[\\/]/).filter(Boolean).pop() || c.source)}</span>` : ''}
+        <span class="meta">Last run</span><span>${c.last_run ? relTime(c.last_run) : 'Not yet'}</span>
+        <span class="meta">Next run</span><span>${c.next_run ? relTime(c.next_run) : (c.source ? 'When the source changes' : '—')}</span>
+        ${c.learned ? '<span class="meta">Steps</span><span>Saved as a skill — later runs follow them</span>' : ''}
+      </div>
+      ${c.offer_auto ? `<div class="keep-offer">It worked. <button class="btn sm primary" data-auto-on>Let it update by itself from now on</button></div>` : ''}
+      ${c.can_auto_apply ? `<label class="switch-row"><input type="checkbox" data-auto ${c.auto_apply ? 'checked' : ''}>
+        <span>Apply changes automatically</span><span class="meta">${c.auto_apply ? 'Saved straight away, logged with screenshots' : 'Each change waits for your approval'}</span></label>` : ''}
+      ${stopped ? '' : `<div class="btn-row">
+        <button class="btn sm" data-run>Run now</button>
+        <button class="btn sm ghost" data-pause>${paused ? 'Resume' : 'Pause'}</button>
+        <button class="btn sm ghost" data-stop>Stop</button></div>`}`;
+    const act = async (action, label) => {
+      try { await api.post(`/api/jobs/${c.task_id}/${action}`); toast(label, 'ok'); refresh(); }
+      catch (error) { toast(error.message, 'err'); }
+    };
+    $('[data-run]', node)?.addEventListener('click', () => act('run', 'Updating now'));
+    $('[data-pause]', node)?.addEventListener('click', () => act(paused ? 'resume' : 'pause', paused ? 'Resumed' : 'Paused'));
+    $('[data-stop]', node)?.addEventListener('click', () => act('cancel', 'Stopped'));
+    const setAuto = async enabled => {
+      try { paint(await api.post(`/api/updates/${c.task_id}/auto-apply`, { enabled })); toast(enabled ? 'It updates by itself now' : 'Changes wait for approval', 'ok'); }
+      catch (error) { toast(error.message, 'err'); }
+    };
+    $('[data-auto]', node)?.addEventListener('change', e => setAuto(e.target.checked));
+    $('[data-auto-on]', node)?.addEventListener('click', () => setAuto(true));
+  };
+  const refresh = async () => { try { paint(await api.get(`/api/updates/${card.task_id}`)); } catch { /* gone */ } };
+  paint(card);
+  return node;
+}
+
+function todoCard(card) {
+  const item = card.item || {};
+  const node = document.createElement('div');
+  node.className = 'action-card';
+  node.innerHTML = `<div class="action-head"><span class="title">${esc(item.what || '')}</span>
+    <span class="badge ok">Added to your to-dos</span></div>
+    ${item.due_at ? `<div class="meta">Due ${esc(new Date(item.due_at).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }))}</div>` : ''}`;
+  return node;
+}
+
+const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint', beyondtrust: 'BeyondTrust', genesys: 'Genesys Cloud', addons: 'Add-ons', browser: 'Website', files: 'Files', computer: 'This PC', documents: 'Word & Excel', calendar: 'Calendar' };
+const integrationLabel = name => INTEGRATION_LABEL[name] || (/^(mcp|app):/.test(String(name || '')) ? String(name).slice(4) : name) || 'Change';
 
 function planCard(card) {
   const node = document.createElement('div');
@@ -575,7 +633,11 @@ function changeCard(card) {
       <span class="badge accent">${esc(integrationLabel(card.integration))}</span>
       ${card.automatic && status !== 'undone' ? '<span class="badge ok">Applied automatically</span>' : statusBadge(status)}
     </div>
-    ${card.preview?.image ? `<img class="card-shot" src="/api/chat/image/${encodeURIComponent(card.preview.image)}" alt="The page as it is now">` : ''}
+    ${card.unconfirmed ? '<div class="card-error">It may not have gone through — the page or window didn\'t change. Check it before trying again.</div>' : ''}
+    ${card.preview?.image || card.after_image ? `<div class="card-shots">
+      ${card.preview?.image ? `<figure><img class="card-shot" src="/api/chat/image/${encodeURIComponent(card.preview.image)}" alt="Before"><figcaption>Before</figcaption></figure>` : ''}
+      ${card.after_image ? `<figure><img class="card-shot" src="/api/chat/image/${encodeURIComponent(card.after_image)}" alt="After"><figcaption>After</figcaption></figure>` : ''}
+    </div>` : ''}
     <div class="diff">${fields.map(diffField).join('')}</div>
     ${card.error && status === 'failed' ? `<div class="card-error">${esc(card.error)}</div>` : ''}
     ${status === 'awaiting_approval' ? `
@@ -711,7 +773,7 @@ async function decide(node, path, extra = '') {
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
-  $('#send').disabled = busy() || (!input.value.trim() && !state.image);
+  $('#send').disabled = busy() || (!input.value.trim() && !state.image && !(state.files || []).length);
 });
 input.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -723,38 +785,68 @@ $('#composer').addEventListener('submit', event => { event.preventDefault(); sen
 document.addEventListener('keydown', event => { if (event.key === 'Escape') voice.audio?.pause(); });
 $('#attach-btn').addEventListener('click', () => $('#file-input').click());
 $('#mic-btn').addEventListener('click', toggleMic);
-$('#file-input').addEventListener('change', e => e.target.files[0] && attach(e.target.files[0]));
+$('#file-input').addEventListener('change', e => { [...e.target.files].forEach(attach); e.target.value = ''; });
 input.addEventListener('paste', event => {
-  const file = [...(event.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
-  if (file) { event.preventDefault(); attach(file); }
+  const files = [...(event.clipboardData?.files || [])];
+  if (files.length) { event.preventDefault(); files.forEach(attach); }
 });
 document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', event => {
   event.preventDefault();
-  const file = [...(event.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
-  if (file) { selectTab('ask'); attach(file); }
+  const files = [...(event.dataTransfer?.files || [])];
+  if (files.length) { selectTab('ask'); files.forEach(attach); }
 });
+
+const FILE_ICON = { docx: 'W', doc: 'W', xlsx: 'X', xls: 'X', csv: 'X', tsv: 'X', pptx: 'P', pdf: 'PDF', zip: 'ZIP' };
+function fileChip(file, removable = false) {
+  const kind = (file.kind || file.name.split('.').pop() || '').toLowerCase();
+  const size = file.size ? ` · ${file.size > 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`}` : '';
+  return `<span class="file-chip k-${esc(kind)}" ${file.id ? `data-file="${esc(file.id)}"` : ''}>
+    <span class="file-ico">${esc(FILE_ICON[kind] || kind.toUpperCase().slice(0, 3) || 'F')}</span>
+    ${file.id && !removable ? `<a href="/api/chat/file/${encodeURIComponent(file.id)}" target="_blank" rel="noopener">${esc(file.name)}</a>` : `<span>${esc(file.name)}</span>`}
+    <span class="meta">${size}</span>${removable ? `<button type="button" class="chip-x" data-drop-file="${esc(file.id)}" aria-label="Remove">×</button>` : ''}</span>`;
+}
+
+function paintAttachments() {
+  const image = state.image ? `<div class="attachment glass"><img src="${state.image.preview}" alt="">
+      <button class="btn sm ghost" id="drop-image">Remove</button></div>` : '';
+  const files = (state.files || []).length ? `<div class="file-chips">${state.files.map(f => fileChip(f, true)).join('')}</div>` : '';
+  $('#attachment').innerHTML = image + files;
+  $('#drop-image')?.addEventListener('click', clearImage);
+  $$('[data-drop-file]', $('#attachment')).forEach(button => button.addEventListener('click', () => {
+    state.files = state.files.filter(f => f.id !== button.dataset.dropFile);
+    paintAttachments();
+  }));
+  $('#send').disabled = busy() || (!input.value.trim() && !state.image && !(state.files || []).length);
+}
 
 async function attach(file) {
   const form = new FormData();
   form.append('file', file, file.name || 'pasted.png');
   try {
-    const { image } = await api.post('/api/chat/upload-image', form);
-    state.image = { name: image, preview: URL.createObjectURL(file) };
-    $('#attachment').innerHTML = `<div class="attachment glass"><img src="${state.image.preview}" alt="">
-      <button class="btn sm ghost" id="drop-image">Remove</button></div>`;
-    $('#drop-image').addEventListener('click', clearImage);
-    $('#send').disabled = busy();
+    if ((file.type || '').startsWith('image/')) {
+      const { image } = await api.post('/api/chat/upload-image', form);
+      state.image = { name: image, preview: URL.createObjectURL(file) };
+    } else {
+      const { file: stored } = await api.post('/api/chat/upload-file', form);
+      state.files = [...(state.files || []), stored];
+    }
+    paintAttachments();
     input.focus();
   } catch (error) {
-    toast(`Couldn't attach that image: ${error.message}`, 'err');
+    toast(`Couldn't attach ${file.name || 'that'}: ${error.message}`, 'err');
   }
 }
 
 function clearImage() {
   state.image = null;
-  $('#attachment').innerHTML = '';
-  $('#send').disabled = busy() || !input.value.trim();
+  paintAttachments();
+}
+
+function clearAttachments() {
+  state.image = null;
+  state.files = [];
+  paintAttachments();
 }
 
 // ------------------------------------------------------------------ voice
@@ -826,7 +918,8 @@ async function speak(text) {
 
 async function send({ spoken = false } = {}) {
   const text = input.value.trim();
-  if (busy() || (!text && !state.image)) return;
+  const files = [...(state.files || [])];
+  if (busy() || (!text && !state.image && !files.length)) return;
   const image = state.image?.name || null;
   const chatId = state.chatId;
   state.sending.add(chatId);
@@ -836,8 +929,9 @@ async function send({ spoken = false } = {}) {
   $('#send').disabled = true;
   if (!state.history.length) thread.innerHTML = '';
 
-  thread.append(messageNode({ role: 'user', content: text || '(image)', image_path: image }));
-  clearImage();
+  thread.append(messageNode({ role: 'user', content: text || (files.length ? '' : '(image)'), image_path: image,
+    meta: { attachments: files } }));
+  clearAttachments();
   const pending = document.createElement('div');
   pending.className = 'msg assistant short';
   pending.innerHTML = `<div class="avatar"></div>
@@ -853,7 +947,8 @@ async function send({ spoken = false } = {}) {
   };
 
   try {
-    const final = await streamChat({ message: text, image, conversation_id: chatId, voice: spoken }, card => {
+    const final = await streamChat({ message: text, image, conversation_id: chatId, voice: spoken,
+      attachments: files.map(f => f.id) }, card => {
       if (card.type === 'plan') { steps.push({ type: 'progress', status: 'complete', title: card.title || 'Plan', detail: (card.steps || []).join(' → ') }); paintSteps(); return; }
       if (card.type !== 'progress') return;
       const running = steps.findLast?.(s => s.title === card.title && s.status === 'running')
@@ -874,7 +969,7 @@ async function send({ spoken = false } = {}) {
         role: 'assistant', content: final.reply, kind: final.kind, steps: steps.filter(s => s.status !== 'running'),
         meta: { sources: final.sources, cards: final.cards, images: final.images },
       };
-      state.history.push({ role: 'user', content: text, image_path: image }, message);
+      state.history.push({ role: 'user', content: text, image_path: image, meta: { attachments: files } }, message);
       thread.append(messageNode(message));
       if (spoken) speak(final.reply);
       if (final.conversation) { state.chat = { ...state.chat, ...final.conversation }; paintChatBar(); }
@@ -1014,7 +1109,7 @@ function paintChatExtras() {
       : task.next_run ? `next ${untilTime(task.next_run)}`.replace('next starting', 'starting')
       : task.schedule === 'manual' ? 'when you run it' : (task.run_count ? 'done' : '');
     parts.push(`<div class="extra-chip task" data-task="${task.id}">${ICONS.clock}
-      <span class="grow"><b>${esc(task.title)}</b><span>${esc(SCHEDULE_LABEL[task.schedule] || task.schedule)}${task.at_time ? ` ${esc(task.at_time)}` : ''} · ${esc(when)}</span></span>
+      <span class="grow"><b>${esc(task.title)}</b><span>${esc(task.source === 'keep' && task.schedule === 'manual' ? 'When its source changes' : (SCHEDULE_LABEL[task.schedule] || task.schedule))}${task.at_time ? ` ${esc(task.at_time)}` : ''} · ${esc(when)}</span></span>
       <button class="icon-btn" data-task-run="${task.id}" title="Run now">${ICONS.play}</button>
       <button class="icon-btn" data-task-stop="${task.id}" title="Stop this task">${ICONS.stop}</button></div>`);
   });
@@ -1494,13 +1589,14 @@ async function loadConnect() {
     <div class="section-title">Add-ons<span class="grow"></span>
       <button class="btn sm primary" id="addon-add">+ Add</button>
       <button class="icon-btn" id="addon-menu" title="Import or export add-ons" aria-label="More">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>'}</button></div>
-    <p class="section-note">Anything Cerebro should reach: an MCP server, any website you sign in to, or a skill you teach it. Just ask in chat (“connect to Jira”) and Cerebro adds what it needs itself.</p>
+    <p class="section-note">Anything Cerebro should reach: an MCP server, any website you sign in to, a Windows program, or a skill you teach it. Just ask in chat (“connect to Jira”, “keep this page updated”) and Cerebro adds what it needs itself.</p>
     <div id="addon-list"></div>`;
   $('[data-settings]', body).addEventListener('click', () => openExternal(`${location.origin}/settings#integrations`));
   $('[data-control]', body)?.addEventListener('click', toggleControl);
   $('#addon-add').addEventListener('click', e => showMenu(e.currentTarget, [
     ['MCP server…', addMcpServer],
     ['Website…', addWebsite],
+    ['Desktop app…', addDesktopApp],
     ['Skill…', () => editSkill()],
   ]));
   $('#addon-menu').addEventListener('click', e => showMenu(e.currentTarget, [
@@ -1526,7 +1622,7 @@ async function loadAddons() {
   items.forEach(item => host.append(addonCard(item)));
 }
 
-const ADDON_KIND = { mcp: 'MCP', site: 'Website', skill: 'Skill' };
+const ADDON_KIND = { mcp: 'MCP', site: 'Website', skill: 'Skill', app: 'Desktop app' };
 
 function addonCard(item) {
   const card = document.createElement('div');
@@ -1536,17 +1632,20 @@ function addonCard(item) {
     : item.status === 'needs_sign_in' ? '<span class="badge warn">Sign-in needed</span>'
     : item.status === 'error' ? '<span class="badge err">Not working</span>'
     : `<span class="badge">${esc(item.status || '')}</span>`;
-  const where = item.kind === 'mcp' ? (item.url || item.command || '') : item.kind === 'skill' ? (item.description || '') : '';
+  const where = item.kind === 'mcp' ? (item.url || item.command || '') : item.kind === 'skill' ? (item.description || '')
+    : item.kind === 'app' ? (item.path || item.window || '') : '';
   card.innerHTML = `
     <div class="logo addon-${item.kind}">${esc(ADDON_KIND[item.kind]?.[0] || '+')}</div>
     <div style="min-width:0"><h4>${esc(item.label)} ${status}</h4>
-      <div class="meta">${esc(ADDON_KIND[item.kind])}${item.kind !== 'skill' ? ` · ${item.tool_count} tools` : ''} · added by ${item.added_by === 'cerebro' ? 'Cerebro' : 'you'}${item.last_used_at ? ` · used ${relTime(item.last_used_at)}` : ''}</div>
+      <div class="meta">${esc(ADDON_KIND[item.kind])}${item.kind === 'app' ? (item.available ? '' : ' · works on Windows') : item.kind !== 'skill' ? ` · ${item.tool_count} tools` : ''} · added by ${item.added_by === 'cerebro' ? 'Cerebro' : 'you'}${item.last_used_at ? ` · used ${relTime(item.last_used_at)}` : ''}</div>
       ${where ? `<div class="meta mono">${esc(where.slice(0, 140))}</div>` : ''}
       ${item.error && item.status === 'error' ? `<p class="card-error">${esc(item.error)}</p>` : ''}
       ${item.kind === 'mcp' && item.sign_in?.status === 'failed' ? `<p class="card-error">${esc(item.sign_in.detail || '')}</p>` : ''}
       <label class="auto-apply"><span class="switch"><input type="checkbox" data-enabled ${item.enabled ? 'checked' : ''}><span></span></span>On</label>
       ${item.kind === 'mcp' ? `<label class="auto-apply" title="Off: anything that changes something waits for your approval. On: its tools run straight away.">
-        <span class="switch"><input type="checkbox" data-auto ${item.auto_approve ? 'checked' : ''}><span></span></span>Approve its actions automatically</label>` : ''}</div>
+        <span class="switch"><input type="checkbox" data-auto ${item.auto_approve ? 'checked' : ''}><span></span></span>Approve its actions automatically</label>` : ''}
+      ${item.kind === 'site' || item.kind === 'app' ? `<label class="auto-apply" title="Off: every save, send or submit waits for your approval. On: it's made straight away and logged with before and after screenshots.">
+        <span class="switch"><input type="checkbox" data-apply ${item.auto_apply ? 'checked' : ''}><span></span></span>Apply changes automatically</label>` : ''}</div>
     <div class="btn-row" style="margin:0;flex-direction:column">
       ${item.kind === 'mcp' && item.status === 'needs_sign_in' ? '<button class="btn sm primary" data-signin>Sign in</button>' : ''}
       ${item.kind === 'mcp' ? '<button class="btn sm ghost" data-refresh>Reconnect</button><button class="btn sm ghost" data-keys>Keys…</button>' : ''}
@@ -1562,6 +1661,11 @@ function addonCard(item) {
     const enabled = e.currentTarget.checked;
     await api.post(`/api/addons/mcp/${name}/auto-approve`, { enabled }).catch(err => toast(err.message, 'err'));
     toast(enabled ? `${item.label}'s actions will run without asking` : `${item.label}'s actions will wait for your approval`, 'ok');
+  });
+  $('[data-apply]', card)?.addEventListener('change', async e => {
+    const enabled = e.currentTarget.checked;
+    await api.post(`/api/addons/${kind}/${name}/auto-apply`, { enabled }).catch(err => toast(err.message, 'err'));
+    toast(enabled ? `${item.label}: changes are made straight away and logged` : `${item.label}: changes wait for your approval`, 'ok');
   });
   $('[data-signin]', card)?.addEventListener('click', e => addonSignIn(item.name, e.currentTarget));
   $('[data-refresh]', card)?.addEventListener('click', async e => {
@@ -1588,6 +1692,18 @@ function addonCard(item) {
     loadConnect();
   });
   return card;
+}
+
+async function addDesktopApp() {
+  const values = await sheet({ title: 'Add a desktop app', ok: 'Add',
+    body: `<p class="sheet-note">A Windows program Cerebro may open and work in — reading its windows, typing and clicking like you would. Saving, sending or confirming waits for your approval.</p>
+      <label class="field"><span>Name</span><input class="input" name="label" placeholder="e.g. Billing tool" required></label>
+      <label class="field"><span>Program (path or command)</span><input class="input" name="path" placeholder="C:\\Program Files\\Billing\\billing.exe  ·  notepad"></label>
+      <label class="field"><span>…or text in its window title</span><input class="input" name="window" placeholder="Billing"></label>` });
+  if (!values?.label?.trim()) return;
+  const result = await api.post('/api/addons/apps', values).catch(err => ({ detail: err.message }));
+  toast(result.ok ? `Added ${result.label}${result.available ? '' : ' (it can be used on Windows)'}` : (result.detail || 'Not added'), result.ok ? 'ok' : 'err');
+  loadAddons();
 }
 
 async function addMcpServer() {
@@ -2174,9 +2290,15 @@ function refreshWorkViews() {
 // ------------------------------------------------------------------ Home
 async function loadHome() {
   const body = $('#home-body');
-  const data = await api.get('/api/home').catch(error => ({ error: error.message }));
+  const [data, today] = await Promise.all([
+    api.get('/api/home').catch(error => ({ error: error.message })),
+    api.get('/api/today').catch(() => null)]);
   if (data.error) { body.innerHTML = `<div class="empty-note">${esc(data.error)}</div>`; return; }
   body.innerHTML = `
+    <div class="section-title">Today<span class="grow"></span>
+      <span class="meta">${esc(new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }))}</span></div>
+    <div class="today" id="today"></div>
+    <div id="home-updates"></div>
     <div class="section-title">Your agents<span class="grow"></span>
       <button class="btn sm" id="ideas-refresh">Look for ideas</button><button class="btn sm primary" id="home-new-agent">+ Agent</button></div>
     <div class="board" id="board"></div>
@@ -2200,6 +2322,12 @@ async function loadHome() {
     $('[data-job]', card).addEventListener('click', () => newJob(agent));
     board.append(card);
   }
+  if (today) paintToday($('#today'), today);
+  const updates = data.updates || [];
+  if (updates.length) {
+    $('#home-updates').innerHTML = '<div class="section-title">Kept updated<span class="grow"></span></div><div class="updates-grid"></div>';
+    updates.forEach(u => $('#home-updates .updates-grid').append(keepCard(u)));
+  }
   const fired = data.watches_fired || [];
   if (fired.length) {
     $('#home-fired').innerHTML = `<div class="section-title">Watches that fired<span class="grow"></span></div>
@@ -2215,7 +2343,115 @@ async function loadHome() {
   });
 }
 
+const TODO_KIND = { waiting_on: ['Waiting on', 'warn'], promised: ['You promised', 'accent'], asked: ['Asked of you', 'accent'], todo: ['To do', ''] };
+
+function paintToday(host, today) {
+  const agenda = today.agenda;
+  const now = Date.now();
+  const agendaHTML = !today.calendar_connected
+    ? '<div class="meta">Connect Outlook (Connect → Outlook) to see your meetings here.</div>'
+    : today.calendar_error ? `<div class="card-error">${esc(today.calendar_error)}</div>`
+    : !(agenda || []).length ? '<div class="meta">No meetings today.</div>'
+    : agenda.map(e => {
+        const start = new Date(e.start), end = new Date(e.end);
+        const state = end < now ? 'past' : start <= now ? 'now' : '';
+        const time = e.all_day ? 'All day' : start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const people = (e.attendees || []).slice(0, 4).map(a => a.name || a.email).join(', ');
+        return `<div class="agenda-row ${state}"><span class="agenda-time">${esc(time)}</span>
+          <div style="min-width:0"><div class="agenda-title">${esc(e.subject)}</div>
+          <div class="meta">${esc([e.location, people].filter(Boolean).join(' · '))}</div></div>
+          ${e.online_url && state !== 'past' ? `<button class="btn sm ghost" data-join="${esc(e.online_url)}">Join</button>` : ''}</div>`;
+      }).join('');
+  const todos = today.todos || [];
+  const todoHTML = todos.length ? todos.slice(0, 12).map(t => {
+    const [label, tone] = TODO_KIND[t.kind] || TODO_KIND.todo;
+    const due = t.due_at ? new Date(t.due_at) : null;
+    const late = due && due < now;
+    return `<div class="todo-row" data-id="${t.id}"><input type="checkbox" data-done title="Done">
+      <div style="min-width:0;flex:1"><div class="todo-what">${esc(t.what)}</div>
+        <div class="meta"><span class="badge ${tone}">${esc(label)}${t.who && t.kind !== 'todo' ? ` · ${esc(t.who)}` : ''}</span>
+          ${due ? `<span class="${late ? 'late' : ''}">${late ? 'overdue · ' : 'due '}${esc(due.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }))}</span>` : ''}
+          ${t.evidence ? `<span title="${esc(t.evidence)}">· why?</span>` : ''}</div></div>
+      ${t.chase ? '<button class="btn sm" data-chase>Chase</button>' : ''}
+      <button class="icon-btn" data-snooze title="Snooze a day" aria-label="Snooze">${ICONS.clock}</button></div>`;
+  }).join('') : '<div class="meta">Nothing to chase or deliver. Ask “remind me to…” or say it in a meeting.</div>';
+  const brief = today.briefing;
+  const waiting = today.waiting || [];
+  host.innerHTML = `
+    <div class="today-card glass"><div class="today-head"><h4>Agenda</h4><span class="grow"></span>
+      ${today.calendar_connected ? '<button class="btn sm ghost" data-ask="Find me 30 minutes free this week">Find time</button>' : ''}</div>${agendaHTML}</div>
+    <div class="today-card glass"><div class="today-head"><h4>To-dos & follow-ups</h4><span class="badge">${todos.length}</span><span class="grow"></span>
+      <button class="btn sm ghost" data-add-todo>+ Add</button></div>${todoHTML}</div>
+    <div class="today-card glass"><div class="today-head"><h4>${esc(brief ? brief.title : 'Briefing')}</h4><span class="grow"></span>
+      ${brief ? '<button class="icon-btn" data-speak title="Read it to me" aria-label="Read it to me">▶</button>' : ''}
+      <button class="btn sm ghost" data-brief>${brief ? 'Refresh' : 'Brief me'}</button></div>
+      ${brief ? `<div class="md brief">${renderMarkdown(brief.content || '')}</div>` : '<div class="meta">Your morning briefing appears here on weekdays (Settings → Secretary).</div>'}</div>
+    ${waiting.length || today.approvals ? `<div class="today-card glass"><div class="today-head"><h4>Waiting on you</h4><span class="grow"></span></div>
+      ${today.approvals ? `<div class="meta">${today.approvals} change${today.approvals === 1 ? '' : 's'} to approve — open the chat it's in, or Activity.</div>` : ''}
+      ${waiting.map(j => `<div class="todo-row"><div style="flex:1;min-width:0"><div class="todo-what">${esc(j.title)}</div>
+        <div class="meta">${j.status === 'waiting_input' ? esc(j.question || 'Has a question') : 'Waiting for approval'}</div></div>
+        ${j.conversation_id ? `<button class="btn sm" data-open-chat="${j.conversation_id}">Open</button>` : ''}</div>`).join('')}</div>` : ''}`;
+  $$('[data-join]', host).forEach(b => b.addEventListener('click', () => openExternal(b.dataset.join)));
+  $$('[data-ask]', host).forEach(b => b.addEventListener('click', () => { selectTab('ask'); input.value = b.dataset.ask; input.dispatchEvent(new Event('input')); send(); }));
+  $$('[data-open-chat]', host).forEach(b => b.addEventListener('click', () => { selectTab('ask'); openChat(Number(b.dataset.openChat)); }));
+  $$('.todo-row[data-id]', host).forEach(row => {
+    const id = row.dataset.id;
+    $('[data-done]', row)?.addEventListener('change', async () => { await api.post(`/api/followups/${id}/done`).catch(() => {}); row.classList.add('done'); setTimeout(loadHome, 400); });
+    $('[data-snooze]', row)?.addEventListener('click', async () => { await api.post(`/api/followups/${id}/snooze`, { days: 1 }).catch(() => {}); toast('Snoozed until tomorrow', 'ok'); loadHome(); });
+    $('[data-chase]', row)?.addEventListener('click', async e => {
+      e.currentTarget.disabled = true;
+      try {
+        const { card } = await api.post(`/api/followups/${id}/chase`);
+        const holder = document.createElement('div');
+        holder.className = 'chase-draft';
+        const element = actionCard(card);
+        if (element) { holder.append(element); row.after(holder); }
+      } catch (error) { toast(error.message, 'err'); }
+    });
+  });
+  $('[data-add-todo]', host).addEventListener('click', async () => {
+    const values = await sheet({ title: 'Add a to-do', ok: 'Add',
+      body: `<label class="field"><span>What</span><input class="input" name="what" required></label>
+        <label class="field"><span>Due (optional)</span><input class="input" name="due" placeholder="tomorrow, friday, 12/11"></label>` });
+    if (!values?.what?.trim()) return;
+    await api.post('/api/followups', { what: values.what, due: values.due || null }).catch(err => toast(err.message, 'err'));
+    loadHome();
+  });
+  $('[data-brief]', host).addEventListener('click', async e => {
+    e.currentTarget.disabled = true;
+    await api.post('/api/briefings/morning').catch(err => toast(err.message, 'err'));
+    loadHome();
+  });
+  $('[data-speak]', host)?.addEventListener('click', () => speakText(brief?.data?.spoken || brief?.content || ''));
+}
+
+async function speakText(text) {
+  if (!text) return;
+  try {
+    const response = await fetch('/api/voice/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, agent_id: state.agentId }) });
+    if (!response.ok) { toast('Voice replies are off (Settings → Voice).', 'err'); return; }
+    voice.audio?.pause();
+    voice.audio = new Audio(URL.createObjectURL(await response.blob()));
+    voice.audio.play();
+  } catch { toast("Couldn't speak it.", 'err'); }
+}
+
 // ------------------------------------------------------------------ Work
+async function newUpdate(agent) {
+  const values = await sheet({ title: 'Keep something updated', ok: 'Start',
+    body: `<p class="sheet-note">A link (SharePoint, an internal site or wiki), a Word/Excel file, or a program. Cerebro connects it, makes the job, and does the first update now — changes wait for your approval until you let it update by itself.</p>
+      <label class="field"><span>What to keep updated</span><input class="input" name="target" placeholder="https://…  ·  C:\\Reports\\Status.xlsx  ·  Billing tool" required></label>
+      <label class="field"><span>What to change each time</span><textarea class="input" name="instructions" rows="2" required></textarea></label>
+      <label class="field"><span>From (optional)</span><input class="input" name="source" placeholder="A link or file the updates come from"></label>
+      <label class="field"><span>How often</span><input class="input" name="when" placeholder="daily at 9 · weekdays at 17:00 · when the source changes"></label>` });
+  if (!values?.target?.trim() || !values?.instructions?.trim()) return;
+  selectTab('ask');
+  selectAgent(agent.id);
+  input.value = `Keep ${values.target} updated: ${values.instructions}${values.source ? ` (from ${values.source})` : ''}${values.when ? `, ${values.when}` : ''}`;
+  input.dispatchEvent(new Event('input'));
+  send();
+}
+
 let workView = 'jobs';
 async function loadWork() {
   const agent = currentAgent();
@@ -2223,14 +2459,14 @@ async function loadWork() {
   if (!agent) { body.innerHTML = ''; return; }
   body.innerHTML = `
     <div class="section-title">${esc(agent.name)}'s work<span class="grow"></span></div>
-    <div class="work-tabs">${[['jobs', 'Jobs'], ['projects', 'Projects'], ['watches', 'Watches'], ['ideas', 'Ideas']].map(([k, l]) =>
+    <div class="work-tabs">${[['jobs', 'Jobs'], ['updates', 'Updates'], ['projects', 'Projects'], ['watches', 'Watches'], ['ideas', 'Ideas']].map(([k, l]) =>
       `<button class="btn sm" data-view="${k}" aria-pressed="${workView === k}">${l}</button>`).join('')}
       <span class="grow" style="flex:1"></span><button class="btn sm primary" data-add></button></div>
     <div id="work-list"></div>`;
   $$('[data-view]', body).forEach(b => b.addEventListener('click', () => { workView = b.dataset.view; loadWork(); }));
   const add = $('[data-add]', body);
-  add.textContent = { jobs: '+ Job', projects: '+ Project', watches: '+ Watch', ideas: 'Look for ideas' }[workView];
-  add.addEventListener('click', () => ({ jobs: () => newJob(agent), projects: () => newProject(agent),
+  add.textContent = { jobs: '+ Job', updates: '+ Keep updated', projects: '+ Project', watches: '+ Watch', ideas: 'Look for ideas' }[workView];
+  add.addEventListener('click', () => ({ jobs: () => newJob(agent), updates: () => newUpdate(agent), projects: () => newProject(agent),
     watches: () => newWatch(agent), ideas: async () => { await api.post('/api/ideas/refresh'); loadWork(); } })[workView]());
   const list = $('#work-list');
   if (workView === 'jobs') {
@@ -2245,6 +2481,15 @@ async function loadWork() {
       head.innerHTML = 'Finished<span class="grow"></span>';
       list.append(head);
       closed.forEach(j => list.append(jobRow(j)));
+    }
+  } else if (workView === 'updates') {
+    const { updates } = await api.get(`/api/updates?agent_id=${agent.id}`).catch(() => ({ updates: [] }));
+    if (!updates.length) list.innerHTML = '<div class="empty-note">Nothing kept updated yet. Ask: “keep this page updated from the export every morning”, with the link or file.</div>';
+    else {
+      const grid = document.createElement('div');
+      grid.className = 'updates-grid';
+      updates.forEach(u => grid.append(keepCard(u)));
+      list.append(grid);
     }
   } else if (workView === 'projects') {
     const { projects } = await api.get(`/api/projects?agent_id=${agent.id}`).catch(() => ({ projects: [] }));

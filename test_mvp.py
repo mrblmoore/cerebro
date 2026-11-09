@@ -3973,8 +3973,10 @@ def test_sharepoint_auto_apply():
     with mock.patch.object(settings, "SHAREPOINT_AUTO_APPLY", False):
         check("Automatic updates are off by default", not sharepoint.auto_apply
               and sharepoint.status()["can_auto_apply"])
-    check("Dynamics changes always need approval",
-          not browser.get("dynamics").status()["can_auto_apply"])
+    with mock.patch.object(settings, "DYNAMICS_AUTO_APPLY", False):
+        check("Dynamics changes need approval unless you switch that on, separately",
+              browser.get("dynamics").status()["can_auto_apply"] and not browser.get("dynamics").auto_apply
+              and not browser.get("beyondtrust").status()["can_auto_apply"])
 
     try:
         import docx
@@ -4085,7 +4087,7 @@ def test_sharepoint_auto_apply():
             listed = client.get("/api/integrations").json()["integrations"]
             sp = next(i for i in listed if i["name"] == "sharepoint")
             check("The Connect tab sees the setting", sp["can_auto_apply"] and sp["auto_apply"])
-            refused = client.post("/api/integrations/dynamics/auto-apply", json={"enabled": True})
+            refused = client.post("/api/integrations/beyondtrust/auto-apply", json={"enabled": True})
             check("Systems without automatic updates refuse the switch", refused.status_code == 400)
     finally:
         engine.shutdown()
@@ -6878,6 +6880,9 @@ def test_desktop_apps():
     from app.services.agent.registry import REGISTRY, ToolContext, available_tools
     from app.services.agents import group_of
 
+    root, patches = _addon_dirs()
+    for patch in patches:
+        patch.start()
     db = session()
     check("Desktop apps aren't offered where they can't run",
           desktop_apps.available() == (sys.platform == "win32" and desktop_apps.available()))
@@ -6946,6 +6951,8 @@ def test_desktop_apps():
         desktop_apps.set_backend(None)
         app_tools = sys.modules["app.services.agent.app_tools"]
         app_tools._last.clear()
+        for patch in reversed(patches):
+            patch.stop()
 
 
 
@@ -6966,6 +6973,9 @@ def test_desktop_apps_notepad():
     app_tools = sys.modules["app.services.agent.app_tools"]
     ctx = ToolContext(db=db, context={"_user_text": "open notepad and write a note"})
     pid = None
+    root, patches = _addon_dirs()
+    for patch in patches:
+        patch.start()
     try:
         opened = REGISTRY["app_open"].handler(ctx, app="notepad")
         state = ctx.context.get("_app") or {}
@@ -6993,6 +7003,8 @@ def test_desktop_apps_notepad():
         if pid:
             desktop_apps.kill(pid)
         app_tools._last.clear()
+        for patch in reversed(patches):
+            patch.stop()
 
 
 

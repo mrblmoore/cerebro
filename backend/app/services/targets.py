@@ -87,12 +87,20 @@ def _sharepoint_on() -> bool:
 
 
 def _site(url: str):
+    """The website or system ``url`` is on — even while the hidden browser is off,
+    so a site that's already added isn't added twice."""
     try:
-        from app.services.agent import web_tools
+        from app.services import browser
 
-        return web_tools.site_for(url)
+        for connector in browser.connectors():
+            try:
+                if connector.on_own_site(url):
+                    return connector
+            except Exception:  # noqa: BLE001
+                continue
     except Exception:  # noqa: BLE001 - no hidden browser
         return None
+    return None
 
 
 def _addon(db, text: str) -> Optional[Dict[str, Any]]:
@@ -145,6 +153,10 @@ def connect(db, target: Dict[str, Any], user_named: bool) -> Dict[str, Any]:
                       "detail": "So Cerebro can open and update it as you."})
         return {"ok": True, "cards": cards, "target": {**target, "connected": True},
                 "note": "Turned on SharePoint; the user signs in once."}
+    if kind == "site" and not settings.BROWSER_AUTOMATION_ENABLED:
+        settings_store.update({"BROWSER_AUTOMATION_ENABLED": True})
+        return {"ok": True, "cards": cards, "target": target,
+                "note": "Turned the hidden browser on so Cerebro can reach the site."}
     if kind == "file" and not target["connected"]:
         return {"ok": False, "cards": [], "target": target,
                 "note": f"There's no file at {target['address']}. Ask the user where it is."}

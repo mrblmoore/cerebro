@@ -238,3 +238,34 @@ template replies.
 - [ ] **B11.8 Real-world check** on a work PC: three agents running jobs
   side by side, a watch on a real case, and a VRM face speaking a reply.
 
+## Phase 12 — "Do it all": keep it updated, desktop apps, secretary (0.8.0)
+
+- [x] **B12.1 Keep it updated.** `keep_updated` connects the target
+  (SharePoint, a website, a Word/Excel file, a desktop program, an add-on),
+  makes the job, watches its source, and posts a "Keeping X updated" card
+  with Run now / Pause / Stop.
+- [x] **B12.2 Automatic changes per target.** Switches for each website,
+  each desktop app, Dynamics, RightAnswers and Word/Excel. Automatic clicks
+  keep after-screenshots; an unconfirmed result is flagged, never retried.
+- [x] **B12.3 Windows desktop apps.** pywinauto (UI Automation): the
+  `app_*` tools, a "Desktop app" add-on kind, approval for save/send/OK and
+  Ctrl+S, and a scope group. Tested against a fake desktop everywhere and
+  against the real Notepad on Windows CI.
+- [x] **B12.4 Documents in chat.** 📎, drag-and-drop and paste for Word,
+  Excel, PDF, logs and more (50 MB), with file chips. `edit_document` for
+  Word and Excel, with backups and Undo.
+- [x] **B12.5 File watches.** Local and synced files, checked first by
+  modified time and size.
+- [x] **B12.6 Remembering how.** A job saves its working steps as a skill
+  and follows them on later runs.
+- [x] **B12.7 Secretary.** Calendar (read, free time, book / move / cancel
+  with approval), meeting briefs, follow-ups and to-dos with chasing,
+  morning / end-of-day / weekly briefings, meeting notes, and documents
+  from templates. Home → Today.
+- [x] **B12.8 Fix.** `browse_open`, `browse_read` and website read tools
+  declared an activity state the tracker rejected, so they failed when
+  called from a chat. Tool states are now checked when tools register.
+- [ ] **B12.9 Real-world check** on a work PC: keep a SharePoint page
+  updated from a synced Excel export, drive an in-house desktop tool, and
+  get a morning briefing from the real calendar.
+

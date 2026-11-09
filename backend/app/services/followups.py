@@ -66,9 +66,8 @@ def due_from(text: str, base: datetime = None) -> Optional[datetime]:
 
 
 def _sentence(text: str, match) -> str:
-    start = max(text.rfind(".", 0, match.start()), text.rfind("\n", 0, match.start())) + 1
-    end_candidates = [i for i in (text.find(".", match.end()), text.find("?", match.end()),
-                                  text.find("\n", match.end())) if i >= 0]
+    start = max(text.rfind(mark, 0, match.start()) for mark in ".?!\n") + 1
+    end_candidates = [i for i in (text.find(mark, match.end()) for mark in ".?!\n") if i >= 0]
     end = min(end_candidates) + 1 if end_candidates else len(text)
     return re.sub(r"\s+", " ", text[start:end]).strip()[:300]
 
