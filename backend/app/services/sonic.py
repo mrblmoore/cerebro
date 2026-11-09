@@ -86,7 +86,7 @@ def available() -> Tuple[bool, str]:
     from importlib import util
 
     if util.find_spec("aws_sdk_bedrock_runtime") is None or util.find_spec("awscrt") is None:
-        return False, "Nova Sonic support isn't installed (pip install \"aws-sdk-bedrock-runtime[awscrt]\")."
+        return False, "Nova Sonic support isn't installed (pip install -r desktop/requirements-voice.txt)."
     mode = (settings.BEDROCK_AUTH_MODE or "default").lower()
     if mode == "api_key":
         return False, "Nova Sonic needs AWS access keys, a profile or the default AWS identity — a Bedrock API key can't sign it."

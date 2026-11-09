@@ -50,7 +50,10 @@ def _guard(ctx: ToolContext, connector, fn) -> Dict[str, Any]:
     except (NotConfigured, BrowserUnavailable) as exc:
         return {"content": str(exc), "summary": "Not available"}
     except Exception as exc:  # noqa: BLE001 - explained to the model and user
-        return {"content": f"{connector.label} error: {exc}", "summary": "Failed"}
+        # A timeout's message is empty: say what it was.
+        detail = str(exc) or (f"timed out ({type(exc).__name__})" if "Timeout" in type(exc).__name__
+                              else type(exc).__name__)
+        return {"content": f"{connector.label} error: {detail}", "summary": "Failed"}
 
 
 # ================================================================ Dynamics

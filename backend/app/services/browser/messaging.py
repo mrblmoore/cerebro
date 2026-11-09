@@ -42,6 +42,8 @@ M365_HOSTS = ("cloud.microsoft", "office.com", "office365.com", "microsoft.com",
 #: How often a monitored tab is fully reloaded, as a safety net for updates
 #: the app received over a push channel Cerebro can't see.
 RELOAD_SECONDS = 15 * 60
+#: A captured response whose body hasn't finished loading by now is dropped.
+PENDING_SECONDS = 30
 
 
 class MessagingError(RuntimeError):
@@ -57,8 +59,12 @@ class MessagingConnector(BrowserConnector):
 
     def __init__(self):
         super().__init__()
-        self._pending: List[Any] = []        # responses not parsed yet
+        self._pending: List[Any] = []        # (response, when seen), not parsed yet
         self._hooked: set = set()
+        #: Requests whose body has fully arrived, or that failed. Only a finished
+        #: response's body is read: reading one the page aborted (a reload while
+        #: it was loading) never returns, and would hold the browser forever.
+        self._finished: Dict[int, bool] = {}
         self._opened_at = 0.0
         #: Who the signed-in user is: {"name", "email", "id"} as discovered.
         self.me: Dict[str, str] = {}
@@ -82,7 +88,16 @@ class MessagingConnector(BrowserConnector):
         """Listen to the app's own JSON responses in this tab (once per tab)."""
         if id(page) not in self._hooked:
             page.on("response", self._on_response)
+            page.on("requestfinished", lambda request: self._mark(request, True))
+            page.on("requestfailed", lambda request: self._mark(request, False))
             self._hooked.add(id(page))
+
+    def _mark(self, request, ok: bool) -> None:
+        # Only remembered: no Playwright call inside an event callback.
+        self._finished[id(request)] = ok
+        if len(self._finished) > 2000:
+            for key in list(self._finished)[:1000]:
+                self._finished.pop(key, None)
 
     def goto(self, page, path: str = "") -> None:
         self.hook(page)
@@ -94,7 +109,7 @@ class MessagingConnector(BrowserConnector):
         try:
             if re.search(self.capture_pattern, response.url, re.IGNORECASE) \
                     and "json" in (response.headers.get("content-type") or ""):
-                self._pending.append(response)
+                self._pending.append((response, time.time()))
                 del self._pending[:-200]
         except Exception:  # noqa: BLE001 - a response that went away
             pass
@@ -120,12 +135,24 @@ class MessagingConnector(BrowserConnector):
                 self.me.setdefault(key, account)
         return self.me
 
-    def drain(self) -> List[Dict[str, Any]]:
-        """Messages found in the JSON the app fetched since the last call."""
+    def drain(self, keep_unfinished: bool = True) -> List[Dict[str, Any]]:
+        """Messages found in the JSON the app fetched since the last call.
+
+        A response still loading is kept for the next call; with
+        ``keep_unfinished=False`` ("only what comes after this") it is dropped."""
         self.identity()
         pending, self._pending = self._pending, []
         found: List[Dict[str, Any]] = []
-        for response in pending:
+        now = time.time()
+        for response, seen in pending:
+            state = self._finished.pop(id(response.request), None)
+            if state is None:
+                # Still loading: try again next time, unless it never finishes.
+                if keep_unfinished and now - seen < PENDING_SECONDS:
+                    self._pending.append((response, seen))
+                continue
+            if state is False:
+                continue                                   # aborted or failed
             try:
                 data = response.json()
             except Exception:  # noqa: BLE001 - not JSON after all, or gone

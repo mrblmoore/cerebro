@@ -119,9 +119,14 @@ class _Job:
 class BrowserEngine:
     """Owns the Playwright browser on a dedicated thread."""
 
+    #: How long shutdown() waits for the worker to finish its job.
+    SHUTDOWN_WAIT = 10.0
+
     def __init__(self):
         self._jobs: "queue.Queue[Optional[_Job]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
+        #: A worker told to stop that hadn't finished when shutdown() gave up waiting.
+        self._stopping: Optional[threading.Thread] = None
         self._start_lock = threading.Lock()
         self._playwright = None
         self._context = None
@@ -181,11 +186,28 @@ class BrowserEngine:
         }
 
     def shutdown(self) -> None:
-        """Close the browser and stop the worker (app shutdown)."""
-        if self._thread and self._thread.is_alive():
+        """Close the browser and stop the worker (app shutdown).
+
+        A worker still busy with a slow job is not forgotten: the next job
+        waits for it to finish before a new worker starts, because Playwright's
+        objects belong to the thread that made them. Two workers sharing them
+        fail with "Cannot switch to a different thread", and the old one closing
+        the browser under the new one leaves "Event loop is closed".
+        """
+        thread = self._thread
+        if thread and thread.is_alive():
+            with self._start_lock:
+                self._stopping = thread
             self._jobs.put(None)
-            self._thread.join(timeout=10)
-        self._thread = None
+            thread.join(timeout=self.SHUTDOWN_WAIT)
+            if thread.is_alive():
+                logger.warn("browser", "The browser worker is still finishing a job; "
+                                       "the next job will wait for it", {})
+                return
+        with self._start_lock:
+            if self._thread is thread:
+                self._thread = None
+            self._stopping = None
 
     # ------------------------------------------------- inside a job only
     def context(self, mode: str = None):
@@ -230,10 +252,24 @@ class BrowserEngine:
 
     def _ensure_thread(self) -> None:
         with self._start_lock:
-            if self._thread is None or not self._thread.is_alive():
-                self._thread = threading.Thread(target=self._run, name="cerebro-browser",
-                                                daemon=True)
-                self._thread.start()
+            thread = self._thread
+            if thread is not None and thread.is_alive() and thread is not self._stopping:
+                return
+            if thread is not None and thread.is_alive():
+                # It was told to stop and is finishing a job: never run two workers.
+                thread.join(timeout=max(30, int(settings.BROWSER_TIMEOUT_SECONDS or 30) * 4) + 15)
+                if thread.is_alive():
+                    raise BrowserBusy("The browser is still finishing its last job. Try again shortly.")
+            if thread is not None and (self._playwright is not None or self._context is not None):
+                # A worker that died without cleaning up leaves objects only it could use.
+                self._playwright = None
+                self._context = None
+                self._pages.clear()
+                self._current_page = None
+                self._mode = None
+            self._stopping = None
+            self._thread = threading.Thread(target=self._run, name="cerebro-browser", daemon=True)
+            self._thread.start()
 
     def _run(self) -> None:
         while True:

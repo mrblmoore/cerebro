@@ -146,7 +146,7 @@ class OutlookConnector(MessagingConnector):
     def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         def work(page):
             self.ensure_open(page)
-            self.drain()                                   # only results from now on
+            self.drain(keep_unfinished=False)         # only results from now on
             box = self.require(page, "search_box", "the mailbox search box")
             box.click()
             box.fill(query)
@@ -163,7 +163,7 @@ class OutlookConnector(MessagingConnector):
         item_id = _item_id(message)
 
         def work(page):
-            self.drain()
+            self.drain(keep_unfinished=False)
             target = message if message.startswith(("http://", "https://")) \
                 else self._url("read_url", id=quote(item_id, safe=""))
             self.goto(page, target)
@@ -194,14 +194,15 @@ class OutlookConnector(MessagingConnector):
         def work(page):
             self.hook(page)
             self._events = {}
-            self.drain()
+            self.drain(keep_unfinished=False)
             week = start
             while week < end:
                 self.goto(page, self._cal_url("calendar_url", start=quote(week.strftime("%Y-%m-%d"))))
                 self.settle(page)
                 page.wait_for_timeout(1500)
-                self.drain()
+                self.drain()                               # collects this week's events
                 week += timedelta(days=7)
+            self.drain()                                   # a week whose data came in late
             found = list((self._events or {}).values())
             return found or self._scrape_calendar(page)
 
