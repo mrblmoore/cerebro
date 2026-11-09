@@ -35,26 +35,35 @@ SPRITE_FOR = {
 }
 
 
-#: Activity state -> anime-face expression strip (``assets/faces/anime/<palette>/``).
+#: Activity state -> anime-face expression strip
+#: (``assets/faces/anime/<palette>/<hairstyle>/``).
 ANIME_FOR = {
     "idle": "calm", "thinking": "thinking", "browsing": "focused", "writing": "focused",
     "syncing": "focused", "searching": "reading", "listening": "listening",
-    "awaiting_approval": "alert", "error": "dizzy", "offline": "asleep",
+    "awaiting_approval": "surprised", "error": "dizzy", "offline": "asleep",
 }
 ANIME_PALETTES = ("pink", "black", "silver", "blue", "brown", "green")
+ANIME_HAIRS = ("long", "twintails", "bob", "sideponytail")
+#: Passing reactions the buddy can show for a few seconds (strips that exist).
+REACTIONS = {"happy": "happy", "wink": "happy", "love": "happy", "smug": "happy",
+             "sorry": "sorry", "pout": "sorry", "surprised": "surprised"}
+REACTION_SECONDS = 3.0
 
 #: Which face the tray and the buddy show (the default agent's): set by use_face().
-FACE = {"face": "brain", "palette": "pink"}
+FACE = {"face": "brain", "palette": "pink", "hair": "long"}
+_REACTION = {"sprite": None, "until": 0.0}
 
 
-def use_face(face: str = "brain", palette: str = None) -> bool:
+def use_face(face: str = "brain", palette: str = None, hair: str = None) -> bool:
     """Switch the desktop face. Live2D/VRM can't be drawn here: they use the anime face.
 
     Returns True when it changed (callers then redraw).
     """
     face = "anime" if face in ("anime", "live2d", "vrm") else "brain"
     palette = palette if palette in ANIME_PALETTES else "pink"
-    wanted = {"face": face, "palette": palette if face == "anime" else FACE["palette"]}
+    hair = hair if hair in ANIME_HAIRS else "long"
+    wanted = {"face": face, "palette": palette if face == "anime" else FACE["palette"],
+              "hair": hair if face == "anime" else FACE["hair"]}
     if wanted == FACE:
         return False
     FACE.update(wanted)
@@ -64,9 +73,26 @@ def use_face(face: str = "brain", palette: str = None) -> bool:
     return True
 
 
+def react(emotion: str, seconds: float = REACTION_SECONDS) -> bool:
+    """Show a passing reaction (happy, sorry, surprised…) on the anime face."""
+    import time
+
+    sprite = REACTIONS.get(emotion or "")
+    if FACE["face"] != "anime" or not sprite:
+        return False
+    _REACTION.update(sprite=sprite, until=time.time() + seconds)
+    return True
+
+
 def face_dir():
     if FACE["face"] == "anime":
-        return mascot_dir().parent / "faces" / "anime" / FACE["palette"]
+        base = mascot_dir().parent / "faces" / "anime" / FACE["palette"]
+        styled = base / FACE.get("hair", "long")
+        if (styled / "face.json").is_file():
+            return styled
+        if (base / "long" / "face.json").is_file():
+            return base / "long"
+        return base
     return mascot_dir()
 
 
@@ -87,7 +113,15 @@ def manifest() -> Dict:
 
 def sprite_for(state: str) -> str:
     if FACE["face"] == "anime":
-        return ANIME_FOR.get(state, "calm")
+        import time
+
+        states = manifest()["states"]
+        if _REACTION["sprite"] and time.time() < _REACTION["until"] and _REACTION["sprite"] in states:
+            return _REACTION["sprite"]
+        sprite = ANIME_FOR.get(state, "calm")
+        if sprite not in states:              # strips made before 0.9
+            sprite = {"surprised": "alert"}.get(sprite, "calm")
+        return sprite
     return SPRITE_FOR.get(state, "dozing")
 
 

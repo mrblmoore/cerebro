@@ -290,6 +290,9 @@ def run(db, text: str, context: Dict[str, Any] = None,
         system += "\n\n" + skills_block
     if voice:
         system += "\n\n" + VOICE_RULES
+        cues = _cue_rules(agent)
+        if cues:
+            system += "\n" + cues
     if (instructions or "").strip():
         system += ("\n\nThis chat's standing instructions from the user (follow them unless "
                    "they conflict with the rules above):\n" + instructions.strip())
@@ -352,6 +355,10 @@ def run(db, text: str, context: Dict[str, Any] = None,
     cited = [source for source in ctx.sources if f"[{source['ref']}]" in answer]
     plan = ctx.context.get("_plan")
     cards = ([plan] if plan else []) + _summary_cards(used_tools, cited) + ctx.drafts
+    from app.services.tts import strip_cues
+
+    spoken = answer if voice else None
+    answer = strip_cues(answer)
     payload = {
         "reply": answer,
         "kind": "draft" if any(c.get("type") == "draft" or (
@@ -361,6 +368,8 @@ def run(db, text: str, context: Dict[str, Any] = None,
         "tool": used_tools[-1] if used_tools else None,
         "tools_used": used_tools,
     }
+    if spoken and spoken != answer:
+        payload["speech_text"] = spoken            # the reply with its sound cues, to be read aloud
     for key in ("_question", "_stopped", "_plan_steps"):
         if ctx.context.get(key):
             payload[key.lstrip("_")] = ctx.context[key]
@@ -372,6 +381,25 @@ def run(db, text: str, context: Dict[str, Any] = None,
     if results.get("task"):
         payload["task"] = results["task"]
     return payload
+
+
+def _cue_rules(agent) -> str:
+    """How many little spoken reactions to use, by the agent's expressiveness."""
+    if not settings.VOICE_CUES:
+        return ""
+    from app.services.personality import voice_settings
+
+    style = voice_settings(agent)
+    level = float(style.get("expressiveness") or 0)
+    if not style.get("cues", True) or level < 0.15:
+        return ""
+    most = 1 if level < 0.4 else 2 if level < 0.7 else 3
+    return ("You may add up to " + str(most) + " sound cues to make it sound alive — [giggle], "
+            "[laugh], [gasp], [sigh], [hmm], [yay], [pause], or wrap a few words in "
+            "[whisper]…[/whisper], [soft]…[/soft], [excited]…[/excited], [tease]…[/tease] or "
+            "[emphasis]…[/emphasis]. They're performed by the voice and hidden from the chat. Use "
+            "them only where a person would naturally react; never in anything drafted for "
+            "someone else.")
 
 
 def offered_tools(ctx: ToolContext, text: str) -> List[Any]:

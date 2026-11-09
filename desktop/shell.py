@@ -350,24 +350,29 @@ class Shell:
         return self.voice
 
     def _follow_face(self):
-        """Show the default agent's face on the desktop (checked every minute)."""
+        """Show the default agent's face on the desktop, and its passing reactions (checked every 2 s)."""
         import time
 
         import requests
 
         import brain_frames
 
+        last_reaction = None
         while not self._quitting:
             try:
                 face = requests.get(f"{self.api_url}/api/faces/desktop", timeout=5).json()
                 # The tray reads brain_frames.FACE on its next frame; the buddy
                 # also redraws its cached frames.
-                brain_frames.use_face(face.get("face"), face.get("palette"))
+                brain_frames.use_face(face.get("face"), face.get("palette"), face.get("hair"))
                 if self.buddy:
-                    self.buddy.set_face(face.get("face"), face.get("palette"))
+                    self.buddy.set_face(face.get("face"), face.get("palette"), face.get("hair"))
+                # A passing reaction from the app (happy, sorry…) shows on the buddy too.
+                if face.get("react") and face.get("react") != last_reaction:
+                    brain_frames.react(face["react"])
+                last_reaction = face.get("react")
             except Exception:  # noqa: BLE001 - the server may be starting
                 pass
-            time.sleep(60)
+            time.sleep(2)
 
     def set_buddy(self, enabled: bool):
         self.config["desktop_buddy"] = bool(enabled)

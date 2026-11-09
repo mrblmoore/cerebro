@@ -20,6 +20,7 @@ from app.api.style import router as style_router
 from app.api.tasks import router as tasks_router
 from app.api.system import router as system_router
 from app.api.sources import router as sources_router
+from app.api.voice import live_router as voice_live_router
 from app.api.voice import router as voice_router
 
 ROUTERS = [
@@ -41,6 +42,7 @@ ROUTERS = [
     integrations_router,
     addons_router,
     voice_router,
+    voice_live_router,
     agents_router,
     faces_router,
     secretary_router,

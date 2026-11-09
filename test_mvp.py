@@ -6128,6 +6128,400 @@ def test_voice():
             check("faster-whisper runs on this PC (tiny.en, one second of silence)", result["text"] == "", result)
 
 
+def test_voice_expression():
+    """0.9: personality, sound cues, Polly engines and effects, Nova Sonic, Talk live."""
+    print("\nVoice — personality, cues, Polly effects, Nova Sonic and Talk live")
+    import asyncio
+    import base64
+    import io
+    import json as _json
+    import wave
+    from unittest import mock
+
+    from fastapi.testclient import TestClient
+
+    from app.core.config import settings
+    from app.main import app
+    from app.services import agents, personality, sonic, tts
+    from app.services.agent import loop
+
+    # ---- the cue language
+    line = "Found it! [giggle] [whisper]you owe me a coffee[/whisper] [tease]told you so[/tease]"
+    check("Cues are parsed into words, sounds and styled spans",
+          tts.segments(line) == [("text", "Found it! ", ()), ("sound", "giggle", ()),
+                                 ("text", "you owe me a coffee", ("whisper",)),
+                                 ("text", "told you so", ("tease",))], tts.segments(line))
+    check("…and never shown in the chat", tts.strip_cues(line) == "Found it! you owe me a coffee told you so",
+          tts.strip_cues(line))
+    check("Text-only voices say the sounds as words", tts.plain(line) == "Found it! hehe you owe me a coffee told you so",
+          tts.plain(line))
+    check("Nova Sonic gets them as stage directions",
+          tts.directed(line) == "Found it! (giggles) (whispering:) you owe me a coffee (teasingly:) told you so",
+          tts.directed(line))
+    check("A stray tag is dropped", tts.strip_cues("hi [whisper]there") == "hi there"
+          and tts.plain("hi [whisper]there") == "hi there")
+    check("Typed replies get gentle cues from how they read",
+          tts.add_cues("Haha, that worked! Oops, one more thing.", 0.8)
+          == "[giggle] [excited]that worked![/excited] [gasp] Oops, one more thing.",
+          tts.add_cues("Haha, that worked! Oops, one more thing.", 0.8))
+    check("…none when the agent is told to be plain", tts.add_cues("Haha, that worked!", 0.1) == "Haha, that worked!")
+    cut = tts.speakable("[whisper]" + "This keeps going on and on. " * 40 + "[/whisper]")
+    check("A long reply cut short keeps its span closed", cut.count("[whisper]") == cut.count("[/whisper]") == 1, cut)
+
+    # ---- Polly SSML per engine (the AWS Polly developer guide's supported-tags table)
+    style = {"rate": 1.1, "pitch": 6, "timbre": -10, "breaths": True, "drc": True, "newscaster": True}
+    generative = tts.render_ssml(line, "generative", style, "Joanna")
+    neural = tts.render_ssml(line, "neural", style, "Joanna")
+    standard = tts.render_ssml(line, "standard", style, "Joanna")
+    check("Generative gets only the tags it takes (rate, volume, breaks)", generative ==
+          '<speak><prosody rate="110%">Found it! <prosody rate="110%">hehe</prosody><break time="150ms"/> '
+          '<prosody volume="x-soft" rate="90%">you owe me a coffee</prosody> <break time="120ms"/>'
+          '<prosody rate="92%">told you so</prosody></prosody></speak>', generative)
+    check("Neural adds compression and the newscaster style, never pitch or whispers", neural ==
+          '<speak><amazon:domain name="news"><amazon:effect name="drc"><prosody rate="110%">Found it! '
+          '<prosody rate="110%">hehe</prosody><break time="150ms"/> <prosody volume="x-soft" rate="90%">'
+          'you owe me a coffee</prosody> <break time="120ms"/><prosody rate="92%">told you so</prosody>'
+          '</prosody></amazon:effect></amazon:domain></speak>', neural)
+    check("Standard is the effects engine: a real whisper, pitch, timbre, breaths and emphasis", standard ==
+          '<speak><amazon:effect name="drc"><amazon:auto-breaths volume="soft" frequency="low">'
+          '<amazon:effect vocal-tract-length="-10%"><prosody rate="110%" pitch="+6%">Found it! '
+          '<prosody pitch="+12%" rate="110%">hehe</prosody><break time="150ms"/> '
+          '<amazon:effect name="whispered">you owe me a coffee</amazon:effect> <break time="120ms"/>'
+          '<emphasis level="moderate"><prosody rate="92%" pitch="+15%">told you so</prosody></emphasis>'
+          '</prosody></amazon:effect></amazon:auto-breaths></amazon:effect></speak>', standard)
+    check("The newscaster style is only for voices that have it",
+          "amazon:domain" not in tts.render_ssml("hi", "neural", {"newscaster": True}, "Ruth"))
+    check("Text is escaped for SSML", "&lt;b&gt; &amp; co" in tts.render_ssml("<b> & co", "neural"))
+    check("The Windows voice gets SSML 1.0 too",
+          tts.windows_ssml(line).startswith('<speak version="1.0"') and "<emphasis>told you so</emphasis>"
+          in tts.windows_ssml(line))
+
+    # ---- choosing a Polly engine by what the voice has
+    voices = {"Ruth": ["generative", "neural", "long-form"], "Joanna": ["neural", "standard"],
+              "Ivy": ["standard"]}
+    check("Generative when the voice has it", tts.engine_for("Ruth", "generative", voices) == "generative")
+    check("…else the next one down", tts.engine_for("Joanna", "generative", voices) == "neural"
+          and tts.engine_for("Ivy", "generative", voices) == "standard")
+    check("An unknown voice is tried as asked", tts.engine_for("Nobody", "neural", voices) == "neural")
+
+    class Stream:
+        def __init__(self, data):
+            self.data = data
+
+        def read(self):
+            return self.data
+
+    class FakePolly:
+        def __init__(self, refuse=0):
+            self.calls, self.refuse = [], refuse
+
+        def describe_voices(self, **kwargs):
+            if not kwargs:
+                return {"Voices": [{"Id": "Ruth", "SupportedEngines": ["generative", "neural"]}],
+                        "NextToken": "2"}
+            return {"Voices": [{"Id": "Ivy", "SupportedEngines": ["standard"]}]}
+
+        def synthesize_speech(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) <= self.refuse:
+                raise RuntimeError("InvalidSsmlException: Invalid SSML request")
+            return {"AudioStream": Stream(b"MP3")}
+
+    fake = FakePolly()
+    with mock.patch.object(tts, "polly_client", lambda: fake):
+        tts._POLLY_VOICES.update(at=0.0, voices={})
+        check("Polly's voices are listed with their engines, every page",
+              tts.polly_voices(fresh=True) == {"Ruth": ["generative", "neural"], "Ivy": ["standard"]})
+        audio, mime = tts._polly("Done! [giggle]", "Ivy", 1.0, {"engine": "generative"})
+        check("A voice without generative steps down and gets its engine's SSML",
+              audio == b"MP3" and fake.calls[-1]["Engine"] == "standard"
+              and fake.calls[-1]["TextType"] == "ssml" and "hehe" in fake.calls[-1]["Text"], fake.calls[-1])
+        fake.calls.clear()
+        fake.refuse = 2
+        audio, _ = tts._polly("[whisper]psst[/whisper] [giggle]", "Ruth", 1.0, {"engine": "generative"})
+        check("Refused SSML is retried plainer, then as plain text — speech never fails on a tag",
+              audio == b"MP3" and [c["TextType"] for c in fake.calls] == ["ssml", "ssml", "text"]
+              and "<prosody" not in fake.calls[1]["Text"] and fake.calls[2]["Text"] == "psst hehe", fake.calls)
+        tts._POLLY_VOICES.update(at=0.0, voices={})
+
+    # ---- personality
+    db = session()
+    sweet = agents.create(db, "blank", name="Mochi")
+    check("New agents are the cute, cheerful, teasing sweetheart by default",
+          personality.personality(sweet)["preset"] == "sweetheart")
+    prompt = agents.identity_block(db, sweet)
+    check("The persona reaches the agent's instructions", "playful, teasing" in prompt, prompt)
+    check("…with its guardrails: kind, never sexual or crude, drafts in the user's own style",
+          "never flirt sexually" in prompt and "user's own style" in prompt)
+    calm = agents.update(db, sweet, personality={"preset": "professional", "playfulness": 5, "formality": 0.9})
+    persona = personality.personality(calm)
+    check("A personality can be changed, and is kept in range",
+          persona["preset"] == "professional" and persona["playfulness"] == 1.0, persona)
+    check("…and sounds like it", "formal" in agents.identity_block(db, calm))
+    agents.update(db, sweet, personality={"preset": "sweetheart"},
+                  voice_style={"provider": "polly", "engine": "standard", "pitch": 99, "breaths": 1,
+                               "voice": "Ivy", "bogus": "x"})
+    voice = personality.voice_settings(sweet)
+    check("An agent's voice style is cleaned and merged over its personality's",
+          voice["engine"] == "standard" and voice["pitch"] == 30 and voice["breaths"] is True
+          and voice["voice"] == "Ivy" and "bogus" not in voice and abs(voice["rate"] - 1.06) < 1e-6, voice)
+    check("…and carries the persona for voices that perform it", "playful" in voice["persona"]
+          and voice["name"] == "Mochi")
+    face = personality.clean_face_style({"palette": "pink", "hair": "twintails", "framing": {"zoom": 9, "y": -0.2},
+                                         "expressions": {"happy": {"name": "joy", "weight": 2}, "nope": {}},
+                                         "gestures": {"done": "gestures/wave.vrma", "idle": "../x.vrma"}})
+    check("A face's style is validated: hair, framing, expression mapping, gestures",
+          face == {"palette": "pink", "hair": "twintails", "framing": {"zoom": 3.0, "y": -0.2, "mirror": False},
+                   "expressions": {"happy": {"name": "joy", "weight": 1.0}},
+                   "gestures": {"done": "gestures/wave.vrma"}}, face)
+    with mock.patch.object(settings, "VOICE_CUES", True):
+        check("Voice turns are told how many cues to use",
+              "up to 3 sound cues" in loop._cue_rules(sweet), loop._cue_rules(sweet))
+        agents.update(db, sweet, personality={"preset": "sweetheart", "expressiveness": 0})
+        check("…none for an agent that shouldn't", loop._cue_rules(sweet) == "")
+    with mock.patch.object(settings, "VOICE_CUES", False):
+        check("…or when sound cues are switched off", loop._cue_rules(calm) == "")
+    agents.update(db, sweet, personality={"preset": "sweetheart"})
+
+    # Customer drafts never take the persona.
+    from app.models.enterprise import EnterpriseMessage
+    from app.services.enterprise_service import EnterpriseService
+    import app.services.llm_service as llm_module
+
+    message = EnterpriseMessage(source="outlook", sender="ann@example.com", subject="Printer",
+                                body="The printer is jammed again.")
+    db.add(message)
+    db.commit()
+    prompts = []
+    with mock.patch.object(llm_module.LLMService, "enabled", new=property(lambda self: True)), \
+            mock.patch.object(llm_module.LLMService, "_call_llm", new=lambda self, p, *a, **k: prompts.append(p) or "OK"):
+        EnterpriseService(db).draft_reply(message)
+    check("Replies drafted for customers never use the persona",
+          prompts and "teasing" not in prompts[0] and "bubbly" not in prompts[0], prompts[:1])
+
+    # The reply's cues are spoken, but never shown.
+    def cued_llm(self, messages, tools=None, system=None, **kwargs):
+        return {"content": "[yay] All done! [tease]Told you it was the cache.[/tease]", "tool_calls": []}
+
+    spoken = []
+    tts.use_provider("polly", lambda text, voice, rate, style: spoken.append((text, voice, style)) or (b"MP3", "audio/mpeg"))
+    client = TestClient(app)
+    enabled, patched = _with_ai(cued_llm)
+    try:
+        with enabled, patched, mock.patch.object(settings, "VOICE_PROVIDER", "auto"), \
+                mock.patch.object(settings, "VOICE_CUES", True):
+            body = client.post("/api/voice/command", data={"text": "fix it", "speak": "true",
+                                                           "agent_id": str(sweet.id)}).json()
+            check("A spoken reply shows without its cues", body.get("reply") == "All done! Told you it was the cache.",
+                  body.get("reply"))
+            check("…and is spoken with them, in the agent's voice style",
+                  spoken and "[tease]" in spoken[-1][0] and spoken[-1][1] == "Ivy"
+                  and spoken[-1][2].get("engine") == "standard", spoken[-1:])
+            response = client.post("/api/voice/speak", json={
+                "text": "Hehe, found it!", "agent_id": sweet.id,
+                "style": {"engine": "neural", "voice": "Joanna"}, "personality": {"preset": "calm"}})
+            check("The editor's Preview tries a voice before it's saved",
+                  response.status_code == 200 and spoken[-1][1] == "Joanna" and spoken[-1][2]["engine"] == "neural",
+                  response.text)
+            db.expire_all()
+            check("…without saving it", personality.voice_settings(agents.get(db, sweet.id))["engine"] == "standard")
+            result = client.post("/api/voice/test", json={"agent_id": sweet.id}).json()
+            check("Settings → Voice → Test voice says which voice spoke", result.get("ok") and result["provider"] == "polly",
+                  result)
+            listed = client.get("/api/voice/voices", params={"provider": "sonic"}).json()
+            check("Nova Sonic's voices are offered", any(v["id"] == "tiffany" for v in listed["voices"]), listed)
+    finally:
+        tts.use_provider("polly", None)
+
+    # ---- Nova Sonic, against a fake bidirectional stream
+    import sys as _sys
+
+    ok, why = sonic.available()
+    if _sys.version_info < (3, 12):
+        check("Nova Sonic isn't offered on an older Python, and says why", not ok and "3.12" in why, why)
+    with mock.patch.object(settings, "BEDROCK_AUTH_MODE", "api_key"), mock.patch.object(_sys, "version_info", (3, 12, 0)), \
+            mock.patch("importlib.util.find_spec", lambda name, *a: object()):
+        ok, why = sonic.available()
+        check("…nor with a Bedrock API key, which can't sign it", not ok and "API key" in why, why)
+
+    pcm = b"\x01\x00\x02\x00" * 600
+
+    class FakeSonic:
+        """Records what Cerebro sends and answers like the service."""
+        streams = []
+
+        def __init__(self, script):
+            self.sent, self.script, self.closed = [], script, False
+            self.queue = asyncio.Queue()
+            FakeSonic.streams.append(self)
+
+        async def send(self, event_json):
+            event = _json.loads(event_json)["event"]
+            self.sent.append(event)
+            for reply in self.script(event, self):
+                await self.queue.put(reply)
+
+        async def receive(self):
+            return await self.queue.get()
+
+        async def close(self):
+            self.closed = True
+            await self.queue.put(None)
+
+    def reader(event, stream):
+        name = next(iter(event))
+        if name == "contentEnd" and len([e for e in stream.sent if "contentEnd" in e]) == 2:
+            yield {"event": {"contentStart": {"type": "AUDIO", "role": "ASSISTANT"}}}
+            yield {"event": {"audioOutput": {"content": base64.b64encode(pcm[:1200]).decode()}}}
+            yield {"event": {"audioOutput": {"content": base64.b64encode(pcm[1200:]).decode()}}}
+            yield {"event": {"contentEnd": {"type": "AUDIO", "stopReason": "END_TURN"}}}
+
+    opened = []
+
+    async def factory(model, region):
+        opened.append((model, region))
+        return FakeSonic(reader)
+
+    sonic.set_client_factory(factory)
+    try:
+        wav = sonic.speak("Found it! (giggles)", style={"name": "Mochi", "persona": "You're bubbly."})
+        stream = FakeSonic.streams[-1]
+        names = [next(iter(e)) for e in stream.sent]
+        check("Nova Sonic is spoken to in the documented order",
+              names == ["sessionStart", "promptStart", "contentStart", "textInput", "contentEnd",
+                        "contentStart", "textInput", "contentEnd", "promptEnd", "sessionEnd"], names)
+        start = stream.sent[1]["promptStart"]["audioOutputConfiguration"]
+        check("…asking for 24 kHz 16-bit mono speech in the chosen voice",
+              start["sampleRateHertz"] == 24000 and start["sampleSizeBits"] == 16 and start["voiceId"] == "tiffany"
+              and start["mediaType"] == "audio/lpcm", start)
+        check("…with the persona as the system prompt, and the reply as the user's turn",
+              stream.sent[2]["contentStart"]["role"] == "SYSTEM" and "bubbly" in stream.sent[3]["textInput"]["content"]
+              and stream.sent[5]["contentStart"]["interactive"] is True
+              and "Found it! (giggles)" in stream.sent[6]["textInput"]["content"])
+        check("…on the configured model and region", opened[-1] == (settings.VOICE_SONIC_MODEL, settings.VOICE_SONIC_REGION))
+        with wave.open(io.BytesIO(wav)) as handle:
+            check("Its speech comes back as 24 kHz WAV", handle.getframerate() == 24000
+                  and handle.readframes(10 ** 6) == pcm)
+        check("…and the stream is closed", stream.closed)
+
+        sonic_calls = []
+        with mock.patch.object(settings, "VOICE_PROVIDER", "sonic"):
+            with mock.patch.object(sonic, "speak", lambda text, voice=None, style=None: sonic_calls.append((text, voice))
+                                   or tts.pcm_to_wav(pcm)):
+                spoken = tts.synthesize("Yay! [giggle]", style={"provider": "sonic", "voice": "matthew"})
+            check("Nova Sonic voices replies when chosen, with the cues as directions",
+                  spoken["provider"] == "sonic" and sonic_calls == [("Yay! (giggles)", "matthew")], sonic_calls)
+            tts.use_provider("edge", lambda text, voice, rate: (b"MP3", "audio/mpeg"))
+            with mock.patch.object(sonic, "speak", lambda *a, **k: (_ for _ in ()).throw(sonic.SonicUnavailable("x"))):
+                spoken = tts.synthesize("Hello [giggle]", style={"provider": "sonic"})
+            tts.use_provider("edge", None)
+            check("…and the next voice speaks if Nova Sonic fails", spoken["provider"] == "edge")
+
+        # ---- Talk live
+        asked, events = [], []
+
+        def live_script(event, stream):
+            name = next(iter(event))
+            if name == "audioInput":
+                yield {"event": {"contentStart": {"role": "USER", "type": "TEXT"}}}
+                yield {"event": {"textOutput": {"content": "make a note to call Ann"}}}
+                yield {"event": {"contentStart": {"role": "ASSISTANT", "type": "TEXT",
+                                                  "additionalModelFields": '{"generationStage":"SPECULATIVE"}'}}}
+                yield {"event": {"textOutput": {"content": "On it!"}}}
+                yield {"event": {"contentStart": {"role": "ASSISTANT", "type": "TEXT",
+                                                  "additionalModelFields": '{"generationStage":"FINAL"}'}}}
+                yield {"event": {"textOutput": {"content": "On it, hehe!"}}}
+                yield {"event": {"audioOutput": {"content": "AAAA"}}}
+                yield {"event": {"textOutput": {"content": '{ "interrupted" : true }'}}}
+                yield {"event": {"toolUse": {"toolUseId": "t1", "toolName": "ask_cerebro",
+                                             "content": _json.dumps({"request": "make a note to call Ann"})}}}
+
+        async def run_live():
+            async def emit(message):
+                events.append(message)
+
+            async def ask(request):
+                asked.append(request)
+                return {"speech": "Noted!", "reply": "Noted: call Ann.", "cards": [{"type": "note"}]}
+
+            session_ = sonic.LiveSession(emit, ask, voice="Tiffany", name="Mochi", agent=sweet)
+            factory_streams = len(FakeSonic.streams)
+            sonic.set_client_factory(lambda m, r: _make(live_script))
+            await session_.start()
+            await session_.audio(pcm)
+            for _ in range(50):
+                if any(e["type"] == "result" for e in events):
+                    break
+                await asyncio.sleep(0.02)
+            await asyncio.sleep(0.05)
+            await session_.stop()
+            return FakeSonic.streams[factory_streams:]
+
+        async def _make(script):
+            return FakeSonic(script)
+
+        live_streams = asyncio.run(run_live())
+        live_stream = live_streams[-1]
+        sent = [next(iter(e)) for e in live_stream.sent]
+        tools = live_stream.sent[1]["promptStart"].get("toolConfiguration", {}).get("tools", [])
+        check("Talk live offers Cerebro's agent as a tool", [t["toolSpec"]["name"] for t in tools] == ["ask_cerebro"]
+              and live_stream.sent[1]["promptStart"]["audioOutputConfiguration"]["voiceId"] == "tiffany", tools)
+        check("…streams the mic as 16 kHz audio",
+              any("audioInput" in e and base64.b64decode(e["audioInput"]["content"]) == pcm for e in live_stream.sent)
+              and any(e.get("contentStart", {}).get("type") == "AUDIO"
+                      and e["contentStart"]["audioInputConfiguration"]["sampleRateHertz"] == 16000
+                      for e in live_stream.sent))
+        transcripts = [(e["role"], e["text"]) for e in events if e["type"] == "transcript"]
+        check("Both sides are transcribed, the final words only",
+              transcripts == [("user", "make a note to call Ann"), ("assistant", "On it, hehe!")], transcripts)
+        check("Her voice plays as it arrives", {"type": "audio", "data": "AAAA"} in events)
+        check("Talking over her stops her", {"type": "interrupted"} in events)
+        check("Real work goes to Cerebro's agent", asked == ["make a note to call Ann"]
+              and any(e["type"] == "result" and e["reply"] == "Noted: call Ann." for e in events), events)
+        results = [e["toolResult"] for e in live_stream.sent if "toolResult" in e]
+        check("…and its answer goes back for her to say",
+              results and _json.loads(results[0]["content"]) == {"result": "Noted!"}
+              and any(e.get("contentStart", {}).get("toolResultInputConfiguration", {}).get("toolUseId") == "t1"
+                      for e in live_stream.sent), results)
+        check("Ending closes the audio, prompt and session", sent[-3:] == ["contentEnd", "promptEnd", "sessionEnd"]
+              and live_stream.closed, sent[-4:])
+
+        # The WebSocket the page uses.
+        sonic.set_client_factory(lambda m, r: _make(live_script))
+
+        def agent_llm(self, messages, tools=None, system=None, **kwargs):
+            return {"content": "Noted — I'll remind you to call Ann. [yay]", "tool_calls": []}
+
+        enabled, patched = _with_ai(agent_llm)
+        with enabled, patched, mock.patch.object(settings, "VOICE_ENABLED", True):
+            with client.websocket_connect(f"/api/voice/live?agent_id={sweet.id}",
+                                          headers={"origin": "http://127.0.0.1"}) as ws:
+                ready = ws.receive_json()
+                check("The page's live socket opens a session with the agent", ready["type"] == "ready"
+                      and ready["agent"] == "Mochi", ready)
+                ws.send_bytes(pcm)
+                seen = []
+                for _ in range(30):
+                    seen.append(ws.receive_json())
+                    if seen[-1]["type"] == "result":
+                        break
+                ws.send_text(_json.dumps({"type": "stop"}))
+            result = next((e for e in seen if e["type"] == "result"), {})
+            check("…and a spoken request runs the agent loop, its cues kept out of the chat",
+                  result.get("reply") == "Noted — I'll remind you to call Ann.", seen)
+            said = [e for e in FakeSonic.streams[-1].sent if "toolResult" in e]
+            check("…and a short spoken answer goes back to Nova Sonic",
+                  said and "remind you to call Ann" in _json.loads(said[0]["toolResult"]["content"])["result"], said)
+            try:
+                with client.websocket_connect("/api/voice/live", headers={"origin": "https://evil.example"}) as ws:
+                    ws.receive_json()
+                check("Other websites can't open a live session", False)
+            except Exception:  # noqa: BLE001 - refused
+                check("Other websites can't open a live session", True)
+    finally:
+        sonic.set_client_factory(None)
+
+
 def test_push_to_talk():
     """The desktop's push-to-talk state machine, with a fake microphone and keys."""
     print("\nVoice — push-to-talk")
@@ -6623,13 +7017,17 @@ def test_faces():
     from app.services import agents, tts
 
     palettes = ("pink", "black", "silver", "blue", "brown", "green")
+    hairs = ("long", "twintails", "bob", "sideponytail")
     folder = ROOT / "assets" / "faces" / "anime"
-    manifests = {p: _json.loads((folder / p / "face.json").read_text(encoding="utf-8")) for p in palettes}
-    check("Every palette has every expression and the mouth shapes",
-          all({"calm", "thinking", "reading", "focused", "listening", "alert", "dizzy", "asleep", "talk"}
-              <= set(m["states"]) for m in manifests.values()))
-    check("…in the mascot's manifest format", all((folder / p / m["states"]["calm"]["file"]).exists()
-                                                  and m["frame"]["width"] == 128 for p, m in manifests.items()))
+    manifests = {f"{p}/{h}": _json.loads((folder / p / h / "face.json").read_text(encoding="utf-8"))
+                 for p in palettes for h in hairs}
+    check("Every colour and hairstyle has every expression, the reactions and the mouth shapes",
+          all({"calm", "thinking", "reading", "focused", "listening", "surprised", "dizzy", "asleep",
+               "happy", "sorry", "talk"} <= set(m["states"]) for m in manifests.values()))
+    check("…in the mascot's manifest format", all((folder / k / m["states"]["calm"]["file"]).exists()
+                                                  and m["frame"]["width"] == 128 for k, m in manifests.items()))
+    size = sum(f.stat().st_size for f in folder.rglob("*.png"))
+    check("…and the strips stay small for the installer", size < 12 * 1024 * 1024, f"{size / 1e6:.1f} MB")
 
     _sys.path.insert(0, str(ROOT / "desktop"))
     try:
@@ -6640,7 +7038,16 @@ def test_faces():
         brain_frames = None
     if brain_frames is not None:
         try:
-            brain_frames.use_face("anime", "blue")
+            brain_frames.use_face("anime", "blue", "twintails")
+            check("The desktop shows the anime face in the chosen hairstyle",
+                  brain_frames.face_dir().name == "twintails" and brain_frames.face_dir().parent.name == "blue")
+            check("…and a passing reaction, then back", brain_frames.react("happy", 0.2)
+                  and brain_frames.sprite_for("idle") == "happy")
+            import time as _time
+
+            _time.sleep(0.25)
+            check("…back to its state's expression", brain_frames.sprite_for("idle") == "calm"
+                  and brain_frames.sprite_for("awaiting_approval") == "surprised")
             check("The desktop can show the anime face",
                   brain_frames.sprite_for("searching") == "reading" and len(brain_frames.frames("searching", 32)) == 8
                   and brain_frames.frames("idle", 32)[0].size == (32, 32))
@@ -6649,7 +7056,7 @@ def test_faces():
                   and brain_frames.talk_frame(0.0, 32).tobytes() != brain_frames.talk_frame(1.0, 32).tobytes())
             brain_frames.use_face("vrm", "green")
             check("A VRM or Live2D face shows as the anime face on the desktop",
-                  brain_frames.FACE == {"face": "anime", "palette": "green"})
+                  brain_frames.FACE == {"face": "anime", "palette": "green", "hair": "long"})
         finally:
             brain_frames.use_face("brain")
         check("…and the brain is back when chosen", brain_frames.sprite_for("browsing") == "working")
@@ -6675,6 +7082,18 @@ def test_faces():
         vrm = client.post("/api/faces", files={"file": ("ami.vrm", b"glTF\x02\x00\x00\x00" + b"\0" * 32,
                                                           "model/gltf-binary")}).json()
         check("A VRM model is loaded for a face", vrm["kind"] == "vrm" and vrm["entry"] == "model.vrm")
+        added = client.post(f"/api/faces/{vrm['id']}/gestures",
+                            files={"file": ("../Wave Hello!.vrma", b"glTF\x02\x00\x00\x00" + b"\0" * 16,
+                                            "model/gltf-binary")}).json()
+        check("A .vrma gesture is added to the VRM model's own folder",
+              added.get("path") == "gestures/Wave-Hello.vrma" and "gestures/Wave-Hello.vrma" in added["face"]["gestures"]
+              and (folder / vrm["id"] / "gestures" / "Wave-Hello.vrma").is_file(), added)
+        check("…and anything that isn't one is refused",
+              client.post(f"/api/faces/{vrm['id']}/gestures",
+                          files={"file": ("x.vrma", b"not gltf", "model/gltf-binary")}).status_code == 400)
+        check("…as is a model that doesn't exist",
+              client.post("/api/faces/..%2F..%2Fetc/gestures",
+                          files={"file": ("x.vrma", b"glTF", "model/gltf-binary")}).status_code in (404, 405))
         bundle = io.BytesIO()
         with zipfile.ZipFile(bundle, "w") as archive:
             archive.writestr("hiyori/hiyori.model3.json", "{}")
@@ -6699,10 +7118,14 @@ def test_faces():
 
     db = session()
     default = agents.default_agent(db)
-    agents.update(db, default, face="vrm", face_style={"palette": "blue", "model": "x"})
+    agents.update(db, default, face="vrm", face_style={"palette": "blue", "model": "x", "hair": "bob"})
     desktop = client.get("/api/faces/desktop").json()
     check("The desktop shows the default agent's face (VRM → its anime stand-in)",
-          desktop == {"face": "anime", "palette": "blue", "agent": default.name}, desktop)
+          desktop == {"face": "anime", "palette": "blue", "hair": "bob", "agent": default.name, "react": None},
+          desktop)
+    client.post("/api/faces/react", json={"emotion": "happy"})
+    check("…and the app's passing reaction", client.get("/api/faces/desktop").json()["react"] == "happy")
+    check("Unknown reactions are refused", client.post("/api/faces/react", json={"emotion": "rage"}).status_code == 400)
     agents.update(db, default, face="brain", face_style={})
 
     heard = []
@@ -6803,6 +7226,65 @@ def test_agents_page():
             check("Each face is created; a model face without a model stands in with the anime face",
                   made["brain"]["drawn"] and made["anime"]["kind"] == "anime" and made["vrm"]["drawn"]
                   and made["live2d"]["drawn"], made)
+            faces = tab.evaluate("""async () => {
+              const f = await import('/static/ui/face.js');
+              const out = { drawn: {}, layers: {} };
+              for (const hair of f.HAIR_NAMES) for (const expr of f.EXPRESSIONS) {
+                const svg = new DOMParser().parseFromString(f.animeSVG({ palette: 'pink', hair }, expr), 'image/svg+xml');
+                const root = svg.documentElement;
+                out.drawn[`${hair}/${expr}`] = root.nodeName === 'svg' && !svg.querySelector('parsererror')
+                  && root.getAttribute('data-expr') === expr;
+              }
+              const host = document.createElement('div');
+              host.style.width = host.style.height = '160px';
+              document.body.append(host);
+              host.innerHTML = f.animeSVG({ palette: 'blue', hair: 'twintails' }, 'calm');
+              const svg = host.querySelector('svg');
+              f.poseAnime(svg, 12345, 0.5);
+              const first = svg.outerHTML;
+              f.poseAnime(svg, 999, 0.1);
+              f.poseAnime(svg, 12345, 0.5);
+              out.deterministic = svg.outerHTML === first;
+              out.blinks = [0, 500, 1000, 2000, 3000, 3500].map(t => f.blinkAt(t)).join() === [0, 500, 1000, 2000, 3000, 3500].map(t => f.blinkAt(t)).join();
+              const face = f.createFace(host, { face: 'anime', face_style: { palette: 'pink', hair: 'bob' } });
+              face.setState('awaiting_approval');
+              out.approval = host.querySelector('svg').getAttribute('data-expr');
+              face.react('wink', 120);
+              out.reacting = host.querySelector('svg').getAttribute('data-expr');
+              await new Promise(r => setTimeout(r, 400));
+              out.after = host.querySelector('svg').getAttribute('data-expr');
+              face.destroy();
+              out.vrm = f.matchExpressions(['happy', 'angry', 'sad', 'relaxed', 'surprised', 'aa', 'ih', 'ou', 'ee', 'oh',
+                                            'blink', 'blinkLeft', 'blinkRight', 'Think_Pose']);
+              out.live2d = f.live2dCatalog({ FileReferences: { Expressions: [{ Name: 'Smile' }, { Name: 'Sad' }, { Name: 'Surprise' }],
+                                                               Motions: { Idle: [], TapBody: [] } } });
+              out.l2match = f.matchExpressions([...out.live2d.expressions, ...out.live2d.motions]);
+              out.silent = f.vowelsFrom(0, [1, 1, 1, 1, 1]);
+              out.unclear = f.vowelsFrom(0.8, null);
+              out.ooh = f.vowelsFrom(0.8, [1, 0.1, 0.1, 0.05, 0.02]);
+              out.eee = f.vowelsFrom(0.8, [0.05, 0.1, 0.1, 1, 0.2]);
+              return out;
+            }""")
+            check("Every hairstyle draws every expression as a well-formed SVG",
+                  len(faces["drawn"]) == 4 * 14 and all(faces["drawn"].values()),
+                  [k for k, v in faces["drawn"].items() if not v])
+            check("Her pose is the same for the same moment (reproducible desktop frames)",
+                  faces["deterministic"] and faces["blinks"])
+            check("Needing approval shows her surprised; a reaction passes, then she's back",
+                  faces["approval"] == "surprised" and faces["reacting"] == "wink" and faces["after"] == "surprised",
+                  (faces["approval"], faces["reacting"], faces["after"]))
+            vrm = faces["vrm"]
+            check("A VRM model's expressions are matched to Cerebro's states",
+                  vrm["happy"] == "happy" and vrm["sorry"] == "sad" and vrm["surprised"] == "surprised"
+                  and vrm["wink"] == "blinkLeft" and vrm["thinking"] == "Think_Pose", vrm)
+            check("A Live2D model's expressions and motions are read from its model3.json",
+                  faces["live2d"] == {"expressions": ["Smile", "Sad", "Surprise"], "motions": ["Idle", "TapBody"]}
+                  and faces["l2match"]["happy"] == "Smile" and faces["l2match"]["sorry"] == "Sad"
+                  and faces["l2match"]["surprised"] == "Surprise", faces["l2match"])
+            check("Lip sync shapes vowels from the voice's bands",
+                  all(v == 0 for v in faces["silent"].values()) and faces["unclear"]["aa"] == 0.8
+                  and max(faces["ooh"], key=faces["ooh"].get) == "ou"
+                  and max(faces["eee"], key=faces["eee"].get) == "ee", (faces["ooh"], faces["eee"]))
             tab.click("[data-tab=home]")
             tab.wait_for_selector(".agent-card", timeout=8000)
             check("Home shows a card per agent", tab.locator(".agent-card").count() >= 1,
@@ -7578,7 +8060,7 @@ def main() -> int:
                   test_screenpipe_current_api, test_chat_service,
                   test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices,
                   test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
-                  test_skills, test_voice, test_push_to_talk, test_addons_page,
+                  test_skills, test_voice, test_voice_expression, test_push_to_talk, test_addons_page,
                   test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
                   test_faces, test_agents_page, test_desktop_apps,
                   test_desktop_apps_notepad, test_keep_it_updated, test_attached_files,

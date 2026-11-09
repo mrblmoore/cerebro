@@ -302,6 +302,17 @@ class Settings(BaseSettings):
     #: The mic button in Ask: "review" puts the words in the box to check;
     #: "send" sends them straight away.
     VOICE_MIC_MODE: str = "review"
+    #: Which Polly engine to use: generative (most expressive) | neural | long-form | standard
+    #: (the "effects" engine: whispers, pitch, breaths). Falls back when a voice lacks it.
+    VOICE_POLLY_ENGINE: str = "generative"
+    #: Expressive speech: little reactions (giggles, gasps, whispers) in spoken replies.
+    VOICE_CUES: bool = True
+    #: The default personality for agents: sweetheart | warm | energetic | calm | professional.
+    VOICE_PERSONALITY: str = "sweetheart"
+    #: Amazon Nova Sonic (speech-to-speech on Bedrock): model, region and voice.
+    VOICE_SONIC_MODEL: str = "amazon.nova-2-sonic-v1:0"
+    VOICE_SONIC_REGION: str = "us-east-1"
+    VOICE_SONIC_VOICE: str = "tiffany"
 
     # ------------------------------------------------- copilot studio bridge
     #: Entirely optional. Cerebro is complete without it; this shares a slice of

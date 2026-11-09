@@ -1,7 +1,7 @@
 // Cerebro app: Ask, Activity, Sources and Connect, for the desktop shell and /app.
 import { mascot, setBrainState, setPose, stateLabel } from './brain.js';
 import { escapeHTML as esc, renderMarkdown } from './markdown.js';
-import { createFace, faceAvatar, lipSync, PALETTE_NAMES } from './face.js';
+import { animeSVG, createFace, faceAvatar, lipSync, PALETTE_NAMES, HAIR_NAMES, HAIRSTYLES, EXPRESSIONS, MODEL_SLOTS } from './face.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -762,11 +762,36 @@ async function decide(node, path, extra = '') {
   $$('button', node).forEach(button => { button.disabled = true; });
   try {
     const result = await api.post(`${path}?conversation_id=${state.chatId || ''}${extra}`);
-    toast(result.reply || 'Done', result.cards?.some(c => c.status === 'error') ? 'err' : 'ok');
+    const failed = result.cards?.some(c => c.status === 'error' || c.status === 'failed');
+    toast(result.reply || 'Done', failed ? 'err' : 'ok');
+    if (/\/approve$/.test(path)) react(failed ? 'sorry' : 'smug');
+    else if (/\/discard$/.test(path)) react('pout', 1800);
   } catch (error) {
     toast(error.message, 'err');
+    react('sorry');
   }
   await loadHistory();
+}
+
+/** The face reacts to what just happened — on the stage, and on the desktop buddy. */
+function react(emotion, ms = 2600) {
+  if (!emotion) return;
+  state.stageFace?.react?.(emotion, ms);
+  api.post('/api/faces/react', { emotion }).catch(() => {});
+}
+
+/** How the face should react to a reply (and what was said to get it). */
+function reactionFor(final, said = '') {
+  const cards = final?.cards || [];
+  const reply = final?.reply || '';
+  if (/\b(thank(s| you)|ty|great job|well done|good job|you'?re (the best|amazing)|love (it|you))\b/i.test(said)) return 'love';
+  if (cards.some(c => c.status === 'error' || c.status === 'failed') || /^I couldn'?t\b/i.test(reply)) return 'sorry';
+  if (cards.some(c => c.status === 'awaiting_approval' || (c.type === 'draft' && c.status !== 'sent'))) return 'surprised';
+  if (cards.some(c => (c.type === 'completion' && c.status !== 'error') || c.status === 'done' || c.automatic
+      || c.type === 'keep_updated' || c.type === 'todo')) {
+    return Math.random() < 0.34 ? 'wink' : 'happy';
+  }
+  return null;
 }
 
 // ------------------------------------------------------------- composer
@@ -910,11 +935,124 @@ async function speak(text) {
     if (!response.ok) return;
     voice.audio?.pause();
     voice.audio = new Audio(URL.createObjectURL(await response.blob()));
-    // The agent's mouth follows its voice.
-    lipSync(voice.audio, level => state.stageFace?.setMouth(level));
+    // The agent's mouth follows its voice (vowel shapes for VRM and Live2D models).
+    lipSync(voice.audio, (level, bands) => state.stageFace?.setMouth(level, bands));
     voice.audio.play();
   } catch { /* speaking is a nicety */ }
 }
+
+// -------------------------------------------------------------- Talk live
+// A live conversation with Amazon Nova Sonic: the mic streams to the backend
+// as 16 kHz PCM, Nova Sonic's voice streams back and plays as it arrives, and
+// talking over it interrupts. Real work goes to the agent (approvals as usual).
+const live = { socket: null, ctx: null, out: null, node: null, stream: null, playAt: 0, sources: [], level: 0 };
+
+async function liveStatus() {
+  const status = await voiceStatus();
+  const button = $('#live-btn');
+  if (button) button.hidden = !(status?.enabled && status?.voice?.live);
+}
+
+function liveStrip(text) {
+  const strip = $('#live-strip');
+  if (!text) { strip.hidden = true; strip.innerHTML = ''; return; }
+  strip.hidden = false;
+  strip.innerHTML = `<div class="live-strip"><span class="badge accent">Live</span><span class="grow">${esc(text)}</span>
+    <button type="button" class="btn sm ghost" id="live-stop">End</button></div>`;
+  $('#live-stop').addEventListener('click', stopLive);
+}
+
+function stopPlayback() {
+  live.sources.forEach(src => { try { src.stop(); } catch { /* already done */ } });
+  live.sources = [];
+  live.playAt = 0;
+  state.stageFace?.setMouth(0);
+}
+
+function playPCM(base64) {
+  if (!live.out) return;
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const samples = new Int16Array(bytes.buffer, 0, Math.floor(bytes.length / 2));
+  if (!samples.length) return;
+  const buffer = live.out.createBuffer(1, samples.length, 24000);
+  const channel = buffer.getChannelData(0);
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) { channel[i] = samples[i] / 0x8000; sum += channel[i] ** 2; }
+  const source = live.out.createBufferSource();
+  source.buffer = buffer;
+  source.connect(live.out.destination);
+  const start = Math.max(live.out.currentTime + 0.03, live.playAt);
+  source.start(start);
+  live.playAt = start + buffer.duration;
+  live.sources.push(source);
+  source.onended = () => { live.sources = live.sources.filter(s => s !== source); if (!live.sources.length) state.stageFace?.setMouth(0); };
+  // The mouth follows each chunk's loudness while it plays.
+  const level = Math.min(1, Math.sqrt(sum / samples.length) * 6);
+  setTimeout(() => state.stageFace?.setMouth(level), Math.max(0, (start - live.out.currentTime) * 1000));
+}
+
+async function startLive() {
+  if (live.socket) return stopLive();
+  const button = $('#live-btn');
+  try {
+    live.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch (error) {
+    toast(`The microphone isn't available: ${error.message}`, 'err');
+    return;
+  }
+  live.ctx = new AudioContext({ sampleRate: 16000 });
+  live.out = new AudioContext({ sampleRate: 24000 });
+  await live.ctx.audioWorklet.addModule('/static/ui/pcm-worklet.js');
+  const source = live.ctx.createMediaStreamSource(live.stream);
+  live.node = new AudioWorkletNode(live.ctx, 'pcm-capture');
+  source.connect(live.node);
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const params = new URLSearchParams({ agent_id: state.agentId || '', conversation_id: state.chatId || '' });
+  live.socket = new WebSocket(`${proto}://${location.host}/api/voice/live?${params}`);
+  live.socket.binaryType = 'arraybuffer';
+  live.node.port.onmessage = event => { if (live.socket?.readyState === 1) live.socket.send(event.data); };
+  button.classList.add('on');
+  liveStrip('Connecting…');
+  state.stageFace?.setState('listening');
+  live.socket.onmessage = event => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.type === 'ready') liveStrip(`Talking with ${data.agent} — just speak. Talk over the reply to interrupt.`);
+    else if (data.type === 'audio') playPCM(data.data);
+    else if (data.type === 'interrupted') stopPlayback();
+    else if (data.type === 'transcript') {
+      liveStrip(`${data.role === 'user' ? 'You' : (currentAgent()?.name || 'Cerebro')}: ${data.text}`);
+      if (data.role === 'assistant' && /\b(yay|hehe|haha|got it|done)\b/i.test(data.text)) state.stageFace?.react?.('happy', 1800);
+    } else if (data.type === 'working') { liveStrip(`Working on: ${data.request}`); state.stageFace?.setState('thinking'); }
+    else if (data.type === 'result') {
+      state.stageFace?.setState('listening');
+      react(reactionFor({ reply: data.reply, cards: data.cards }));
+      loadHistory();
+    } else if (data.type === 'error') { toast(data.detail, 'err'); stopLive(); }
+    else if (data.type === 'ended') stopLive();
+  };
+  live.socket.onclose = () => stopLive(true);
+}
+
+function stopLive(fromSocket = false) {
+  if (!live.socket && !live.stream) return;
+  try { if (!fromSocket && live.socket?.readyState === 1) live.socket.send(JSON.stringify({ type: 'stop' })); } catch { /* closing */ }
+  try { live.socket?.close(); } catch { /* closed */ }
+  live.socket = null;
+  stopPlayback();
+  live.stream?.getTracks().forEach(track => track.stop());
+  live.stream = null;
+  live.node?.disconnect();
+  live.ctx?.close?.();
+  live.out?.close?.();
+  live.ctx = live.out = live.node = null;
+  $('#live-btn')?.classList.remove('on');
+  liveStrip(null);
+  paintStage();
+}
+
+$('#live-btn')?.addEventListener('click', startLive);
+liveStatus();
 
 async function send({ spoken = false } = {}) {
   const text = input.value.trim();
@@ -971,7 +1109,8 @@ async function send({ spoken = false } = {}) {
       };
       state.history.push({ role: 'user', content: text, image_path: image, meta: { attachments: files } }, message);
       thread.append(messageNode(message));
-      if (spoken) speak(final.reply);
+      if (spoken) speak(final.speech_text || final.reply);
+      react(reactionFor(final, text));
       if (final.conversation) { state.chat = { ...state.chat, ...final.conversation }; paintChatBar(); }
       if (final.task) loadChatTasks();
     } else if (state.chatId === chatId) {
@@ -2089,45 +2228,136 @@ $('#agent-new').addEventListener('click', event => showMenu(event.currentTarget,
   Object.entries(state.templates).map(([key, t]) => [t.name === 'New agent' ? 'Blank agent…' : `${t.name}…`, () => editAgent(null, key)])));
 
 // ------------------------------------------------------------- the editor
+const PERSONALITIES = {
+  sweetheart: 'Sweetheart — cute, cheerful, teasing', warm: 'Warm & natural', energetic: 'Energetic & upbeat',
+  calm: 'Calm & soft', professional: 'Professional', custom: 'Custom',
+};
+const SLOT_LABEL = { calm: 'Ready', happy: 'Done (happy)', wink: 'Done (wink)', love: 'Thanked', thinking: 'Thinking',
+  focused: 'Working', listening: 'Listening', surprised: 'Needs approval', sorry: 'Failed', pout: 'Kept waiting',
+  smug: 'Approved', dizzy: 'Error', asleep: 'Offline' };
+const GESTURE_LABEL = { greeting: 'When it appears', done: 'Task done', approved: 'You approve',
+  thinking: 'Starts thinking', attention: 'Needs you', idle: 'Every few minutes' };
+const PREVIEW_LINE = 'Hehe, found it! [giggle] The fix was a typo — [tease]you owe me a coffee~[/tease] [whisper]I won\'t tell anyone.[/whisper]';
+
 async function editAgent(agent, template = 'blank') {
-  const base = agent || { ...(state.templates[template] || {}), face: 'anime', face_style: { palette: PALETTE_NAMES[state.agents.length % PALETTE_NAMES.length] }, tool_scope: [] };
+  const base = agent || { ...(state.templates[template] || {}), face: 'anime',
+    face_style: { palette: PALETTE_NAMES[state.agents.length % PALETTE_NAMES.length], hair: HAIR_NAMES[state.agents.length % HAIR_NAMES.length] },
+    tool_scope: [], personality: { preset: 'sweetheart' } };
   const faces = (await api.get('/api/faces').catch(() => ({ faces: [] }))).faces || [];
+  const vstatus = await voiceStatus();
   let face = base.face || 'anime';
   let style = { ...(base.face_style || {}) };
+  let vstyle = { ...(base.voice_style || {}) };
+  let persona = { preset: 'sweetheart', ...(base.personality || {}) };
+  let preview = null;
   const scope = new Set(base.tool_scope || []);
+  const num = (v, d) => (v === undefined || v === null || v === '' ? d : v);
   const values = await sheet({
     title: agent ? `Edit ${agent.name}` : 'New agent', ok: agent ? 'Save' : 'Create',
     body: `
       <label class="field"><span>Name</span><input class="input" name="name" required value="${esc(base.name || '')}"></label>
       <label class="field"><span>Role</span><input class="input" name="role" value="${esc(base.role || '')}" placeholder="What it's for, in a few words"></label>
-      <label class="field"><span>Standing instructions</span><textarea class="input" name="instructions" rows="4" placeholder="How it should work">${esc(base.instructions || '')}</textarea></label>
+      <label class="field"><span>Standing instructions</span><textarea class="input" name="instructions" rows="3" placeholder="How it should work">${esc(base.instructions || '')}</textarea></label>
       <div class="field"><span>Face</span>
         <div class="work-tabs" data-faces>
           ${[['brain', 'Brain'], ['anime', 'Anime'], ['live2d', 'Live2D model'], ['vrm', 'VRM 3D model']].map(([k, label]) =>
             `<button type="button" class="btn sm" data-face="${k}" aria-pressed="${face === k}">${label}</button>`).join('')}
         </div>
-        <div class="palette-row" data-palettes>${PALETTE_NAMES.map(p =>
-          `<button type="button" data-palette="${p}" title="${p}" aria-pressed="${(style.palette || 'pink') === p}">${faceAvatar({ face: 'anime', face_style: { palette: p } }, 54)}</button>`).join('')}</div>
-        <div data-models style="margin-top:8px"></div>
+        <div class="face-editor">
+          <div class="face-preview-wrap"><div class="face-preview" data-preview></div>
+            <div class="expr-row" data-exprs></div></div>
+          <div class="face-options">
+            <div class="mini-label" data-palette-label>Colour</div>
+            <div class="palette-row" data-palettes></div>
+            <div class="mini-label" data-hair-label>Hairstyle</div>
+            <div class="palette-row" data-hairs></div>
+            <div data-models></div>
+          </div>
+        </div>
       </div>
-      <div class="field"><span>Voice (optional)</span><input class="input" name="voice_name" value="${esc(base.voice_name || '')}" placeholder="e.g. Ruth, Matthew, en-US-AriaNeural"></div>
+      <div class="field"><span>Voice &amp; personality</span>
+        <div class="voice-grid">
+          <label>Personality<select class="input" data-persona>${Object.entries(PERSONALITIES).map(([k, l]) =>
+            `<option value="${k}" ${persona.preset === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+          <label>Voice<select class="input" data-provider>
+            ${[['', 'Settings default'], ['polly', 'Amazon Polly'], ['sonic', 'Amazon Nova Sonic'], ['edge', 'Edge online voices'], ['windows', 'Windows']]
+              .map(([k, l]) => `<option value="${k}" ${(vstyle.provider || '') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label>Voice name<input class="input" data-voice list="voice-names" value="${esc(vstyle.voice || base.voice_name || '')}" placeholder="Ruth, tiffany, en-US-AnaNeural…"><datalist id="voice-names"></datalist></label>
+          <label data-engine-wrap>Polly engine<select class="input" data-engine>
+            ${[['', 'Settings default'], ['generative', 'Generative (most natural)'], ['neural', 'Neural'], ['standard', 'Standard (effects: whisper, pitch, breaths)'], ['long-form', 'Long-form']]
+              .map(([k, l]) => `<option value="${k}" ${(vstyle.engine || '') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        </div>
+        <div class="slider-grid">
+          ${[['playfulness', 'Playful & teasing', 0, 1, 0.05, num(persona.playfulness, 0.75)],
+             ['expressiveness', 'Expressive (giggles, gasps, whispers)', 0, 1, 0.05, num(persona.expressiveness, 0.75)],
+             ['formality', 'Formal', 0, 1, 0.05, num(persona.formality, 0.2)]].map(([k, l, a, b, st, v]) =>
+            `<label>${l}<input type="range" data-persona-slider="${k}" min="${a}" max="${b}" step="${st}" value="${v}"></label>`).join('')}
+          ${[['rate', 'Speed', 0.6, 1.6, 0.02, num(vstyle.rate, base.voice_rate || 1)],
+             ['pitch', 'Pitch (Standard, Edge, Windows)', -20, 20, 1, num(vstyle.pitch, 0)],
+             ['volume', 'Volume', -6, 6, 1, num(vstyle.volume, 0)],
+             ['timbre', 'Timbre (Polly Standard)', -20, 20, 1, num(vstyle.timbre, 0)]].map(([k, l, a, b, st, v]) =>
+            `<label>${l}<input type="range" data-voice-slider="${k}" min="${a}" max="${b}" step="${st}" value="${v}"></label>`).join('')}
+        </div>
+        <div class="check-row">
+          <label><input type="checkbox" data-voice-flag="cues" ${vstyle.cues !== false ? 'checked' : ''}> Sound cues</label>
+          <label><input type="checkbox" data-voice-flag="breaths" ${vstyle.breaths ? 'checked' : ''}> Breaths (Polly Standard)</label>
+          <label><input type="checkbox" data-voice-flag="drc" ${vstyle.drc ? 'checked' : ''}> Clearer on small speakers</label>
+        </div>
+        <textarea class="input" data-custom rows="2" placeholder="Anything else about its personality (optional)">${esc(persona.custom || '')}</textarea>
+        <div class="btn-row" style="margin-top:6px"><button type="button" class="btn sm" data-try>▶ Preview voice</button>
+          <span class="meta" data-try-note>${vstatus?.voice?.sonic ? '' : esc(vstatus?.voice?.sonic_detail || '')}</span></div>
+      </div>
       <div class="field"><span>What it may use (nothing ticked: everything)</span>
         <div class="scope-grid">${Object.entries(state.groups).map(([key, label]) =>
           `<label><input type="checkbox" data-scope="${key}" ${scope.has(key) ? 'checked' : ''}> ${esc(label)}</label>`).join('')}</div></div>`,
     setup: form => {
+      const rebuildPreview = () => {
+        preview?.destroy();
+        const host = $('[data-preview]', form);
+        host.innerHTML = '';
+        preview = createFace(host, { face, face_style: style }, 150);
+        preview.setState('idle');
+        paintExprs();
+        if (face === 'live2d' || face === 'vrm') preview.ready?.then(() => paintModelPanels());
+      };
+      const paintExprs = () => {
+        const list = face === 'brain' ? [] : EXPRESSIONS.filter(e => e !== 'asleep');
+        $('[data-exprs]', form).innerHTML = list.map(e => `<button type="button" class="chip" data-expr="${e}">${e}</button>`).join('');
+        $$('[data-expr]', form).forEach(b => b.addEventListener('click', () => preview?.react?.(b.dataset.expr, 2200)));
+      };
+      const paintLooks = () => {
+        const anime = face !== 'brain';
+        $('[data-palettes]', form).innerHTML = PALETTE_NAMES.map(p =>
+          `<button type="button" data-palette="${p}" title="${p}" aria-pressed="${(style.palette || 'pink') === p}">${faceAvatar({ face: 'anime', face_style: { palette: p, hair: style.hair } }, 46)}</button>`).join('');
+        $('[data-hairs]', form).innerHTML = HAIR_NAMES.map(h =>
+          `<button type="button" data-hair="${h}" title="${HAIRSTYLES[h]}" aria-pressed="${(style.hair || 'long') === h}"><span class="face-avatar hair-thumb">${animeSVG({ palette: style.palette, hair: h }).replace('viewBox="0 0 200 200"', 'viewBox="8 2 184 184"')}</span></button>`).join('');
+        $('[data-palettes]', form).style.display = anime ? '' : 'none';
+        $('[data-hairs]', form).style.display = face === 'anime' ? '' : 'none';
+        $('[data-palette-label]', form).style.display = anime ? '' : 'none';
+        $('[data-palette-label]', form).textContent = face === 'anime' ? 'Colour' : 'Stand-in colour (while the model loads)';
+        $('[data-hair-label]', form).style.display = face === 'anime' ? '' : 'none';
+        $$('[data-palette]', form).forEach(b => b.addEventListener('click', () => { style = { ...style, palette: b.dataset.palette }; paintLooks(); rebuildPreview(); }));
+        $$('[data-hair]', form).forEach(b => b.addEventListener('click', () => { style = { ...style, hair: b.dataset.hair }; paintLooks(); rebuildPreview(); }));
+      };
       const paintModels = () => {
         const host = $('[data-models]', form);
-        $('[data-palettes]', form).style.display = face === 'anime' || face === 'live2d' || face === 'vrm' ? '' : 'none';
         if (face !== 'live2d' && face !== 'vrm') { host.innerHTML = ''; return; }
         const mine = faces.filter(f => f.kind === face);
-        host.innerHTML = `<div class="meta" style="margin-bottom:6px">${face === 'live2d'
+        const fr = { zoom: 1, y: 0, mirror: false, ...(style.framing || {}) };
+        host.innerHTML = `<div class="meta" style="margin:6px 0">${face === 'live2d'
           ? 'A .zip of a Cubism 3/4 model (with its .model3.json). Live2D needs Live2D\'s own runtime, which Cerebro downloads with your agreement.'
-          : 'A .vrm file — make one free in VRoid Studio.'} Until it loads, the anime face below stands in.</div>
+          : 'A .vrm file — make one free in VRoid Studio.'} Until it loads, the anime face stands in.</div>
           <div class="work-tabs">${mine.map(f => `<button type="button" class="btn sm" data-model="${f.id}" data-entry="${esc(f.entry)}" aria-pressed="${style.model === f.id}">${esc(f.name)}</button>`).join('')}
-          <button type="button" class="btn sm primary" data-upload>Load a model…</button></div>`;
+          <button type="button" class="btn sm primary" data-upload>Load a model…</button></div>
+          ${style.model ? `<div class="slider-grid" style="margin-top:8px">
+            <label>Zoom<input type="range" data-frame="zoom" min="0.5" max="2.5" step="0.05" value="${fr.zoom}"></label>
+            <label>Height<input type="range" data-frame="y" min="-0.6" max="0.6" step="0.02" value="${fr.y}"></label>
+            ${face === 'live2d' ? `<label class="check"><input type="checkbox" data-frame="mirror" ${fr.mirror ? 'checked' : ''}> Mirror</label>` : ''}
+          </div><div data-mapping class="mapping"><div class="meta">Loading the model's expressions…</div></div>
+          ${face === 'vrm' ? '<div data-gestures class="mapping"></div>' : ''}` : ''}`;
         $$('[data-model]', host).forEach(b => b.addEventListener('click', () => {
-          style = { ...style, model: b.dataset.model, entry: b.dataset.entry };
-          $$('[data-model]', host).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+          style = { ...style, model: b.dataset.model, entry: b.dataset.entry, expressions: {}, gestures: {} };
+          paintModels(); rebuildPreview();
         }));
         $('[data-upload]', host).addEventListener('click', () => pickFile(face === 'vrm' ? '.vrm' : '.zip', async file => {
           const form2 = new FormData();
@@ -2135,30 +2365,141 @@ async function editAgent(agent, template = 'blank') {
           try {
             const meta = await api.post('/api/faces', form2);
             faces.push(meta);
-            style = { ...style, model: meta.id, entry: meta.entry };
+            style = { ...style, model: meta.id, entry: meta.entry, expressions: {}, gestures: {} };
             if (meta.kind === 'live2d') await ensureLive2D();
-            paintModels();
+            paintModels(); rebuildPreview();
           } catch (error) { toast(error.message, 'err'); }
         }));
+        let frameTimer = 0;
+        $$('[data-frame]', host).forEach(input => input.addEventListener('input', () => {
+          const framing = { ...(style.framing || {}) };
+          framing[input.dataset.frame] = input.type === 'checkbox' ? input.checked : Number(input.value);
+          style = { ...style, framing };
+          clearTimeout(frameTimer);
+          frameTimer = setTimeout(rebuildPreview, 250);
+        }));
+      };
+      const paintModelPanels = () => {
+        const mapHost = $('[data-mapping]', form);
+        if (!mapHost || !preview?.listExpressions) return;
+        const names = preview.listExpressions();
+        const guess = preview.guesses?.() || {};
+        const chosen = style.expressions || {};
+        if (!names.length) { mapHost.innerHTML = '<div class="meta">This model has no expressions Cerebro can use; it still blinks, breathes, looks around and lip-syncs.</div>'; return; }
+        mapHost.innerHTML = `<div class="mini-label">Expressions — what it shows for each moment
+            <button type="button" class="btn sm ghost" data-auto>Auto-match</button></div>
+          ${MODEL_SLOTS.map(slot => {
+            const pick = chosen[slot];
+            const current = pick ? pick.name : (guess[slot] || '');
+            return `<div class="map-row"><span>${esc(SLOT_LABEL[slot] || slot)}</span>
+              <select class="input sm" data-map="${slot}"><option value="">— nothing —</option>${names.map(n =>
+                `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}${!pick && n === guess[slot] ? ' (auto)' : ''}</option>`).join('')}</select>
+              <input type="range" data-weight="${slot}" min="0.1" max="1" step="0.05" value="${pick?.weight ?? (slot === 'calm' ? 0.35 : 1)}" title="Strength">
+              <button type="button" class="icon-btn" data-play="${slot}" title="Preview">▶</button></div>`;
+          }).join('')}`;
+        const save = slot => {
+          const name = $(`[data-map="${slot}"]`, mapHost).value;
+          const weight = Number($(`[data-weight="${slot}"]`, mapHost).value);
+          style = { ...style, expressions: { ...(style.expressions || {}), [slot]: { name, weight } } };
+        };
+        $$('[data-map]', mapHost).forEach(sel => sel.addEventListener('change', () => save(sel.dataset.map)));
+        $$('[data-weight]', mapHost).forEach(r => r.addEventListener('change', () => save(r.dataset.weight)));
+        $$('[data-play]', mapHost).forEach(b => b.addEventListener('click', () => {
+          const name = $(`[data-map="${b.dataset.play}"]`, mapHost).value;
+          if (name) preview.preview?.(name);
+        }));
+        $('[data-auto]', mapHost).addEventListener('click', () => { style = { ...style, expressions: {} }; paintModelPanels(); });
+        const gHost = $('[data-gestures]', form);
+        if (gHost) {
+          const meta = faces.find(f => f.id === style.model) || {};
+          const files = meta.gestures || [];
+          const gestures = style.gestures || {};
+          gHost.innerHTML = `<div class="mini-label">Gestures (.vrma animations)
+              <button type="button" class="btn sm ghost" data-add-gesture>Add gesture…</button></div>
+            ${files.length ? Object.entries(GESTURE_LABEL).map(([event, label]) => `<div class="map-row"><span>${label}</span>
+              <select class="input sm" data-gesture="${event}"><option value="">—</option>${files.map(f =>
+                `<option value="${esc(f)}" ${gestures[event] === f ? 'selected' : ''}>${esc(f.replace('gestures/', '').replace('.vrma', ''))}</option>`).join('')}</select></div>`).join('')
+              : '<div class="meta">Add a wave, a nod or a cheer as a .vrma file (VRM Animation), then pick when it plays.</div>'}`;
+          $$('[data-gesture]', gHost).forEach(sel => sel.addEventListener('change', () => {
+            style = { ...style, gestures: { ...(style.gestures || {}), [sel.dataset.gesture]: sel.value } };
+          }));
+          $('[data-add-gesture]', gHost).addEventListener('click', () => pickFile('.vrma', async file => {
+            const form2 = new FormData();
+            form2.append('file', file, file.name);
+            try {
+              const out = await api.post(`/api/faces/${encodeURIComponent(style.model)}/gestures`, form2);
+              const index = faces.findIndex(f => f.id === style.model);
+              if (index >= 0) faces[index] = out.face;
+              paintModelPanels();
+            } catch (error) { toast(error.message, 'err'); }
+          }));
+        }
       };
       $$('[data-face]', form).forEach(b => b.addEventListener('click', async () => {
         face = b.dataset.face;
         $$('[data-face]', form).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
         if (face === 'live2d') await ensureLive2D();
-        paintModels();
+        paintLooks(); paintModels(); rebuildPreview();
       }));
-      $$('[data-palette]', form).forEach(b => b.addEventListener('click', () => {
-        style = { ...style, palette: b.dataset.palette };
-        $$('[data-palette]', form).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-      }));
-      paintModels();
+      // Voice & personality.
+      const fillVoices = async () => {
+        const provider = $('[data-provider]', form).value || vstatus?.voice?.provider || 'auto';
+        $('[data-engine-wrap]', form).style.display = ['', 'auto', 'polly'].includes(provider) ? '' : 'none';
+        const list = await api.get(`/api/voice/voices?provider=${encodeURIComponent(provider === 'auto' ? 'polly' : provider)}`).catch(() => ({ voices: [] }));
+        $('#voice-names', form).innerHTML = (list.voices || []).map(v => `<option value="${esc(v.id)}">${esc(v.label || (v.engines || []).join(', '))}</option>`).join('');
+      };
+      $('[data-provider]', form).addEventListener('change', fillVoices);
+      $('[data-persona]', form).addEventListener('change', e => {
+        persona = { ...persona, preset: e.target.value };
+        const defaults = { sweetheart: [0.75, 0.75, 0.2], warm: [0.35, 0.45, 0.4], energetic: [0.55, 0.85, 0.25],
+          calm: [0.15, 0.3, 0.45], professional: [0, 0.1, 0.85], custom: [0.5, 0.5, 0.4] }[persona.preset];
+        ['playfulness', 'expressiveness', 'formality'].forEach((k, i) => {
+          $(`[data-persona-slider="${k}"]`, form).value = defaults[i];
+          persona[k] = defaults[i];
+        });
+      });
+      const collectVoice = () => {
+        const out = { provider: $('[data-provider]', form).value, engine: $('[data-engine]', form).value,
+          voice: $('[data-voice]', form).value.trim() };
+        $$('[data-voice-slider]', form).forEach(r => { out[r.dataset.voiceSlider] = Number(r.value); });
+        $$('[data-voice-flag]', form).forEach(c => { out[c.dataset.voiceFlag] = c.checked; });
+        return out;
+      };
+      const collectPersona = () => {
+        const out = { ...persona, preset: $('[data-persona]', form).value, custom: $('[data-custom]', form).value.trim() };
+        $$('[data-persona-slider]', form).forEach(r => { out[r.dataset.personaSlider] = Number(r.value); });
+        return out;
+      };
+      form._collect = () => ({ vstyle: collectVoice(), persona: collectPersona() });
+      $('[data-try]', form).addEventListener('click', async e => {
+        const button = e.currentTarget;
+        button.disabled = true;
+        $('[data-try-note]', form).textContent = 'Speaking…';
+        try {
+          const response = await fetch('/api/voice/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: PREVIEW_LINE, agent_id: agent?.id || null, style: collectVoice(), personality: collectPersona() }) });
+          if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || 'No voice could speak');
+          const audio = new Audio(URL.createObjectURL(await response.blob()));
+          lipSync(audio, (level, bands) => preview?.setMouth(level, bands));
+          preview?.react?.('happy', 1800);
+          audio.play();
+          $('[data-try-note]', form).textContent = `Spoken by ${response.headers.get('X-Voice-Provider') || 'the voice'}`;
+        } catch (error) {
+          $('[data-try-note]', form).textContent = error.message;
+        } finally { button.disabled = false; }
+      });
+      paintLooks(); paintModels(); rebuildPreview(); fillVoices();
     },
   });
-  if (!values) return;
   const form = $('#sheet');
+  const collected = form?._collect ? form._collect() : { vstyle, persona };
+  if (form) form._collect = null;
+  preview?.destroy();
+  if (!values) return;
   const chosen = $$('[data-scope]', form).filter(b => b.checked).map(b => b.dataset.scope);
   const body = { name: values.name, role: values.role, instructions: values.instructions,
-    face, face_style: style, voice_name: values.voice_name || '', tool_scope: chosen };
+    face, face_style: style, voice_name: collected.vstyle.voice || '', voice_rate: collected.vstyle.rate,
+    voice_style: collected.vstyle, personality: collected.persona, tool_scope: chosen };
   try {
     const saved = agent ? await api.patch(`/api/agents/${agent.id}`, body)
       : await api.post('/api/agents', { template, ...body });

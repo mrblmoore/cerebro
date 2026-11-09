@@ -7,14 +7,20 @@ API for agents' faces: Live2D and VRM models the user loads.
 * ``GET /api/faces/live2d/runtime`` and ``POST …/runtime`` — Live2D's Cubism
   Core is proprietary and can't ship with Cerebro. With the user's consent it
   is downloaded once from Live2D's own address into ``VENDOR_DIR``.
+* ``POST /api/faces/{id}/gestures`` — add a ``.vrma`` animation (a wave, a
+  nod, a cheer…) to a VRM model, played on events chosen in the agent editor.
 * ``GET /api/faces/desktop`` — the default agent's face, for the desktop
   buddy and tray (which draw image frames, so Live2D and VRM fall back to
-  the anime face there).
+  the anime face there), plus the latest passing reaction.
+* ``POST /api/faces/react`` — the app tells the desktop buddy how the face
+  just reacted (happy, sorry, surprised…), so it can show it too.
 """
 
 import io
 import json
+import re
 import shutil
+import time
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -40,11 +46,26 @@ LIVE2D_TERMS = ("Live2D models need Live2D's Cubism Core, which Cerebro is not a
                 "revenue threshold need a paid Live2D publication licence for commercial use.")
 
 
+MAX_GESTURE_BYTES = 20 * 1024 * 1024
+_reaction: Dict[str, Any] = {"emotion": None, "at": 0.0}
+
+
 def _meta(folder: Path) -> Dict[str, Any]:
     try:
-        return json.loads((folder / "face.json").read_text(encoding="utf-8"))
+        meta = json.loads((folder / "face.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    gestures = folder / "gestures"
+    if meta.get("kind") == "vrm" and gestures.is_dir():
+        meta["gestures"] = sorted(f"gestures/{p.name}" for p in gestures.glob("*.vrma"))
+    return meta
+
+
+def _folder(face_id: str) -> Path:
+    folder = (FACES_DIR / face_id).resolve()
+    if FACES_DIR.resolve() not in folder.parents or not folder.is_dir():
+        raise HTTPException(status_code=404, detail="No such model")
+    return folder
 
 
 @router.get("/api/faces")
@@ -117,6 +138,34 @@ async def upload_face(file: UploadFile = File(...)) -> Dict[str, Any]:
     return meta
 
 
+@router.post("/api/faces/{face_id}/gestures")
+async def upload_gesture(face_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
+    """A VRM Animation (.vrma) for a VRM model: a wave, a nod, a cheer."""
+    folder = _folder(face_id)
+    if _meta(folder).get("kind") != "vrm":
+        raise HTTPException(status_code=400, detail="Gestures are for VRM models.")
+    data = await file.read(MAX_GESTURE_BYTES + 1)
+    if len(data) > MAX_GESTURE_BYTES:
+        raise HTTPException(status_code=400, detail="That gesture is over 20 MB.")
+    if data[:4] != b"glTF":
+        raise HTTPException(status_code=400, detail="That isn't a .vrma file.")
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(file.filename or "gesture").stem).strip("-")[:40] or "gesture"
+    target = folder / "gestures" / f"{stem}.vrma"
+    target.parent.mkdir(exist_ok=True)
+    target.write_bytes(data)
+    logger.info("faces", "Gesture added", {"face": face_id, "gesture": target.name})
+    return {"ok": True, "path": f"gestures/{target.name}", "face": _meta(folder)}
+
+
+@router.post("/api/faces/react")
+def react(body: Dict[str, Any]) -> Dict[str, Any]:
+    emotion = str((body or {}).get("emotion") or "")
+    if emotion not in ("happy", "wink", "love", "sorry", "smug", "surprised", "pout"):
+        raise HTTPException(status_code=400, detail="Unknown reaction")
+    _reaction.update(emotion=emotion, at=time.time())
+    return {"ok": True}
+
+
 @router.delete("/api/faces/{face_id}")
 def delete_face(face_id: str) -> Dict[str, Any]:
     folder = (FACES_DIR / face_id).resolve()
@@ -178,6 +227,8 @@ def desktop_face(db: Session = Depends(get_db)) -> Dict[str, Any]:
     agent = agents.default_agent(db)
     face = agent.face or "brain"
     style = agent.style()
+    fresh = time.time() - _reaction["at"] < 3
     return {"face": "anime" if face in ("live2d", "vrm") else face,
             "palette": style.get("palette") or ("silver" if face in ("live2d", "vrm") else "pink"),
-            "agent": agent.name}
+            "hair": style.get("hair") or "long", "agent": agent.name,
+            "react": _reaction["emotion"] if fresh else None}
