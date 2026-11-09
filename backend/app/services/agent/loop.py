@@ -31,6 +31,8 @@ from app.core.config import settings
 from app.services.agent import tools as _tools  # noqa: F401 - registers the tools
 from app.services.agent import capability_tools as _capability_tools  # noqa: F401
 from app.services.agent import web_tools as _web_tools  # noqa: F401
+from app.services.agent import agent_tools as _agent_tools  # noqa: F401
+from app.services.agent import plan_tools as _plan_tools  # noqa: F401
 from app.services.agent.registry import REGISTRY, ToolContext, available_tools
 
 ASK_SYSTEM_PROMPT = """You are Cerebro, an AI copilot running on a technical support engineer's computer. Today is {today}.
@@ -184,9 +186,14 @@ def _repeats(answer: str, previous: Optional[str]) -> bool:
 
 def _run_tool(ctx: ToolContext, name: str, arguments: Dict[str, Any],
               done: Dict[str, str]) -> str:
+    from app.services.agents import in_scope
+
     item = REGISTRY.get(name)
     if item is None or not item.is_available(ctx):
         return f"Tool {name} is not available. Use one of the listed tools or answer directly."
+    if not in_scope(item, ctx.context.get("tool_scope")):
+        return (f"{name} is outside what this agent may use. Say so, and offer to hand the "
+                "work to an agent that can (delegate_to_agent).")
     key = f"{name}:{json.dumps(arguments, sort_keys=True)}"
     if key in done:
         return "(Already done above — use that result rather than repeating the call.)"
@@ -219,7 +226,8 @@ def _run_tool(ctx: ToolContext, name: str, arguments: Dict[str, Any],
 def run(db, text: str, context: Dict[str, Any] = None,
         emit: Callable[[dict], None] = None,
         history: List[dict] = None,
-        instructions: str = None) -> Dict[str, Any]:
+        instructions: str = None, agent=None,
+        should_stop: Callable[[], bool] = None) -> Dict[str, Any]:
     """Answer one Ask message. Returns the reply payload; never raises.
 
     ``history`` is the conversation *before* this message; it is read from
@@ -229,8 +237,14 @@ def run(db, text: str, context: Dict[str, Any] = None,
     from app.services.llm_service import LLMService
 
     llm = LLMService()
+    from app.services import agents as agent_service
+
     ctx = ToolContext(db=db, context=dict(context or {}), emit=emit)
     ctx.context["_user_text"] = text
+    if agent is None and ctx.context.get("agent_id"):
+        agent = agent_service.get(db, ctx.context["agent_id"])
+    if agent is not None:
+        ctx.context.update(agent_service.context_for(agent))
     voice = bool(ctx.context.get("voice"))
     history = _history(db, ctx.context.get("conversation_id")) if history is None else history
     previous_answer = next((m["content"] for m in reversed(history)
@@ -252,6 +266,9 @@ def run(db, text: str, context: Dict[str, Any] = None,
                 if not focused or item.name.startswith(MESSAGING_TOOLS)]
 
     system = ASK_SYSTEM_PROMPT.format(today=datetime.now().strftime("%A %d %B %Y"))
+    identity = agent_service.identity_block(db, agent) if agent is not None else ""
+    if identity:
+        system += "\n\n" + identity
     skills_block = _skills_block(db)
     if skills_block:
         system += "\n\n" + skills_block
@@ -278,6 +295,10 @@ def run(db, text: str, context: Dict[str, Any] = None,
         while True:
             if ctx.context.get("_plan") and max_steps < VOICE_MAX_STEPS:
                 max_steps = VOICE_MAX_STEPS      # a planned job gets room to finish
+            if should_stop and should_stop():
+                answer = "Stopped before finishing — paused or cancelled."
+                ctx.context["_stopped"] = True
+                break
             offer = tool_specs() if step < max_steps else []
             result = llm.chat(messages, tools=offer, system=system, max_tokens=max_tokens)
             calls = result.get("tool_calls") or []
@@ -324,6 +345,11 @@ def run(db, text: str, context: Dict[str, Any] = None,
         "tool": used_tools[-1] if used_tools else None,
         "tools_used": used_tools,
     }
+    for key in ("_question", "_stopped", "_plan_steps"):
+        if ctx.context.get(key):
+            payload[key.lstrip("_")] = ctx.context[key]
+    if ctx.context.get("agent_id"):
+        payload["agent_id"] = ctx.context["agent_id"]
     results = ctx.context.get("_results") or {}
     if results.get("action"):
         payload["action"] = results["action"]

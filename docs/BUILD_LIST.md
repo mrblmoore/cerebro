@@ -216,3 +216,25 @@ template replies.
 - [ ] **B10.10 Real-world check** on a work PC: add a real MCP server from the
   Registry, connect an intranet site, and run a push-to-talk reply end to end.
 
+## Phase 11 — Agents, faces and OpenMuse-style work (0.7.0)
+
+- [x] **B11.1 Agents.** Named agents sharing one memory and the same tools,
+  each with its own role, instructions, chats, jobs, face, voice and tool
+  scope. They can hand work to each other, and a spoken name sends a request
+  to that agent.
+- [x] **B11.2 Durable jobs.** Plans, a run log, questions for you, approval
+  waits that resume, pause/resume/cancel/retry, leases, backoff, and
+  recovery after a restart (no retry after an automatic change).
+- [x] **B11.3 Projects and milestones.**
+- [x] **B11.4 Watches.** Change, contains, absent, below and above
+  conditions; one alert per change; follow-up jobs; backoff and pause.
+- [x] **B11.5 Ideas.** From nudges, quiet cases, repeated questions and
+  watches (plus an optional AI pass), routed by scope; accept or dismiss.
+- [x] **B11.6 Grok-style layout.** Agents sidebar (full, rail, or drawer),
+  Home board, Work view, the face stage, and the agent editor.
+- [x] **B11.7 Faces.** An original anime face (six colours, expressions,
+  lip sync); Live2D and VRM models you load; desktop strips for the buddy
+  and tray, with the buddy's mouth moving in time with speech.
+- [ ] **B11.8 Real-world check** on a work PC: three agents running jobs
+  side by side, a watch on a real case, and a VRM face speaking a reply.
+

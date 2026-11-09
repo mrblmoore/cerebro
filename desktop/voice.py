@@ -88,14 +88,48 @@ class Recorder:
         return b"".join(self._chunks)
 
 
-class Player:
-    """Plays a WAV reply; :meth:`stop` cuts it short."""
+def levels(audio: bytes, step: float = 0.04):
+    """A loudness curve (0..1, one value per ``step`` seconds) for lip sync."""
+    import array
 
-    def __init__(self):
+    try:
+        with wave.open(io.BytesIO(audio)) as handle:
+            rate, width = handle.getframerate(), handle.getsampwidth()
+            channels = handle.getnchannels()
+            data = handle.readframes(handle.getnframes())
+    except (wave.Error, EOFError):
+        return []
+    if width != 2:
+        return []
+    samples = array.array("h", data)
+    if channels > 1:
+        samples = samples[::channels]
+    window = max(1, int(rate * step))
+    out = []
+    for start in range(0, len(samples), window):
+        chunk = samples[start:start + window]
+        if not chunk:
+            break
+        rms = (sum(v * v for v in chunk) / len(chunk)) ** 0.5 / 32768
+        out.append(min(1.0, rms * 6))
+    return out
+
+
+class Player:
+    """Plays a WAV reply; :meth:`stop` cuts it short. ``on_levels`` gets the
+    loudness curve as playback starts, so the buddy's mouth can follow it."""
+
+    def __init__(self, on_levels: Callable = None):
         self.playing = False
+        self.on_levels = on_levels
 
     def play(self, audio: bytes) -> None:
         self.playing = True
+        if self.on_levels:
+            try:
+                self.on_levels(levels(audio), 0.04)
+            except Exception:  # noqa: BLE001 - lip sync is a nicety
+                pass
         try:
             if sys.platform == "win32":
                 import winsound
@@ -229,10 +263,11 @@ class PushToTalk:
 class VoiceService:
     """Runs :class:`PushToTalk` with a real global key listener."""
 
-    def __init__(self, api_url: str):
+    def __init__(self, api_url: str, on_levels: Callable = None):
         self.api_url = api_url.rstrip("/")
         self.ptt: Optional[PushToTalk] = None
         self._listener = None
+        self.on_levels = on_levels
 
     def _settings(self) -> dict:
         import requests
@@ -251,7 +286,8 @@ class VoiceService:
         status = self._settings()
         if status and not status.get("enabled", True):
             return False
-        self.ptt = PushToTalk(self.api_url, status.get("hotkey") or "ctrl+space")
+        self.ptt = PushToTalk(self.api_url, status.get("hotkey") or "ctrl+space",
+                              player=Player(on_levels=self.on_levels))
         self._listener = keyboard.Listener(on_press=lambda k: self.ptt.key_down(key_name(k)),
                                            on_release=lambda k: self.ptt.key_up(key_name(k)))
         self._listener.daemon = True

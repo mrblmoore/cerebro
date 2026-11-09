@@ -115,6 +115,25 @@ def _completion(title: str, detail: str = None, status: str = "complete") -> dic
 
 
 def approve(db: Session, action_id: int, automatic: bool = False) -> Dict[str, Any]:
+    result = _approve(db, action_id, automatic)
+    if not automatic:
+        action = db.get(AgentAction, action_id)
+        if action is not None and action.status in ("done", "failed"):
+            _job_decided(db, action_id, "approved and made" if action.status == "done"
+                         else f"approved but failed: {(action.error or '')[:120]}")
+    return result
+
+
+def _job_decided(db: Session, action_id: int, outcome: str) -> None:
+    try:
+        from app.services import jobs
+
+        jobs.decided(db, "change", action_id, outcome)
+    except Exception:  # noqa: BLE001 - the decision itself already happened
+        pass
+
+
+def _approve(db: Session, action_id: int, automatic: bool = False) -> Dict[str, Any]:
     action = db.get(AgentAction, action_id)
     if action is None:
         return {"reply": "That change no longer exists.", "kind": "completion",
@@ -245,6 +264,7 @@ def discard(db: Session, action_id: int) -> Dict[str, Any]:
                 "kind": "completion", "agent_action": action.to_dict()}
     action.status = "discarded"
     db.commit()
+    _job_decided(db, action_id, "discarded")
     return {"reply": "Discarded. Nothing was changed.", "kind": "completion",
             "agent_action": action.to_dict(),
             "cards": [_completion("Change discarded", "Nothing was changed")]}

@@ -36,7 +36,7 @@ for name in ("README.md", "GETTING_STARTED.md"):
     if (ROOT / name).exists():
         datas.append((str(ROOT / name), "."))
 for name in ("INSTALL.md", "CONFIGURATION.md", "WIDGET.md", "POWER_AUTOMATE.md",
-             "POWER_AUTOMATE_QUICKSTART.md", "ADDONS.md", "VOICE.md"):
+             "POWER_AUTOMATE_QUICKSTART.md", "ADDONS.md", "VOICE.md", "AGENTS.md", "FACES.md"):
     if (ROOT / "docs" / name).exists():
         datas.append((str(ROOT / "docs" / name), "docs"))
 
@@ -106,6 +106,10 @@ hiddenimports = [
     "app.services.agent.capability_tools", "app.services.agent.web_tools",
     "app.services.agent.plan_tools", "app.services.browser.generic",
     "app.api.addons", "app.api.voice", "app.models.capability",
+    # Agents, durable jobs, projects, watches, ideas and faces.
+    "app.services.agents", "app.services.jobs", "app.services.watches", "app.services.ideas",
+    "app.services.agent.agent_tools", "app.api.agents", "app.api.faces",
+    "app.models.agent", "app.models.work",
     "edge_tts", "faster_whisper", "ctranslate2", "av", "tokenizers", "numpy",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")

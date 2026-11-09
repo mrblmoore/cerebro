@@ -24,6 +24,7 @@ from app.api.system import require_local_origin
 from app.core import activity_state, logger
 from app.core.config import settings
 from app.core.database import get_db
+from app.services import agents as _agents
 from app.services import speech, tts
 
 router = APIRouter(prefix="/api/voice", tags=["voice"],
@@ -58,11 +59,13 @@ async def transcribe(audio: UploadFile = File(...), db: Session = Depends(get_db
     return {"text": _transcribe(db, data, _context(db))}
 
 
-def _speech(text: str, fmt: str) -> Optional[Dict[str, Any]]:
+def _speech(text: str, fmt: str, agent=None) -> Optional[Dict[str, Any]]:
     if not settings.VOICE_SPEAK_REPLIES or not text:
         return None
     try:
-        spoken = tts.synthesize(tts.speakable(text), fmt=fmt)
+        spoken = tts.synthesize(tts.speakable(text), fmt=fmt,
+                                voice=getattr(agent, "voice_name", None) or None,
+                                rate=getattr(agent, "voice_rate", None))
     except Exception as exc:  # noqa: BLE001 - a silent answer is still an answer
         logger.warn("voice", "Couldn't speak the reply", {"error": str(exc)[:200]})
         return None
@@ -74,10 +77,10 @@ def _speech(text: str, fmt: str) -> Optional[Dict[str, Any]]:
 def command(audio: Optional[UploadFile] = File(None), text: Optional[str] = Form(None),
             conversation_id: Optional[int] = Form(None), speak: bool = Form(True),
             fmt: str = Form("mp3"), notify: bool = Form(False),
+            agent_id: Optional[int] = Form(None),
             db: Session = Depends(get_db)) -> Dict[str, Any]:
     """A spoken request, start to finish."""
     from app.api.tasks import _context
-    from app.services.chat_service import ChatService
 
     context = _context(db)
     said = (text or "").strip()
@@ -90,10 +93,11 @@ def command(audio: Optional[UploadFile] = File(None), text: Optional[str] = Form
     intent = speech.spoken_intent(said)
     if intent == "stop":
         return {"transcript": said, "reply": "", "kind": "stop", "stop": True}
-    try:
-        service = ChatService(db, conversation_id)
-    except LookupError:
-        service = ChatService(db, None)
+    named, said = _addressed(db, said)
+    if named is not None:
+        agent_id, conversation_id = named.id, None
+    service = _chat_for(db, conversation_id, agent_id)
+    agent = _agents.get(db, service.conversation.agent_id)
     message = said
     if intent in ("approve", "discard") and _something_waiting(db):
         message = intent              # exactly the Approve / Discard button
@@ -106,7 +110,40 @@ def command(audio: Optional[UploadFile] = File(None), text: Optional[str] = Form
                               link={"tab": "ask", "conversation_id": service.conversation_id})
     return {"transcript": said, "reply": reply, "kind": result.get("kind"),
             "cards": result.get("cards") or [], "conversation_id": service.conversation_id,
-            "speech": _speech(reply, fmt) if speak else None}
+            "agent": {"id": agent.id, "name": agent.name},
+            "speech": _speech(reply, fmt, agent) if speak else None}
+
+
+def _addressed(db, said: str):
+    """ "Inbox, reply to Priya…" → (the Inbox assistant, "reply to Priya…")."""
+    from app.models.agent import Agent
+
+    lowered = said.lower()
+    for agent in sorted(db.query(Agent).filter(Agent.archived.is_(False)).all(),
+                        key=lambda a: -len(a.name)):
+        for name in {agent.name.lower(), agent.name.lower().split(" ")[0]}:
+            for lead in (f"{name},", f"{name}:", f"hey {name},", f"hey {name} ", f"ok {name},"):
+                if len(name) > 2 and lowered.startswith(lead):
+                    return agent, said[len(lead):].strip(" ,.")
+    return None, said
+
+
+def _chat_for(db, conversation_id: Optional[int], agent_id: Optional[int]):
+    """The chat a spoken request goes to: the one named, else the agent's latest."""
+    from app.services import conversations
+    from app.services.chat_service import ChatService
+
+    if conversation_id:
+        try:
+            return ChatService(db, conversation_id)
+        except LookupError:
+            pass
+    if agent_id:
+        chats = conversations.listing(db, agent_id=agent_id, limit=1)
+        if chats:
+            return ChatService(db, chats[0]["id"])
+        return ChatService(db, conversations.create(db, agent_id=agent_id).id)
+    return ChatService(db, None)
 
 
 #: A spoken "yes" only ever answers something prepared moments ago.
@@ -128,12 +165,16 @@ def _something_waiting(db) -> bool:
 class SpeakIn(BaseModel):
     text: str
     fmt: str = "mp3"
+    agent_id: Optional[int] = None
 
 
 @router.post("/speak")
-def speak(body: SpeakIn) -> Response:
+def speak(body: SpeakIn, db: Session = Depends(get_db)) -> Response:
     try:
-        spoken = tts.synthesize(tts.speakable(body.text), fmt=body.fmt)
+        agent = _agents.get(db, body.agent_id) if body.agent_id else None
+        spoken = tts.synthesize(tts.speakable(body.text), fmt=body.fmt,
+                                voice=getattr(agent, "voice_name", None) or None,
+                                rate=getattr(agent, "voice_rate", None))
     except tts.SpeechFailed as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     return Response(spoken["audio"], media_type=spoken["mime"],

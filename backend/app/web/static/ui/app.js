@@ -1,6 +1,7 @@
 // Cerebro app: Ask, Activity, Sources and Connect, for the desktop shell and /app.
 import { mascot, setBrainState, setPose, stateLabel } from './brain.js';
 import { escapeHTML as esc, renderMarkdown } from './markdown.js';
+import { createFace, faceAvatar, lipSync, PALETTE_NAMES } from './face.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -95,7 +96,14 @@ const state = {
   aiEnabled: null,
   tab: 'ask',
   sources: new Map(),   // ref -> source, for citation popovers
+  agents: [],           // the user's agents (shared memory, own chats and jobs)
+  agentId: null,        // the agent on screen
+  groups: {},           // tool-scope groups, for the agent editor
+  templates: {},
+  stageFace: null,      // the agent's face above its chat
+  home: null,
 };
+const currentAgent = () => state.agents.find(a => a.id === state.agentId) || state.agents[0] || null;
 
 // ------------------------------------------------------------------- brains
 $('#brand-brain').innerHTML = mascot(46);
@@ -109,13 +117,16 @@ function selectTab(name) {
   if (name === 'activity') loadActivity();
   if (name === 'sources') loadSources();
   if (name === 'connect') loadConnect();
+  if (name === 'home') loadHome();
+  if (name === 'work') loadWork();
   if (name === 'ask') $('#input').focus();
+  openSidebar(false);
 }
 
 function moveIndicator() {
   const active = $('.tab[aria-selected="true"]');
   const indicator = $('#tab-indicator');
-  if (!active) return;
+  if (!active || !indicator || getComputedStyle(indicator).display === 'none') return;
   indicator.style.width = `${active.offsetWidth}px`;
   indicator.style.transform = `translateX(${active.offsetLeft - 4}px)`;
 }
@@ -190,7 +201,7 @@ let currentPopover = null;
 function closePopover() { currentPopover?.remove(); currentPopover = null; }
 document.addEventListener('click', e => {
   if (currentPopover && !currentPopover.contains(e.target) &&
-      !e.target.closest('.cite, #menu-btn, #chat-menu-btn, [data-chat-menu], .source-pill, #addon-add, #addon-menu')) closePopover();
+      !e.target.closest('.cite, #menu-btn, #chat-menu-btn, [data-chat-menu], .source-pill, #addon-add, #addon-menu, #agent-new, #home-new-agent, .agent-row')) closePopover();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closePopover(); });
 
@@ -298,6 +309,7 @@ if (document.documentElement.classList.contains('shell')) document.body.classLis
 function paintActivity() {
   const { state: current, detail, label } = state.activity;
   setBrainState(document.body, current);
+  paintStage();
   const busy = !['idle', 'awaiting_approval', 'error', 'offline'].includes(current);
   const dot = $('#status-dot');
   dot.dataset.state = current;
@@ -399,8 +411,8 @@ const SUGGESTIONS = [
 function renderEmpty() {
   thread.innerHTML = `
     <div class="hero">
-      <div class="brain-host">${mascot(168)}</div>
-      <h2>How can I help?</h2>
+      ${currentAgent()?.face === 'brain' || !currentAgent() ? `<div class="brain-host">${mascot(168)}</div>` : ''}
+      <h2>${currentAgent() && !currentAgent().is_default ? `${esc(currentAgent().name)} — how can I help?` : 'How can I help?'}</h2>
       <p>Ask a question, look something up across your sources, or tell me what to do. I'll ask before changing anything.</p>
       <div class="suggestions">
         ${SUGGESTIONS.map(([title, text]) => `
@@ -441,7 +453,7 @@ function messageNode(message) {
   if (short) node.classList.add('short');
   const fromTask = message.kind === 'task_result' && meta.task;
   node.innerHTML = `
-    <div class="avatar">${mascot(34, 'thinking').replace('class="mascot"', 'class="mascot still"')}</div>
+    <div class="avatar">${faceAvatar(currentAgent(), 34)}</div>
     <div class="bubble glass">
       ${fromTask ? `<div class="task-tag">${ICONS.clock}<span>${esc(meta.task.title)}</span>
         <span class="meta">${message.created_at ? relTime(message.created_at) : ''}</span></div>` : ''}
@@ -802,10 +814,12 @@ async function speak(text) {
   const status = await voiceStatus();
   if (!status.speak_replies || !text) return;
   try {
-    const response = await fetch('/api/voice/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    const response = await fetch('/api/voice/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, agent_id: state.agentId }) });
     if (!response.ok) return;
     voice.audio?.pause();
     voice.audio = new Audio(URL.createObjectURL(await response.blob()));
+    // The agent's mouth follows its voice.
+    lipSync(voice.audio, level => state.stageFace?.setMouth(level));
     voice.audio.play();
   } catch { /* speaking is a nicety */ }
 }
@@ -828,7 +842,7 @@ async function send({ spoken = false } = {}) {
   pending.className = 'msg assistant short';
   pending.innerHTML = `<div class="avatar"></div>
     <div class="bubble glass"><div class="steps"></div>
-      <div class="pending-mascot">${mascot(96, 'thinking')}<span class="pending-caption">Thinking…</span></div></div>`;
+      <div class="pending-mascot">${pendingFace()}<span class="pending-caption">Thinking…</span></div></div>`;
   thread.append(pending);
   scrollToEnd();
 
@@ -900,6 +914,7 @@ async function loadChats() {
   if (state.showArchived) params.set('archived', 'true');
   const q = $('#chats-search').value.trim();
   if (q) params.set('q', q);
+  if (state.agentId) params.set('agent_id', String(state.agentId));
   try {
     state.chats = (await api.get(`/api/chat/conversations?${params}`)).conversations || [];
   } catch { state.chats = []; }
@@ -965,7 +980,7 @@ async function newChat() {
     return;
   }
   try {
-    const chat = await api.post('/api/chat/conversations');
+    const chat = await api.post('/api/chat/conversations', { agent_id: state.agentId });
     state.showArchived = false;
     $('#chats-archived').setAttribute('aria-pressed', 'false');
     $('#chats-archived').textContent = 'Show archived';
@@ -1053,7 +1068,7 @@ function showStillWorking() {
     const node = document.createElement('div');
     node.className = 'msg assistant short still-working';
     node.innerHTML = `<div class="avatar"></div><div class="bubble glass"><div class="pending-mascot">
-      ${mascot(96, 'thinking')}<span class="pending-caption">Working on it…</span></div></div>`;
+      ${pendingFace()}<span class="pending-caption">Working on it…</span></div></div>`;
     thread.append(node);
     setPose(node, 'working');
     scrollToEnd();
@@ -1800,7 +1815,8 @@ async function signIn(name, button) {
 
 // ==================================================================== boot
 // The desktop shell and tray open a specific tab ("Ask Cerebro…", approvals).
-window.cerebroSelectTab = name => selectTab(['ask', 'activity', 'sources', 'connect'].includes(name) ? name : 'ask');
+window.cerebroSelectTab = name => selectTab(['home', 'ask', 'work', 'activity', 'sources', 'connect'].includes(name) ? name : 'ask');
+window.cerebroOpenAgent = id => { selectTab('ask'); selectAgent(Number(id)); };
 // A notification's "Open" (the tray) lands in the chat it is about.
 window.cerebroOpenChat = id => { selectTab('ask'); openChat(Number(id)); };
 selectTab('ask');
@@ -1808,7 +1824,18 @@ connectActivity();
 loadInfo();
 loadContext();
 try { state.chatId = Number(localStorage.getItem('cerebro.chat')) || null; } catch { /* ignore */ }
-loadHistory().then(loadChats);
+try { state.agentId = Number(localStorage.getItem('cerebro.agent')) || null; } catch { /* ignore */ }
+loadAgents().then(() => loadHistory()).then(() => {
+  // The chat on screen decides which agent is on screen.
+  if (state.chat?.agent_id && state.chat.agent_id !== state.agentId) {
+    state.agentId = state.chat.agent_id;
+    paintAgents();
+    paintStage(true);
+    if (!state.history.length) renderEmpty();
+  }
+  loadChats();
+});
+setInterval(() => { if (!document.hidden) loadAgents(); }, 15000);
 setInterval(loadContext, 6000);
 // Scheduled tasks post into chats on their own; keep the list (and an idle
 // open chat) current.
@@ -1821,3 +1848,475 @@ setInterval(async () => {
 }, 20000);
 setInterval(() => { if (state.tab === 'activity') loadActivity(); }, 15000);
 setInterval(loadInfo, 60000);
+
+
+// ================================================================= agents
+// Several named agents share one memory and the same tools; each has its own
+// chats, jobs, face and voice. The sidebar lists them; the stage above the
+// chat shows the one on screen.
+async function loadAgents() {
+  try {
+    const data = await api.get('/api/agents');
+    state.agents = data.agents || [];
+    state.groups = data.groups || {};
+    state.templates = data.templates || {};
+  } catch { state.agents = state.agents || []; }
+  if (!state.agents.some(a => a.id === state.agentId)) state.agentId = state.agents[0]?.id || null;
+  paintAgents();
+  paintStage();
+  const waiting = state.agents.reduce((n, a) => n + (a.status?.counts?.waiting_input || 0) + (a.status?.counts?.waiting_approval || 0), 0);
+  $('#work-count').textContent = waiting ? String(waiting) : '';
+}
+
+function agentStatusText(agent) {
+  const st = agent.status || {};
+  const c = st.counts || {};
+  if (st.state === 'needs_input') return `Has a question for you`;
+  if (st.state === 'needs_approval') return `${c.waiting_approval} job(s) waiting for approval`;
+  if (st.state === 'working') return st.current ? `Working on: ${st.current.title}` : `${(c.running || 0) + (c.queued || 0)} job(s) on the go`;
+  return c.ideas ? `${c.ideas} idea(s) for you` : 'Ready';
+}
+
+function paintAgents() {
+  const list = $('#agent-list');
+  list.innerHTML = '';
+  for (const agent of state.agents) {
+    const row = document.createElement('button');
+    row.className = 'agent-row';
+    row.dataset.agent = agent.id;
+    row.dataset.state = agent.status?.state || 'idle';
+    row.setAttribute('aria-current', String(agent.id === state.agentId));
+    row.style.setProperty('--agent', agent.color || '#8b7cf6');
+    const needs = (agent.status?.counts?.waiting_input || 0) + (agent.status?.counts?.waiting_approval || 0);
+    row.title = `${agent.name} — ${agentStatusText(agent)}`;
+    row.innerHTML = `<span class="agent-av">${faceAvatar(agent, 42)}</span>
+      <span class="agent-text"><div class="agent-name">${esc(agent.name)}</div><div class="agent-role">${esc(agentStatusText(agent))}</div></span>
+      <span class="agent-badge">${needs || ''}</span>`;
+    row.addEventListener('click', () => { selectAgent(agent.id); if (!['ask', 'work'].includes(state.tab)) selectTab('ask'); });
+    row.addEventListener('contextmenu', event => { event.preventDefault(); agentMenu(row, agent); });
+    list.append(row);
+  }
+}
+
+function agentMenu(anchor, agent) {
+  const items = [['Edit agent…', () => editAgent(agent)], ['New job…', () => newJob(agent)]];
+  if (!agent.is_default) items.push(['Remove agent', () => removeAgent(agent)]);
+  showMenu(anchor, items);
+}
+
+async function selectAgent(id) {
+  if (id === state.agentId && state.chat?.agent_id === id) return;
+  state.agentId = id;
+  try { localStorage.setItem('cerebro.agent', String(id)); } catch { /* ignore */ }
+  paintAgents();
+  paintStage(true);
+  if (state.tab === 'work') loadWork();
+  await loadChats();
+  const open = state.chats.find(c => !c.archived);
+  if (open) await openChat(open.id);
+  else {
+    const chat = await api.post('/api/chat/conversations', { agent_id: id }).catch(() => null);
+    if (chat) { await openChat(chat.id); loadChats(); }
+  }
+}
+
+// ----------------------------------------------------------------- stage
+function stageStateFor(agent) {
+  const mine = state.sending.has(state.chatId);
+  if (mine || (agent?.is_default && !['idle', 'offline'].includes(state.activity.state))) return state.activity.state;
+  const st = agent?.status?.state;
+  return st === 'working' ? 'thinking' : st === 'needs_input' || st === 'needs_approval' ? 'awaiting_approval'
+    : state.activity.state === 'offline' ? 'offline' : 'idle';
+}
+
+function paintStage(rebuild = false) {
+  const agent = currentAgent();
+  const host = $('#stage-face');
+  if (!host || !agent) return;
+  const key = `${agent.id}:${agent.face}:${JSON.stringify(agent.face_style || {})}`;
+  if (rebuild || host.dataset.key !== key) {
+    state.stageFace?.destroy();
+    host.innerHTML = '';
+    state.stageFace = createFace(host, agent, 110);
+    host.dataset.key = key;
+  }
+  $('#stage-name').textContent = agent.name;
+  $('#stage-role').textContent = agent.role || '';
+  const status = $('#stage-status');
+  status.textContent = agentStatusText(agent);
+  status.dataset.state = agent.status?.state || 'idle';
+  state.stageFace?.setState(stageStateFor(agent));
+}
+
+$('#stage-edit').addEventListener('click', () => currentAgent() && editAgent(currentAgent()));
+$('#stage-toggle').addEventListener('click', () => {
+  const stage = $('#agent-stage');
+  stage.classList.toggle('small');
+  try { localStorage.setItem('cerebro.stage', stage.classList.contains('small') ? 'small' : 'big'); } catch { /* ignore */ }
+});
+try { if (localStorage.getItem('cerebro.stage') === 'small') $('#agent-stage').classList.add('small'); } catch { /* ignore */ }
+
+function pendingFace() {
+  const agent = currentAgent();
+  if (!agent || agent.face === 'brain') return mascot(96, 'thinking');
+  return `<span class="face-avatar pending-anime" style="width:96px;height:96px">${faceAvatar(agent, 96).replace(/^<span[^>]*>|<\/span>$/g, '')}</span>`;
+}
+
+// ------------------------------------------------------------ sidebar drawer
+function openSidebar(open = true) {
+  $('#sidebar').classList.toggle('open', open);
+  $('#side-scrim').classList.toggle('open', open);
+}
+$('#agents-btn').addEventListener('click', () => openSidebar(!$('#sidebar').classList.contains('open')));
+$('#side-scrim').addEventListener('click', () => openSidebar(false));
+$('#agent-new').addEventListener('click', event => showMenu(event.currentTarget,
+  Object.entries(state.templates).map(([key, t]) => [t.name === 'New agent' ? 'Blank agent…' : `${t.name}…`, () => editAgent(null, key)])));
+
+// ------------------------------------------------------------- the editor
+async function editAgent(agent, template = 'blank') {
+  const base = agent || { ...(state.templates[template] || {}), face: 'anime', face_style: { palette: PALETTE_NAMES[state.agents.length % PALETTE_NAMES.length] }, tool_scope: [] };
+  const faces = (await api.get('/api/faces').catch(() => ({ faces: [] }))).faces || [];
+  let face = base.face || 'anime';
+  let style = { ...(base.face_style || {}) };
+  const scope = new Set(base.tool_scope || []);
+  const values = await sheet({
+    title: agent ? `Edit ${agent.name}` : 'New agent', ok: agent ? 'Save' : 'Create',
+    body: `
+      <label class="field"><span>Name</span><input class="input" name="name" required value="${esc(base.name || '')}"></label>
+      <label class="field"><span>Role</span><input class="input" name="role" value="${esc(base.role || '')}" placeholder="What it's for, in a few words"></label>
+      <label class="field"><span>Standing instructions</span><textarea class="input" name="instructions" rows="4" placeholder="How it should work">${esc(base.instructions || '')}</textarea></label>
+      <div class="field"><span>Face</span>
+        <div class="work-tabs" data-faces>
+          ${[['brain', 'Brain'], ['anime', 'Anime'], ['live2d', 'Live2D model'], ['vrm', 'VRM 3D model']].map(([k, label]) =>
+            `<button type="button" class="btn sm" data-face="${k}" aria-pressed="${face === k}">${label}</button>`).join('')}
+        </div>
+        <div class="palette-row" data-palettes>${PALETTE_NAMES.map(p =>
+          `<button type="button" data-palette="${p}" title="${p}" aria-pressed="${(style.palette || 'pink') === p}">${faceAvatar({ face: 'anime', face_style: { palette: p } }, 54)}</button>`).join('')}</div>
+        <div data-models style="margin-top:8px"></div>
+      </div>
+      <div class="field"><span>Voice (optional)</span><input class="input" name="voice_name" value="${esc(base.voice_name || '')}" placeholder="e.g. Ruth, Matthew, en-US-AriaNeural"></div>
+      <div class="field"><span>What it may use (nothing ticked: everything)</span>
+        <div class="scope-grid">${Object.entries(state.groups).map(([key, label]) =>
+          `<label><input type="checkbox" data-scope="${key}" ${scope.has(key) ? 'checked' : ''}> ${esc(label)}</label>`).join('')}</div></div>`,
+    setup: form => {
+      const paintModels = () => {
+        const host = $('[data-models]', form);
+        $('[data-palettes]', form).style.display = face === 'anime' || face === 'live2d' || face === 'vrm' ? '' : 'none';
+        if (face !== 'live2d' && face !== 'vrm') { host.innerHTML = ''; return; }
+        const mine = faces.filter(f => f.kind === face);
+        host.innerHTML = `<div class="meta" style="margin-bottom:6px">${face === 'live2d'
+          ? 'A .zip of a Cubism 3/4 model (with its .model3.json). Live2D needs Live2D\'s own runtime, which Cerebro downloads with your agreement.'
+          : 'A .vrm file — make one free in VRoid Studio.'} Until it loads, the anime face below stands in.</div>
+          <div class="work-tabs">${mine.map(f => `<button type="button" class="btn sm" data-model="${f.id}" data-entry="${esc(f.entry)}" aria-pressed="${style.model === f.id}">${esc(f.name)}</button>`).join('')}
+          <button type="button" class="btn sm primary" data-upload>Load a model…</button></div>`;
+        $$('[data-model]', host).forEach(b => b.addEventListener('click', () => {
+          style = { ...style, model: b.dataset.model, entry: b.dataset.entry };
+          $$('[data-model]', host).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        }));
+        $('[data-upload]', host).addEventListener('click', () => pickFile(face === 'vrm' ? '.vrm' : '.zip', async file => {
+          const form2 = new FormData();
+          form2.append('file', file, file.name);
+          try {
+            const meta = await api.post('/api/faces', form2);
+            faces.push(meta);
+            style = { ...style, model: meta.id, entry: meta.entry };
+            if (meta.kind === 'live2d') await ensureLive2D();
+            paintModels();
+          } catch (error) { toast(error.message, 'err'); }
+        }));
+      };
+      $$('[data-face]', form).forEach(b => b.addEventListener('click', async () => {
+        face = b.dataset.face;
+        $$('[data-face]', form).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        if (face === 'live2d') await ensureLive2D();
+        paintModels();
+      }));
+      $$('[data-palette]', form).forEach(b => b.addEventListener('click', () => {
+        style = { ...style, palette: b.dataset.palette };
+        $$('[data-palette]', form).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      }));
+      paintModels();
+    },
+  });
+  if (!values) return;
+  const form = $('#sheet');
+  const chosen = $$('[data-scope]', form).filter(b => b.checked).map(b => b.dataset.scope);
+  const body = { name: values.name, role: values.role, instructions: values.instructions,
+    face, face_style: style, voice_name: values.voice_name || '', tool_scope: chosen };
+  try {
+    const saved = agent ? await api.patch(`/api/agents/${agent.id}`, body)
+      : await api.post('/api/agents', { template, ...body });
+    toast(agent ? 'Saved' : `${saved.name} is ready`, 'ok');
+    await loadAgents();
+    if (!agent) selectAgent(saved.id);
+    else paintStage(true);
+  } catch (error) { toast(error.message, 'err'); }
+}
+
+async function ensureLive2D() {
+  const info = await api.get('/api/faces/live2d/runtime').catch(() => ({ installed: false }));
+  if (info.installed) return true;
+  if (!confirm(`${info.terms || 'Live2D models need Live2D\'s Cubism Core.'}\n\nDownload it from Live2D now?`)) return false;
+  try {
+    await api.post('/api/faces/live2d/runtime', { agree: true });
+    toast('Live2D runtime installed', 'ok');
+    return true;
+  } catch (error) { toast(error.message, 'err'); return false; }
+}
+
+async function removeAgent(agent) {
+  if (!confirm(`Remove ${agent.name}? Its chats and jobs stay readable.`)) return;
+  await api.del(`/api/agents/${agent.id}`).catch(error => toast(error.message, 'err'));
+  if (state.agentId === agent.id) state.agentId = null;
+  await loadAgents();
+  selectAgent(state.agentId || state.agents[0]?.id);
+}
+
+// ------------------------------------------------------------------ jobs
+const JOB_STATUS = {
+  queued: ['accent', 'Queued'], running: ['accent', 'Working'], active: ['', 'Scheduled'],
+  waiting_input: ['warn', 'Needs your answer'], waiting_approval: ['warn', 'Needs approval'],
+  paused: ['', 'Paused'], needs_review: ['warn', 'To review'], done: ['ok', 'Done'],
+  failed: ['err', 'Failed'], cancelled: ['', 'Cancelled'],
+};
+
+function jobRow(job, { open = false } = {}) {
+  const node = document.createElement('div');
+  node.className = 'job-row';
+  const plan = job.plan || [];
+  const done = plan.filter(p => p.status === 'done').length;
+  const [kind, label] = JOB_STATUS[job.status] || ['', job.status];
+  const controls = [];
+  if (['queued', 'running', 'active', 'waiting_input', 'waiting_approval'].includes(job.status)) controls.push(['pause', 'Pause']);
+  if (job.status === 'paused') controls.push(['resume', 'Resume']);
+  if (['failed', 'cancelled', 'done', 'needs_review'].includes(job.status)) controls.push(['retry', job.status === 'done' ? 'Run again' : 'Retry']);
+  if (!['done', 'cancelled'].includes(job.status)) controls.push(['cancel', 'Cancel']);
+  node.innerHTML = `
+    <div class="job-top"><span class="job-title" title="${esc(job.instruction || job.title)}">${esc(job.title)}</span><span class="badge ${kind}">${esc(label)}</span></div>
+    ${plan.length ? `<div class="progress"><span style="width:${Math.round(100 * done / plan.length)}%"></span></div>` : ''}
+    ${job.question && job.status === 'waiting_input' ? `<div class="question">${esc(job.question)}</div>
+      <div class="answer-row"><input class="input" data-answer placeholder="Your answer"><button class="btn sm primary" data-send>Answer</button></div>` : ''}
+    ${job.error && job.status === 'failed' ? `<div class="card-error">${esc(job.error)}</div>` : ''}
+    <div class="job-detail" ${open ? '' : 'hidden'}></div>
+    <div class="btn-row" style="margin:0">${controls.map(([a, l]) => `<button class="btn sm ghost" data-act="${a}">${l}</button>`).join('')}
+      ${job.conversation_id ? '<button class="btn sm ghost" data-chat>Open chat</button>' : ''}</div>`;
+  const detail = $('.job-detail', node);
+  const showDetail = async () => {
+    const full = await api.get(`/api/jobs/${job.id}`).catch(() => null);
+    if (!full) return;
+    detail.innerHTML = `${(full.plan || []).length ? `<ul class="plan-list">${full.plan.map(p => `<li data-status="${esc(p.status)}">${esc(p.title)}</li>`).join('')}</ul>` : ''}
+      <ul class="event-log">${(full.events || []).slice(-40).map(e => `<li><time>${esc(relTime(e.created_at))}</time><span><b>${esc(e.title)}</b>${e.detail ? ` — ${esc(e.detail.slice(0, 220))}` : ''}</span></li>`).join('')}</ul>`;
+  };
+  $('.job-title', node).addEventListener('click', () => { detail.hidden = !detail.hidden; if (!detail.hidden) showDetail(); });
+  if (open) showDetail();
+  $$('[data-act]', node).forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    const result = await api.post(`/api/jobs/${job.id}/${b.dataset.act}`).catch(e => ({ detail: e.message }));
+    if (result.ok === false || result.detail) toast(result.detail || 'Done', result.ok === false ? 'err' : 'ok');
+    refreshWorkViews();
+  }));
+  $('[data-send]', node)?.addEventListener('click', async () => {
+    const answer = $('[data-answer]', node).value.trim();
+    if (!answer) return;
+    await api.post(`/api/jobs/${job.id}/answer`, { answer }).catch(e => toast(e.message, 'err'));
+    toast('Thanks — it carries on', 'ok');
+    refreshWorkViews();
+  });
+  $('[data-chat]', node)?.addEventListener('click', () => {
+    if (job.agent_id && job.agent_id !== state.agentId) { state.agentId = job.agent_id; paintAgents(); paintStage(true); loadChats(); }
+    selectTab('ask'); openChat(job.conversation_id);
+  });
+  return node;
+}
+
+function ideaRow(idea) {
+  const node = document.createElement('div');
+  node.className = 'idea-row';
+  node.innerHTML = `<b>${esc(idea.title)}</b><span>${esc(idea.reason || '')}</span>
+    ${(idea.evidence || []).length ? `<div class="evidence">${idea.evidence.slice(0, 3).map(e => `• ${esc(e.title)}${e.excerpt ? ` — ${esc(e.excerpt.slice(0, 120))}` : ''}`).join('<br>')}</div>` : ''}
+    <div class="btn-row" style="margin:0"><button class="btn sm primary" data-accept>Do it</button>
+      <button class="btn sm ghost" data-edit>Edit first…</button><button class="btn sm ghost" data-dismiss>Dismiss</button></div>`;
+  const decide = async (action, prompt) => {
+    const result = await api.post(`/api/ideas/${idea.id}/${action}`, prompt ? { prompt } : {}).catch(e => ({ ok: false, detail: e.message }));
+    toast(result.ok ? (action === 'accept' ? 'Started as a job' : 'Dismissed') : result.detail, result.ok ? 'ok' : 'err');
+    refreshWorkViews();
+  };
+  $('[data-accept]', node).addEventListener('click', () => decide('accept'));
+  $('[data-dismiss]', node).addEventListener('click', () => decide('dismiss'));
+  $('[data-edit]', node).addEventListener('click', async () => {
+    const values = await sheet({ title: idea.title, ok: 'Do it', body: `<label class="field"><span>What to do</span><textarea class="input" name="prompt" rows="5">${esc(idea.prompt)}</textarea></label>` });
+    if (values?.prompt) decide('accept', values.prompt);
+  });
+  return node;
+}
+
+async function newJob(agent = currentAgent(), project = null) {
+  const values = await sheet({
+    title: `New job for ${agent?.name || 'Cerebro'}`, ok: 'Start',
+    body: `<label class="field"><span>What should it do?</span><textarea class="input" name="instruction" rows="4" required placeholder="e.g. Go through yesterday's escalations and draft a summary for the team"></textarea></label>
+      <label class="field"><span>When</span><select class="input" name="schedule">
+        ${[['once', 'Now, once'], ['hourly', 'Every hour'], ['daily', 'Every day'], ['weekdays', 'Weekdays'], ['weekly', 'Every week'], ['manual', 'Only when I run it']].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
+      </select></label>
+      <label class="field"><span>At (for daily/weekly)</span><input class="input" name="at_time" placeholder="09:00"></label>`,
+  });
+  if (!values?.instruction) return;
+  const job = await api.post('/api/jobs', { instruction: values.instruction, agent_id: agent?.id, schedule: values.schedule,
+    at_time: values.at_time || null, project_id: project?.id || null }).catch(e => { toast(e.message, 'err'); return null; });
+  if (job) { toast(`${agent?.name || 'Cerebro'} is on it`, 'ok'); refreshWorkViews(); }
+}
+
+function refreshWorkViews() {
+  loadAgents();
+  if (state.tab === 'home') loadHome();
+  if (state.tab === 'work') loadWork();
+}
+
+// ------------------------------------------------------------------ Home
+async function loadHome() {
+  const body = $('#home-body');
+  const data = await api.get('/api/home').catch(error => ({ error: error.message }));
+  if (data.error) { body.innerHTML = `<div class="empty-note">${esc(data.error)}</div>`; return; }
+  body.innerHTML = `
+    <div class="section-title">Your agents<span class="grow"></span>
+      <button class="btn sm" id="ideas-refresh">Look for ideas</button><button class="btn sm primary" id="home-new-agent">+ Agent</button></div>
+    <div class="board" id="board"></div>
+    <div id="home-fired"></div>`;
+  const board = $('#board');
+  for (const agent of data.agents || []) {
+    const card = document.createElement('div');
+    card.className = 'agent-card glass';
+    card.style.setProperty('--agent', agent.color || '#8b7cf6');
+    card.innerHTML = `
+      <div class="agent-card-head"><span class="agent-av">${faceAvatar(agent, 48)}</span>
+        <div style="min-width:0;flex:1"><h4>${esc(agent.name)}</h4><div class="meta">${esc(agent.role || 'General')} · ${esc(agentStatusText(agent))}</div></div>
+        <button class="btn sm" data-chat>Chat</button><button class="btn sm ghost" data-job>+ Job</button></div>
+      <div data-jobs></div><div data-ideas></div>`;
+    const jobsHost = $('[data-jobs]', card);
+    (agent.jobs || []).slice(0, 4).forEach(job => jobsHost.append(jobRow(job)));
+    if (!(agent.jobs || []).length) jobsHost.innerHTML = '<div class="meta">No jobs on the go.</div>';
+    const ideasHost = $('[data-ideas]', card);
+    (agent.ideas || []).forEach(idea => ideasHost.append(ideaRow(idea)));
+    $('[data-chat]', card).addEventListener('click', () => { selectTab('ask'); selectAgent(agent.id); });
+    $('[data-job]', card).addEventListener('click', () => newJob(agent));
+    board.append(card);
+  }
+  const fired = data.watches_fired || [];
+  if (fired.length) {
+    $('#home-fired').innerHTML = `<div class="section-title">Watches that fired<span class="grow"></span></div>
+      ${fired.map(w => `<div class="job-row"><div class="job-top"><span class="job-title">${esc(w.title)}</span><span class="meta">${esc(relTime(w.last_alert_at))}</span></div>
+        <span class="meta">${esc(w.target)}</span></div>`).join('')}`;
+  }
+  $('#home-new-agent').addEventListener('click', e => showMenu(e.currentTarget,
+    Object.entries(state.templates).map(([key, t]) => [t.name === 'New agent' ? 'Blank agent…' : `${t.name}…`, () => editAgent(null, key)])));
+  $('#ideas-refresh').addEventListener('click', async () => {
+    const result = await api.post('/api/ideas/refresh').catch(() => ({ made: 0 }));
+    toast(result.made ? `${result.made} new idea(s)` : 'No new ideas right now', 'ok');
+    loadHome();
+  });
+}
+
+// ------------------------------------------------------------------ Work
+let workView = 'jobs';
+async function loadWork() {
+  const agent = currentAgent();
+  const body = $('#work-body');
+  if (!agent) { body.innerHTML = ''; return; }
+  body.innerHTML = `
+    <div class="section-title">${esc(agent.name)}'s work<span class="grow"></span></div>
+    <div class="work-tabs">${[['jobs', 'Jobs'], ['projects', 'Projects'], ['watches', 'Watches'], ['ideas', 'Ideas']].map(([k, l]) =>
+      `<button class="btn sm" data-view="${k}" aria-pressed="${workView === k}">${l}</button>`).join('')}
+      <span class="grow" style="flex:1"></span><button class="btn sm primary" data-add></button></div>
+    <div id="work-list"></div>`;
+  $$('[data-view]', body).forEach(b => b.addEventListener('click', () => { workView = b.dataset.view; loadWork(); }));
+  const add = $('[data-add]', body);
+  add.textContent = { jobs: '+ Job', projects: '+ Project', watches: '+ Watch', ideas: 'Look for ideas' }[workView];
+  add.addEventListener('click', () => ({ jobs: () => newJob(agent), projects: () => newProject(agent),
+    watches: () => newWatch(agent), ideas: async () => { await api.post('/api/ideas/refresh'); loadWork(); } })[workView]());
+  const list = $('#work-list');
+  if (workView === 'jobs') {
+    const { jobs } = await api.get(`/api/jobs?agent_id=${agent.id}&status=`).catch(() => ({ jobs: [] }));
+    if (!jobs.length) list.innerHTML = '<div class="empty-note">No jobs yet. Give it one with + Job, or ask in chat.</div>';
+    const open = jobs.filter(j => !['done', 'cancelled'].includes(j.status));
+    const closed = jobs.filter(j => ['done', 'cancelled'].includes(j.status)).slice(0, 15);
+    open.forEach(j => list.append(jobRow(j)));
+    if (closed.length) {
+      const head = document.createElement('div');
+      head.className = 'section-title';
+      head.innerHTML = 'Finished<span class="grow"></span>';
+      list.append(head);
+      closed.forEach(j => list.append(jobRow(j)));
+    }
+  } else if (workView === 'projects') {
+    const { projects } = await api.get(`/api/projects?agent_id=${agent.id}`).catch(() => ({ projects: [] }));
+    if (!projects.length) list.innerHTML = '<div class="empty-note">No projects yet.</div>';
+    for (const project of projects) {
+      const card = document.createElement('div');
+      card.className = 'agent-card glass';
+      card.innerHTML = `<div class="agent-card-head"><div style="flex:1;min-width:0"><h4>${esc(project.title)}</h4>
+          <div class="meta">${esc(project.description || '')}</div></div><span class="badge ${project.status === 'done' ? 'ok' : ''}">${esc(project.status)}</span>
+          <button class="btn sm ghost" data-job>+ Job</button></div>
+        <div class="progress"><span style="width:${Math.round(100 * project.progress)}%"></span></div>
+        <ul class="milestones">${project.milestones.map(m => `<li><label><input type="checkbox" data-m="${esc(m.id)}" ${m.done ? 'checked' : ''}> ${esc(m.title)}</label></li>`).join('')}</ul>
+        <div data-jobs></div>`;
+      $$('[data-m]', card).forEach(box => box.addEventListener('change', async () => {
+        const milestones = project.milestones.map(m => m.id === box.dataset.m ? { ...m, done: box.checked } : m);
+        await api.patch(`/api/projects/${project.id}`, { milestones, status: milestones.every(m => m.done) ? 'done' : 'active' });
+        loadWork();
+      }));
+      $('[data-job]', card).addEventListener('click', () => newJob(agent, project));
+      project.jobs.forEach(j => $('[data-jobs]', card).append(jobRow(j)));
+      list.append(card);
+    }
+  } else if (workView === 'watches') {
+    const { watches } = await api.get(`/api/watches?agent_id=${agent.id}`).catch(() => ({ watches: [] }));
+    if (!watches.length) list.innerHTML = '<div class="empty-note">Not watching anything. + Watch, or ask: “tell me when this page changes”.</div>';
+    for (const w of watches) {
+      const row = document.createElement('div');
+      row.className = 'job-row';
+      row.innerHTML = `<div class="job-top"><span class="job-title">${esc(w.title)}</span><span class="badge ${w.status === 'active' ? 'ok' : ''}">${esc(w.status)}</span></div>
+        <span class="meta">${esc(w.describe)} · every ${w.interval_minutes} min${w.last_checked_at ? ` · checked ${esc(relTime(w.last_checked_at))}` : ''}</span>
+        ${w.last_error ? `<div class="card-error">${esc(w.last_error)}</div>` : ''}
+        <div class="btn-row" style="margin:0"><button class="btn sm ghost" data-w="check">Check now</button>
+          <button class="btn sm ghost" data-w="${w.status === 'active' ? 'pause' : 'resume'}">${w.status === 'active' ? 'Pause' : 'Resume'}</button>
+          <button class="btn sm ghost" data-w="stop">Stop</button></div>`;
+      $$('[data-w]', row).forEach(b => b.addEventListener('click', async () => {
+        const result = await api.post(`/api/watches/${w.id}/${b.dataset.w}`).catch(e => ({ detail: e.message }));
+        if (b.dataset.w === 'check') toast(result.fired ? `It fired: ${result.detail}` : (result.detail || result.error || 'Checked'), result.ok === false ? 'err' : 'ok');
+        loadWork();
+      }));
+      list.append(row);
+    }
+  } else {
+    const { ideas } = await api.get(`/api/ideas?agent_id=${agent.id}`).catch(() => ({ ideas: [] }));
+    if (!ideas.length) list.innerHTML = '<div class="empty-note">No ideas right now.</div>';
+    ideas.forEach(i => list.append(ideaRow(i)));
+  }
+}
+
+async function newProject(agent) {
+  const values = await sheet({ title: 'New project', ok: 'Create', body: `
+    <label class="field"><span>Name</span><input class="input" name="title" required></label>
+    <label class="field"><span>What it's for</span><input class="input" name="description"></label>
+    <label class="field"><span>Milestones (one per line)</span><textarea class="input" name="milestones" rows="4"></textarea></label>` });
+  if (!values?.title) return;
+  await api.post('/api/projects', { title: values.title, description: values.description, agent_id: agent.id,
+    milestones: (values.milestones || '').split('\n').map(s => s.trim()).filter(Boolean) }).catch(e => toast(e.message, 'err'));
+  loadWork();
+}
+
+async function newWatch(agent) {
+  const values = await sheet({ title: 'Watch a page', ok: 'Watch', body: `
+    <label class="field"><span>Page address</span><input class="input" name="url" required placeholder="https://…"></label>
+    <label class="field"><span>Name</span><input class="input" name="title" placeholder="e.g. CAS-01234 status"></label>
+    <label class="field"><span>Tell me when</span><select class="input" name="condition">
+      <option value="change">it changes</option><option value="contains">this text appears</option>
+      <option value="absent">this text is gone</option><option value="below">the number goes below</option><option value="above">the number goes above</option></select></label>
+    <label class="field"><span>Text or number</span><input class="input" name="value"></label>
+    <label class="field"><span>Check every (minutes)</span><input class="input" name="interval_minutes" value="60"></label>
+    <label class="field"><span>Then (optional job)</span><input class="input" name="follow_up" placeholder="e.g. Draft an update to the customer"></label>` });
+  if (!values?.url) return;
+  await api.post('/api/watches', { ...values, interval_minutes: Number(values.interval_minutes) || 60, agent_id: agent.id })
+    .then(() => toast('Watching it', 'ok')).catch(e => toast(e.message, 'err'));
+  workView = 'watches';
+  loadWork();
+}

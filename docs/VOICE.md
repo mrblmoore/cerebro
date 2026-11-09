@@ -67,6 +67,12 @@ then gets more steps to finish in.
   minutes. With nothing waiting, it's just ordinary speech.
 - Before you approve a message, Cerebro reads back who it's to and the gist.
 
+## Talking to a particular agent
+
+Push-to-talk goes to the agent on screen. Start with an agent's name to talk
+to another one: *"Inbox, reply to Priya…"*. Each agent can have its own voice
+(**⚙ → Voice**), and its face moves its mouth while it speaks.
+
 ## Privacy: speech stays on your PC
 
 Speech is turned into text **on your PC** with

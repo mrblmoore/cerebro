@@ -200,22 +200,25 @@ def _summarise(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
 # ------------------------------------------------------------------ agent
 #: How a scheduled run is put to the agent. The schedule itself is already
 #: handled, so the model must do the work rather than schedule it again.
-AGENT_TASK_PROMPT = ("This is a run of a task assigned to this chat ({schedule}). Do it now "
+AGENT_TASK_PROMPT = ("This is a run of a job assigned to you ({schedule}). Do it now "
                      "and report what you found or did. The schedule is already handled — "
-                     "do not create another task.\n\nTask: {work}")
+                     "do not create another task. For work with several steps, set out the "
+                     "plan with update_plan and mark steps done as you go. If you need "
+                     "something only the user knows, call ask_user and stop.\n\nJob: {work}")
 
 
 def _agent(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Run the Ask agent on the task's instruction, inside the chat it belongs to.
+    Run an agent on the job, inside the chat it belongs to.
 
-    It can use every tool Ask can — search, Dynamics, RightAnswers,
-    SharePoint, the inbox — and its answer is posted into that chat as an
-    assistant message. Anything that would change an outside system is only
-    proposed as an approval card in the chat, exactly as in Ask; the task is
-    then left "needs review" (a one-off) until the user decides.
+    The agent can use every tool in its scope; its answer is posted into the
+    chat. Its progress is written to the job's run log and plan. Anything
+    that would change an outside system is only prepared as an approval card,
+    and the job waits (``waiting_approval``) until those are decided; a
+    question to the user parks it in ``waiting_input``. Both resume by
+    themselves (see :mod:`app.services.jobs`).
     """
-    from app.services import conversations
+    from app.services import agents, conversations, jobs
     from app.services.agent import loop
     from app.services.chat_service import ChatService
     from app.services.llm_service import LLMService
@@ -224,6 +227,7 @@ def _agent(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "status": "failed",
                 "detail": "Connect an AI provider to run chat tasks."}
 
+    agent = agents.get(db, task.agent_id)
     chat = None
     if task.conversation_id:
         try:
@@ -231,38 +235,109 @@ def _agent(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
         except LookupError:
             chat = None
     if chat is None:
-        # The chat was deleted, or the task predates chats: give it its own.
-        chat = ChatService(db, conversations.create(db, title=task.title).id)
+        # The chat was deleted, or the job was given to an agent directly.
+        created = conversations.create(db, title=task.title)
+        created.agent_id = agent.id
+        db.commit()
+        chat = ChatService(db, created.id)
         task.conversation_id = chat.conversation_id
         db.commit()
 
     work = spec.get("prompt") or task.instruction or task.title
     schedule = "one-off" if task.schedule == "once" else f"runs {task.schedule}"
-    context = {"conversation_id": chat.conversation_id, "task_run": task.id}
+    prompt = AGENT_TASK_PROMPT.format(schedule=schedule, work=work)
+    plan = task.plan_list()
+    if plan:
+        prompt += "\n\nYour plan so far:\n" + "\n".join(
+            f"- [{step['status']}] {step['title']}" for step in plan)
+    if task.answer:
+        prompt += f"\n\nYou asked: {task.question}\nThe user answered: {task.answer}\nCarry on."
+    decisions = task.state_dict().get("decisions")
+    if decisions:
+        prompt += "\n\nWhat happened to the changes you prepared: " + "; ".join(decisions) \
+            + ". Carry on from there; don't prepare them again."
+        jobs.set_state(task, decisions=None)
+        db.commit()
+
+    context = {"conversation_id": chat.conversation_id, "task_run": task.id,
+               **agents.context_for(agent)}
     if task.case_id:
         context["crm_case"] = task.case_id
-    history = loop._history(db, chat.conversation_id)
-    result = loop.run(db, AGENT_TASK_PROMPT.format(schedule=schedule, work=work), context,
-                      history=history, instructions=chat.conversation.instructions)
 
+    def emit(card: dict) -> None:
+        try:
+            if card.get("type") == "plan":
+                jobs.set_plan(task, card.get("steps") or [])
+                db.commit()
+                jobs.event(db, task.id, "plan", card.get("title") or "Plan",
+                           "\n".join(s if isinstance(s, str) else s.get("title", "")
+                                     for s in card.get("steps") or []))
+            elif card.get("type") == "plan_update":
+                jobs.set_plan(task, card.get("steps") or [])
+                db.commit()
+                jobs.event(db, task.id, "step", card.get("title") or "Plan updated")
+            elif card.get("type") == "progress" and card.get("status") != "running":
+                jobs.event(db, task.id, "tool", card.get("title") or "Step", card.get("detail"))
+        except Exception as exc:  # noqa: BLE001 - the log is a nicety; the job carries on
+            logger.warn("jobs", "Couldn't record a step", {"error": str(exc)[:200]})
+
+    checks = {"n": 0}
+
+    def should_stop() -> bool:
+        checks["n"] += 1
+        jobs.heartbeat(task.id)
+        fresh = db.query(Task.status).filter(Task.id == task.id).scalar()
+        return fresh in ("paused", "cancelled")
+
+    history = loop._history(db, chat.conversation_id)
+    result = loop.run(db, prompt, context, history=history, emit=emit, agent=agent,
+                      instructions=chat.conversation.instructions, should_stop=should_stop)
+
+    if result.get("plan_steps"):
+        jobs.set_plan(task, result["plan_steps"])
     meta = {key: result[key] for key in ("cards", "sources", "action", "tools_used")
             if result.get(key) not in (None, [], {})}
     meta["task"] = {"id": task.id, "title": task.title, "run": (task.run_count or 0) + 1}
     chat._store("assistant", result["reply"], kind="task_result", meta=meta,
                 task_id=task.id, case_id=task.case_id)
 
-    waiting = result.get("kind") == "draft"
+    cards = result.get("cards") or []
+    if any(c.get("automatic") for c in cards):
+        jobs.set_state(task, auto_applied=True)
+    waiting = [f"{'change' if c.get('kind') == 'agent' else 'draft'}:{c['action_id']}"
+               for c in cards if c.get("action_id") and (
+                   c.get("status") in ("awaiting_approval", "draft"))]
+    db.commit()
+    if result.get("stopped"):
+        return {"ok": True, "status": None, "summary": "Stopped", "detail": result["reply"]}
+    if result.get("question"):
+        task.question = result["question"][:2000]
+        task.answer = None
+        db.commit()
+        _tell(db, task, agent, f"{agent.name} has a question", task.question)
+        return {"ok": True, "status": "waiting_input", "summary": "Waiting for your answer",
+                "detail": result["reply"]}
     if waiting:
-        from app.services.nudge_service import NudgeService
+        jobs.set_state(task, waiting=waiting)
+        db.commit()
+        _tell(db, task, agent, f"{task.title}: waiting for your approval",
+              f"Open “{chat.conversation.title or 'the chat'}” to review it.")
+        return {"ok": True, "status": "waiting_approval", "summary": "Waiting for approval",
+                "detail": result["reply"]}
+    task.question = None
+    db.commit()
+    return {"ok": True, "status": None, "summary": "Posted to chat", "detail": result["reply"]}
 
-        NudgeService(db).raise_nudge(
-            title=f"{task.title}: waiting for your approval",
-            body=f"Open the chat “{chat.conversation.title or 'New chat'}” to review it.",
-            kind="task_result", task_id=task.id, case_id=task.case_id)
-    detail = result["reply"]
-    return {"ok": True, "status": "needs_review" if waiting and task.schedule == "once" else None,
-            "summary": "Waiting for approval" if waiting else "Posted to chat",
-            "detail": detail}
+
+def _tell(db: Session, task: Task, agent, title: str, body: str) -> None:
+    from app.core import activity_state
+    from app.services.nudge_service import NudgeService
+
+    activity_state.notice(title, body, kind="job",
+                          link={"tab": "ask", "conversation_id": task.conversation_id})
+    NudgeService(db).raise_nudge(title=title, body=body, kind="task_result", task_id=task.id,
+                                 case_id=task.case_id,
+                                 dedupe_key=f"job:{task.id}:{task.run_count or 0}:{title[:40]}")
 
 
 # ---------------------------------------------------------------- helpers

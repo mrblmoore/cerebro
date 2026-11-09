@@ -241,6 +241,18 @@ class ChatService:
         if decision is not None:
             return self._store_tool_result(text, decision, context)
 
+        # A job in this chat asked a question: this message is the answer.
+        from app.services import jobs
+
+        waiting = jobs.waiting_in_chat(self.db, self.conversation_id)
+        if waiting is not None:
+            jobs.answer(self.db, waiting, text)
+            jobs.start_now(waiting.id)
+            reply = {"reply": f"Thanks — carrying on with “{waiting.title}”.", "kind": "completion",
+                     "cards": [{"type": "progress", "status": "complete",
+                                "title": "Answer passed to the job", "detail": waiting.title}]}
+            return self._store_tool_result(text, reply, context)
+
         # With an AI provider, every other message goes to the agent, which
         # decides for itself whether to answer, look something up, draft a
         # reply or create a task. Keyword routing below is only the no-AI
@@ -293,7 +305,10 @@ class ChatService:
 
         history = loop._history(self.db, self.conversation_id)
         self._store("user", text, kind="question")
+        from app.services import agents
+
         result = loop.run(self.db, text, context, emit=emit, history=history,
+                          agent=agents.get(self.db, self.conversation.agent_id),
                           instructions=self.conversation.instructions)
         images = self._document_images_for_answer(text, context)
         if images:

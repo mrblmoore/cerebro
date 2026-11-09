@@ -80,21 +80,26 @@ def polly_ready() -> bool:
     return (settings.LLM_PROVIDER or "").lower() == "bedrock"
 
 
-def synthesize(text: str, fmt: str = "mp3") -> Dict[str, Any]:
-    """Speak ``text``: ``{"audio": bytes, "mime", "provider"}``. Raises SpeechFailed."""
+def synthesize(text: str, fmt: str = "mp3", voice: str = None, rate: float = None) -> Dict[str, Any]:
+    """Speak ``text``: ``{"audio": bytes, "mime", "provider"}``. Raises SpeechFailed.
+
+    ``voice`` and ``rate`` are an agent's own voice; they override Settings.
+    """
     text = (text or "").strip()
     if not text:
         raise SpeechFailed("Nothing to say")
-    rate = min(2.0, max(0.5, float(settings.VOICE_RATE or 1.0)))
+    rate = min(2.0, max(0.5, float(rate or settings.VOICE_RATE or 1.0)))
     problems = []
     for name in order():
         fn = PROVIDERS.get(name)
         if fn is None or (name == "polly" and "polly" not in _overridden and not polly_ready()):
             continue
-        voice = settings.VOICE_NAME if (settings.VOICE_PROVIDER or "auto").lower() == name \
+        chosen = settings.VOICE_NAME if (settings.VOICE_PROVIDER or "auto").lower() == name \
             and settings.VOICE_NAME else DEFAULTS[name]
+        if voice and _fits(name, voice):
+            chosen = voice
         try:
-            audio, mime = fn(text, voice, rate)
+            audio, mime = fn(text, chosen, rate)
         except Exception as exc:  # noqa: BLE001 - try the next voice
             problems.append(f"{name}: {str(exc)[:120]}")
             continue
@@ -103,6 +108,12 @@ def synthesize(text: str, fmt: str = "mp3") -> Dict[str, Any]:
                 audio, mime = to_wav(audio), "audio/wav"
             return {"audio": audio, "mime": mime, "provider": name}
     raise SpeechFailed("No voice could speak: " + ("; ".join(problems) or "none available"))
+
+
+def _fits(provider: str, voice: str) -> bool:
+    """Is ``voice`` a name this provider understands? (Edge names look like en-US-AriaNeural.)"""
+    edge_like = "-" in voice and voice.endswith("Neural")
+    return edge_like if provider == "edge" else not edge_like
 
 
 _overridden: set = set()

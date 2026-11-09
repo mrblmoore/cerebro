@@ -142,6 +142,18 @@ not disappear between tabs.
 
 ---
 
+## Agents and faces
+
+**The left side** lists your agents. Pick one to chat with it; its face sits
+above the chat. Under the agents are **Home** (every agent's work at a
+glance), **Chat**, **Work** (the selected agent's jobs, projects, watches and
+ideas), **Activity**, **Sources** and **Connect**.
+
+**In a narrow window** the list becomes a rail of faces; narrower still, it
+sits behind the ☰ button.
+
+See [AGENTS.md](AGENTS.md) and [FACES.md](FACES.md).
+
 ## Talking to it, and add-ons
 
 There are two ways to talk to Cerebro:

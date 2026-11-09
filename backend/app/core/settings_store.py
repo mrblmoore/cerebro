@@ -614,6 +614,16 @@ FIELDS: List[Field] = [
     Field("VOICE_MIC_MODE", "Mic button", "voice", "", type="select",
           options=[{"value": "review", "label": "Put the words in the box to check"},
                    {"value": "send", "label": "Send straight away"}]),
+    Field("JOBS_PARALLEL", "Jobs at the same time", "secretary",
+          "How many agent jobs may run at once.", type="number", advanced=True),
+    Field("IDEAS_ENABLED", "Suggest jobs (ideas)", "secretary",
+          "Agents suggest jobs from mail, cases and watches, with the evidence. You accept or "
+          "dismiss each one.", type="bool"),
+    Field("IDEAS_AI", "Let the AI suggest jobs too", "secretary",
+          "At most hourly, the AI reads recent mail for anything worth doing.", type="bool"),
+    Field("IDEAS_QUIET_DAYS", "Follow up quiet cases after (days)", "secretary",
+          "A case with nothing happening for this many days gets a follow-up idea.",
+          type="number", advanced=True),
     Field("COPILOT_ACCEPT_COMMANDS", "Let the agent ask Cerebro to do things", "copilot",
           "Local actions only — search, read a document, add to your log. It can "
           "never send mail or messages through Cerebro.",

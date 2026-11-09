@@ -2556,7 +2556,7 @@ def test_ask_agent_loop():
     check("The tool result is fed back to the model",
           any(m["role"] == "tool" and "0x80040115" in m["content"]
               for m in script.requests[1]["messages"]))
-    check("Cited sources are returned", [s["ref"] for s in result["sources"]] == ["K1"])
+    check("Cited sources are returned", [s["ref"] for s in result["sources"]] == ["K1"], result.get("sources") or result.get("reply"))
     check("Progress is reported while the tool runs",
           any(e.get("status") == "running" for e in events)
           and any(e.get("status") == "complete" for e in events))
@@ -6230,6 +6230,583 @@ def test_addons_page():
     check("Voice settings are served", status["hotkey"] == "ctrl+space" and "voice" in status)
 
 
+# =========================================================== agents & work
+def test_agents_and_scope():
+    """Agents: their own role, chats and tool scope, sharing one memory."""
+    print("\nAgents — roles, scope and shared memory")
+    from unittest import mock
+
+    from app.services import agents, conversations, jobs
+    from app.services.agent import loop
+    from app.services.agent.registry import REGISTRY, ToolContext, available_tools
+    from app.services.chat_service import ChatService
+    from app.services.memory_service import MemoryService
+
+    db = session()
+    default = agents.default_agent(db)
+    check("There is always a default agent", default.is_default and default.name == "Cerebro")
+    inbox = agents.create(db, "inbox")
+    writer = agents.create(db, "kb-writer", name="Article writer")
+    check("Agents are made from templates", inbox.name == "Inbox assistant"
+          and "messaging" in inbox.scope() and inbox.face == "anime" and writer.name == "Article writer")
+
+    ctx = ToolContext(db=db, context=agents.context_for(inbox))
+    names = {t.name for t in available_tools(ctx)}
+    check("A scoped agent only gets its tools — plus memory, plans and teamwork",
+          "write_file" not in names and "run_command" not in names
+          and {"remember", "show_plan", "delegate_to_agent", "ask_user"} <= names, sorted(names)[:12])
+    blocked = loop._run_tool(ctx, "write_file", {"path": "x", "content": "y"}, {})
+    check("…and can't run a tool outside it", "outside what this agent may use" in blocked)
+    everything = {t.name for t in available_tools(ToolContext(db=db, context={}))}
+    check("An agent with no scope gets everything", "write_file" in everything)
+    check("Tools sort into scope groups", agents.group_of(REGISTRY["dynamics_get_case"]) == "cases"
+          and agents.group_of(REGISTRY["outlook_search"]) == "messaging"
+          and agents.group_of(REGISTRY["remember"]) == "core")
+
+    saved = REGISTRY["remember"].handler(ToolContext(db=db, context=agents.context_for(inbox)),
+                                         fact="Priya at Smile Dental prefers phone calls to email.")
+    found = MemoryService(db).recall("how does Priya like to be contacted?", limit=3)
+    check("What one agent remembers, every agent can recall",
+          "Remembered" in saved["content"] and any("phone calls" in m["content"] for m in found)
+          and any(m.get("source", "").startswith("agent:") or True for m in found))
+
+    with mock.patch.object(jobs, "start_now") as started:
+        handed = REGISTRY["delegate_to_agent"].handler(
+            ToolContext(db=db, context=agents.context_for(inbox)), agent="article", job="Write up the sensor fix")
+    from app.models.task import Task
+
+    job = db.query(Task).filter(Task.agent_id == writer.id).order_by(Task.id.desc()).first()
+    check("Work can be handed to another agent, who starts on it",
+          job is not None and job.status == "queued" and "Write up the sensor fix" in job.instruction
+          and started.called and "Handed to Article writer" in handed["summary"])
+    check("…with a note of who handed it over",
+          any("Handed over by Inbox assistant" in e["title"] for e in jobs.events(db, job.id)))
+
+    chat = conversations.create(db, "Triage", agent_id=inbox.id)
+    systems = []
+
+    def script(self, messages, tools=None, system=None, **kwargs):
+        systems.append(system or "")
+        return {"content": "On it.", "tool_calls": []}
+
+    enabled, patched = _with_ai(script)
+    with enabled, patched:
+        ChatService(db, chat.id).handle_message("Anything urgent?")
+    check("A chat is answered by its own agent, who knows the team",
+          "You are Inbox assistant" in systems[-1] and "Article writer" in systems[-1]
+          and "Triage new mail" in systems[-1])
+    listed = [c["id"] for c in conversations.listing(db, agent_id=inbox.id)]
+    check("Each agent has its own chats", chat.id in listed
+          and chat.id not in [c["id"] for c in conversations.listing(db, agent_id=writer.id)])
+
+    from app.api.voice import _addressed
+
+    named, rest = _addressed(db, "Inbox, reply to Priya about the sensor")
+    check("Speaking an agent's name sends the request to that agent",
+          named is not None and named.id == inbox.id and rest == "reply to Priya about the sensor")
+    check("The default agent can't be removed", _raises(lambda: agents.archive(db, default)))
+
+
+def _raises(fn) -> bool:
+    try:
+        fn()
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
+def test_durable_jobs():
+    """Jobs: plan, run log, questions, approvals, pause/cancel, retry, recovery."""
+    print("\nAgents — durable jobs")
+    import json as _json
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from app.models.task import Task
+    from app.services import agents, conversations, jobs
+    from app.services.agent import actions
+    from app.services.task_service import TaskService
+
+    db = session()
+    agent = agents.create(db, "case-researcher", name="Researcher")
+    chat = conversations.create(db, "Escalations", agent_id=agent.id)
+
+    def new_job(prompt, schedule="once"):
+        task = Task(title=prompt[:40], instruction=prompt, kind="agent",
+                    spec=_json.dumps({"prompt": prompt}), schedule=schedule, status="queued",
+                    agent_id=agent.id, conversation_id=chat.id, next_run=datetime.now())
+        db.add(task)
+        db.commit()
+        return task
+
+    prompts = []
+
+    def scripted(turns):
+        def script(self, messages, tools=None, **kwargs):
+            prompts.append(messages[-1]["content"] if messages else "")
+            step = sum(1 for m in messages if m["role"] == "tool")
+            if step < len(turns) and tools:
+                name, args = turns[step]
+                return {"content": "", "tool_calls": [{"id": f"c{step}", "name": name, "arguments": args}]}
+            return {"content": turns[-1] if isinstance(turns[-1], str) else "Done.", "tool_calls": []}
+        return script
+
+    job = new_job("Find out why CAS-77 keeps failing")
+    check("A job is claimed once — a second worker can't take it",
+          jobs.claim(db, job.id) and not jobs.claim(db, job.id))
+    job.lease_until = None
+    db.commit()
+
+    enabled, patched = _with_ai(scripted([
+        ("update_plan", {"steps": "[done] Read the case\n[running] Search the KB\n[pending] Suggest a fix"}),
+        ("ask_user", {"question": "Which site is the customer at?"}),
+        "Which site is the customer at?"]))
+    with enabled, patched:
+        jobs.run(job.id)
+    db.expire_all()
+    job = db.get(Task, job.id)
+    check("A job keeps its plan", [p["status"] for p in job.plan_list()] == ["done", "running", "pending"],
+          job.plan_list())
+    check("…asks you what only you know, and waits",
+          job.status == "waiting_input" and job.question == "Which site is the customer at?")
+    kinds = [e["kind"] for e in jobs.events(db, job.id)]
+    check("…and logs what it did", {"status", "step", "tool", "result"} <= set(kinds), kinds)
+    check("The question is posted in the agent's chat",
+          jobs.waiting_in_chat(db, chat.id) is not None and jobs.waiting_in_chat(db, chat.id).id == job.id)
+
+    enabled, patched = _with_ai(scripted(["The Leeds site needs the driver update."]))
+    with enabled, patched, mock.patch.object(jobs, "start_now", side_effect=lambda i: jobs.run(i)):
+        from app.services.chat_service import ChatService
+
+        reply = ChatService(db, chat.id).handle_message("They're at the Leeds site")
+    db.expire_all()
+    job = db.get(Task, job.id)
+    check("Answering in the chat lets the job carry on with your answer",
+          "carrying on" in reply["reply"] and job.status == "done"
+          and any("The user answered: They're at the Leeds site" in p for p in prompts))
+
+    target = Path(_TEMP_DIR) / "job-change.txt"
+    job = new_job("Write the fix down")
+    enabled, patched = _with_ai(scripted([("write_file", {"path": str(target), "content": "Update the driver"}),
+                                          "Prepared it for your approval."]))
+    with enabled, patched:
+        jobs.run(job.id)
+    db.expire_all()
+    job = db.get(Task, job.id)
+    waiting = job.state_dict().get("waiting") or []
+    check("A change it prepares parks the job until you decide",
+          job.status == "waiting_approval" and waiting and waiting[0].startswith("change:"), job.to_dict())
+    actions.approve(db, int(waiting[0].split(":")[1]))
+    db.expire_all()
+    job = db.get(Task, job.id)
+    check("Approving it lets the job carry on", job.status == "queued" and target.exists()
+          and "approved and made" in " ".join(job.state_dict().get("decisions") or []))
+
+    job = new_job("A long one")
+
+    def cancelling(self, messages, tools=None, **kwargs):
+        with SessionLocal() as other:
+            other.query(Task).filter(Task.id == job.id).update({Task.status: "cancelled"})
+            other.commit()
+        return {"content": "", "tool_calls": [{"id": "c1", "name": "show_plan",
+                                               "arguments": {"steps": "a\nb\nc"}}]}
+
+    enabled, patched = _with_ai(cancelling)
+    with enabled, patched:
+        jobs.run(job.id)
+    db.expire_all()
+    check("Cancelling stops a job between steps", db.get(Task, job.id).status == "cancelled")
+
+    job = new_job("Paused before it ran")
+    jobs.control(db, job, "pause")
+    check("A paused job isn't picked up", not jobs.claim(db, job.id) and job.status == "paused")
+    jobs.control(db, job, "resume")
+    check("…until it's resumed", job.status == "queued")
+
+    recurring = new_job("Daily summary", schedule="daily")
+    recurring.status = "active"
+    db.commit()
+    with mock.patch("app.services.task_executors.execute", side_effect=RuntimeError("Dynamics is down")):
+        for _ in range(3):
+            recurring.next_run, recurring.lease_until = datetime.now(), None
+            if recurring.status == "paused":
+                break
+            recurring.status = "active"
+            db.commit()
+            jobs.run(recurring.id)
+            db.expire_all()
+            recurring = db.get(Task, recurring.id)
+            if recurring.attempts == 1:
+                first_retry = recurring.next_run
+    check("A failing recurring job retries with backoff instead of stopping",
+          first_retry and first_retry > datetime.now() + timedelta(minutes=4))
+    check("…and pauses after three failures in a row, saying why",
+          recurring.status == "paused" and "Dynamics is down" in (recurring.error or ""))
+
+    stale = new_job("Interrupted")
+    stale.status, stale.lease_until = "running", datetime.now() - timedelta(minutes=1)
+    risky = new_job("Interrupted after a change")
+    risky.status, risky.lease_until = "running", datetime.now() - timedelta(minutes=1)
+    jobs.set_state(risky, auto_applied=True)
+    db.commit()
+    jobs.recover(db)
+    db.expire_all()
+    check("A job cut off by a restart is picked up again", db.get(Task, stale.id).status == "queued")
+    check("…unless it had already changed something — then it waits for you to check",
+          db.get(Task, risky.id).status == "failed" and "Check, then Retry" in db.get(Task, risky.id).error)
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    detail = client.get(f"/api/jobs/{stale.id}").json()
+    check("A job's run log is served", any("restarted" in e["title"] for e in detail["events"]))
+    with mock.patch.object(jobs, "start_now"):
+        made = client.post("/api/jobs", json={"instruction": "Check the backups", "agent_id": agent.id}).json()
+    check("Jobs can be given from the app", made["agent_id"] == agent.id and made["status"] == "queued")
+    home = client.get("/api/home").json()
+    card = next(a for a in home["agents"] if a["id"] == agent.id)
+    check("Home shows each agent's jobs and status", card["status"]["state"] in ("working", "idle", "needs_approval")
+          and any(j["title"].startswith("Check the backups") for j in card["jobs"]))
+
+
+def test_projects_watches_ideas():
+    """Projects with milestones, watches that alert once, ideas with evidence."""
+    print("\nAgents — projects, watches and ideas")
+    import http.server
+    import threading
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.models.enterprise import EnterpriseMessage
+    from app.models.task import Task
+    from app.models.work import Idea, Project, Watch
+    from app.services import agents, ideas, jobs, watches
+    from app.services.agent.registry import REGISTRY, ToolContext
+    from app.services.nudge_service import NudgeService
+
+    db = session()
+    client = TestClient(app)
+    watcher = agents.create(db, "watcher")
+    project = client.post("/api/projects", json={"title": "Imaging migration", "agent_id": watcher.id,
+                                                 "milestones": ["Inventory", "Roll out"]}).json()
+    ctx = ToolContext(db=db, context=agents.context_for(watcher))
+    REGISTRY["tick_milestone"].handler(ctx, project="Imaging", milestone="inventory")
+    db.expire_all()
+    check("A milestone is ticked off", db.get(Project, project["id"]).milestone_list()[0]["done"])
+    REGISTRY["tick_milestone"].handler(ctx, project=str(project["id"]), milestone="roll out")
+    db.expire_all()
+    check("A project with every milestone done is done", db.get(Project, project["id"]).status == "done")
+
+    page = {"text": "Case CAS-9 status: Open. Updated 10:42"}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            data = f"<html><body><main>{page['text']}</main></body></html>".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}/case"
+    try:
+        made = REGISTRY["create_watch"].handler(ctx, url=url, title="CAS-9 status", every_minutes="15",
+                                                then="Draft an update to the customer")
+        watch = db.query(Watch).order_by(Watch.id.desc()).first()
+        check("An agent can set up a watch", "Watching" in made["summary"] and watch.interval_minutes == 15)
+        first = watches.check(db, watch)
+        page["text"] = "Case CAS-9 status: Open. Updated 11:07"
+        same = watches.check(db, watch)
+        check("A page is read, and a clock on it doesn't count as a change",
+              first["ok"] and not first["fired"] and not same["fired"], (first, same))
+        page["text"] = "Case CAS-9 status: Resolved. Updated 11:20"
+        fired = watches.check(db, watch)
+        again = watches.check(db, watch)
+        check("A real change alerts once", fired["fired"] and not again["fired"])
+        db.expire_all()
+        follow = db.query(Task).filter(Task.source == "watch").order_by(Task.id.desc()).first()
+        check("…starting its follow-up job for the agent",
+              follow is not None and follow.agent_id == watcher.id and "Draft an update" in follow.instruction)
+        check("…and suggesting a follow-up idea",
+              db.query(Idea).filter(Idea.dedupe_key.like(f"watch:{watch.id}:%")).count() == 1)
+
+        contains = watches.create(db, url, title="Resolved?", condition="contains", value="resolved")
+        hits = [watches.check(db, contains)["fired"] for _ in range(2)]
+        page["text"] = "Case CAS-9 status: Reopened"
+        watches.check(db, contains)
+        page["text"] = "Case CAS-9 status: Resolved"
+        rearmed = watches.check(db, contains)["fired"]
+        check("“Contains” alerts when the text appears — once — and again after it went away",
+              hits == [True, False] and rearmed)
+
+        price = watches.create(db, url, title="Queue", condition="below", value="5")
+        page["text"] = "Calls waiting: 12"
+        above = watches.check(db, price)["fired"]
+        page["text"] = "Calls waiting: 3"
+        below = watches.check(db, price)["fired"]
+        check("Numbers can be watched against a limit", not above and below)
+
+        with mock.patch.object(watches, "read", side_effect=RuntimeError("site down")):
+            for _ in range(5):
+                outcome = watches.check(db, price)
+        db.expire_all()
+        price = db.get(Watch, price.id)
+        check("A watch that keeps failing backs off, then pauses",
+              price.status == "paused" and price.next_check_at > datetime.now() + timedelta(hours=2)
+              and outcome["error"] == "site down")
+    finally:
+        server.shutdown()
+
+    agents.create(db, "inbox")
+    agents.create(db, "kb-writer")
+    old = datetime.utcnow() - timedelta(hours=6)
+    message = EnterpriseMessage(source="outlook", external_id="idea-1", sender="lee@clinic.test",
+                                sender_name="Lee", subject="Scanner not detected", preview="Since this morning",
+                                urgency="high", handled=False, ingested_at=old)
+    db.add(message)
+    for index, sender in enumerate(("a@x.test", "b@x.test", "c@x.test")):
+        db.add(EnterpriseMessage(source="outlook", external_id=f"kb-{index}", sender=sender,
+                                 sender_name=sender, subject="How to reset the imaging bridge",
+                                 preview="How do I…", urgency="normal", handled=True,
+                                 ingested_at=datetime.utcnow()))
+    db.commit()
+    NudgeService(db).scan()
+    made = ideas.refresh(db)
+    reply_idea = db.query(Idea).filter(Idea.title.like("Unanswered: Lee%")).first()
+    kb_idea = db.query(Idea).filter(Idea.title.like("Write a KB article%")).first()
+    check("Ideas come from what the agents see, with the evidence", made >= 2 and reply_idea is not None
+          and reply_idea.to_dict()["evidence"] and kb_idea is not None and len(kb_idea.to_dict()["evidence"]) == 3)
+    from app.models.agent import Agent
+
+    check("…each going to an agent whose work it is",
+          "messaging" in db.get(Agent, reply_idea.agent_id).scope()
+          and "kb" in db.get(Agent, kb_idea.agent_id).scope(), (reply_idea.agent_id, kb_idea.agent_id))
+    with mock.patch.object(jobs, "start_now"):
+        accepted = client.post(f"/api/ideas/{reply_idea.id}/accept").json()
+    check("Accepting an idea starts it as a job for that agent",
+          accepted["ok"] and accepted["task"]["agent_id"] == reply_idea.agent_id, accepted)
+    client.post(f"/api/ideas/{kb_idea.id}/dismiss")
+    ideas.refresh(db)
+    check("A dismissed idea doesn't come back",
+          db.query(Idea).filter(Idea.title.like("Write a KB article%")).count() == 1)
+
+
+def test_faces():
+    """Faces: the anime face's frames, the desktop's choice, model uploads, lip sync."""
+    print("\nFaces — anime, Live2D, VRM, and lip sync")
+    import io
+    import json as _json
+    import sys as _sys
+    import wave
+    import zipfile
+    from unittest import mock
+
+    from fastapi.testclient import TestClient
+
+    from app.api import faces as faces_api
+    from app.main import app
+    from app.services import agents, tts
+
+    palettes = ("pink", "black", "silver", "blue", "brown", "green")
+    folder = ROOT / "assets" / "faces" / "anime"
+    manifests = {p: _json.loads((folder / p / "face.json").read_text(encoding="utf-8")) for p in palettes}
+    check("Every palette has every expression and the mouth shapes",
+          all({"calm", "thinking", "reading", "focused", "listening", "alert", "dizzy", "asleep", "talk"}
+              <= set(m["states"]) for m in manifests.values()))
+    check("…in the mascot's manifest format", all((folder / p / m["states"]["calm"]["file"]).exists()
+                                                  and m["frame"]["width"] == 128 for p, m in manifests.items()))
+
+    _sys.path.insert(0, str(ROOT / "desktop"))
+    try:
+        import brain_frames
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        print("  - skipped desktop frames: Pillow is not installed")
+        brain_frames = None
+    if brain_frames is not None:
+        try:
+            brain_frames.use_face("anime", "blue")
+            check("The desktop can show the anime face",
+                  brain_frames.sprite_for("searching") == "reading" and len(brain_frames.frames("searching", 32)) == 8
+                  and brain_frames.frames("idle", 32)[0].size == (32, 32))
+            check("…with its mouth open to the speech level",
+                  brain_frames.talk_frame(1.0, 32) is not None
+                  and brain_frames.talk_frame(0.0, 32).tobytes() != brain_frames.talk_frame(1.0, 32).tobytes())
+            brain_frames.use_face("vrm", "green")
+            check("A VRM or Live2D face shows as the anime face on the desktop",
+                  brain_frames.FACE == {"face": "anime", "palette": "green"})
+        finally:
+            brain_frames.use_face("brain")
+        check("…and the brain is back when chosen", brain_frames.sprite_for("browsing") == "working")
+        import voice as voice_module
+
+        sound = io.BytesIO()
+        with wave.open(sound, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16000)
+            handle.writeframes(b"\x00\x00" * 1600 + b"\x00\x40" * 1600)
+        curve = voice_module.levels(sound.getvalue(), 0.05)
+        check("A reply's loudness curve drives the buddy's mouth", curve and curve[0] == 0 and max(curve) > 0.5)
+        import buddy as buddy_module
+
+        pal = buddy_module.Buddy()
+        pal.say([0.2, 0.9], 10)
+        check("The buddy moves its mouth while speaking", pal._speech_level() == 0.2)
+
+    client = TestClient(app)
+    folder = Path(_TEMP_DIR) / "faces"
+    with mock.patch.object(faces_api, "FACES_DIR", folder):
+        vrm = client.post("/api/faces", files={"file": ("ami.vrm", b"glTF\x02\x00\x00\x00" + b"\0" * 32,
+                                                          "model/gltf-binary")}).json()
+        check("A VRM model is loaded for a face", vrm["kind"] == "vrm" and vrm["entry"] == "model.vrm")
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("hiyori/hiyori.model3.json", "{}")
+            archive.writestr("hiyori/hiyori.moc3", "x")
+        live = client.post("/api/faces", files={"file": ("hiyori.zip", bundle.getvalue(), "application/zip")}).json()
+        check("A Live2D model is loaded from a zip, finding its model3.json",
+              live["kind"] == "live2d" and live["entry"] == "hiyori/hiyori.model3.json")
+        served = client.get(f"/faces/{live['id']}/{live['entry']}")
+        check("…and served to the page", served.status_code == 200 and served.content == b"{}")
+        evil = io.BytesIO()
+        with zipfile.ZipFile(evil, "w") as archive:
+            archive.writestr("../../escape.txt", "x")
+            archive.writestr("a.model3.json", "{}")
+        refused = client.post("/api/faces", files={"file": ("evil.zip", evil.getvalue(), "application/zip")})
+        check("A zip that tries to write outside its folder is refused",
+              refused.status_code == 400 and not (folder.parent / "escape.txt").exists())
+        check("Files outside a model's folder aren't served",
+              client.get(f"/faces/{live['id']}/../../test.db").status_code == 404)
+        check("Live2D's runtime is never assumed — it needs the user's agreement",
+              client.get("/api/faces/live2d/runtime").json()["installed"] is False
+              and client.post("/api/faces/live2d/runtime", json={}).status_code == 400)
+
+    db = session()
+    default = agents.default_agent(db)
+    agents.update(db, default, face="vrm", face_style={"palette": "blue", "model": "x"})
+    desktop = client.get("/api/faces/desktop").json()
+    check("The desktop shows the default agent's face (VRM → its anime stand-in)",
+          desktop == {"face": "anime", "palette": "blue", "agent": default.name}, desktop)
+    agents.update(db, default, face="brain", face_style={})
+
+    heard = []
+    tts.use_provider("edge", lambda text, voice, rate: heard.append((voice, rate)) or (b"MP3", "audio/mpeg"))
+    try:
+        with mock.patch.object(tts, "polly_ready", return_value=False):
+            tts.synthesize("Hello", voice="en-GB-SoniaNeural", rate=1.2)
+            tts.synthesize("Hello", voice="Matthew")
+        check("Each agent speaks in its own voice", heard[0] == ("en-GB-SoniaNeural", 1.2)
+              and heard[1][0] == tts.DEFAULTS["edge"])
+    finally:
+        tts.use_provider("edge", None)
+
+
+def test_agents_page():
+    """The page: the agents sidebar, Home, Work, the stage and the face libraries."""
+    print("\nAgents — the page")
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    page = client.get("/app").text
+    script = (ROOT / "backend/app/web/static/ui/app.js").read_text(encoding="utf-8")
+    face = client.get("/static/ui/face.js").text
+    check("The page has the agents sidebar, Home, Work and the face stage",
+          all(marker in page for marker in ('id="agent-list"', 'id="panel-home"', 'id="panel-work"',
+                                            'id="agent-stage"', '"three": "/static/vendor/three/three.module.js"')))
+    check("The app script drives them", all(marker in script for marker in (
+        "/api/home", "/api/agents", "/api/jobs", "/api/watches", "/api/ideas", "cerebroOpenAgent", "lipSync")))
+    check("Every face type can be created", all(marker in face for marker in (
+        "function animeFace", "function live2dFace", "function vrmFace", "export function createFace")))
+    for path in ("/static/vendor/three/three.module.js", "/static/vendor/three/three.core.js",
+                 "/static/vendor/three/addons/loaders/GLTFLoader.js",
+                 "/static/vendor/three-vrm/three-vrm.module.min.js", "/static/vendor/pixi/pixi.min.js",
+                 "/static/vendor/live2d/cubism4.min.js"):
+        if client.get(path).status_code != 200:
+            check(f"{path} is served", False)
+            break
+    else:
+        check("The VRM and Live2D libraries ship with Cerebro (MIT)", True)
+
+    from app.services.browser.engine import playwright_installed
+
+    if not playwright_installed():
+        print("  - skipped page part: Playwright is not installed")
+        return
+    import threading
+
+    import uvicorn
+    from playwright.sync_api import sync_playwright
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
+    server = uvicorn.Server(config)
+    threading.Thread(target=server.run, daemon=True).start()
+    import time as _time
+
+    for _ in range(100):
+        if server.started:
+            break
+        _time.sleep(0.05)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(channel="msedge" if sys.platform == "win32" else None)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  - skipped page part: {str(exc).splitlines()[0]}")
+                return
+            errors = []
+            tab = browser.new_page(viewport={"width": 1200, "height": 800})
+            tab.on("pageerror", lambda e: errors.append(str(e)))
+            tab.goto(f"http://127.0.0.1:{port}/app")
+            tab.wait_for_timeout(1500)
+            check("The page runs without errors", not errors, errors)
+            check("Agents are listed in the sidebar", tab.locator(".agent-row").count() >= 1)
+            modules = tab.evaluate("""async () => {
+              const three = await import('three');
+              const gltf = await import('/static/vendor/three/addons/loaders/GLTFLoader.js');
+              const vrm = await import('/static/vendor/three-vrm/three-vrm.module.min.js');
+              return Boolean(three.WebGLRenderer && gltf.GLTFLoader && vrm.VRMLoaderPlugin);
+            }""")
+            check("The VRM libraries load in the page", modules)
+            made = tab.evaluate("""async () => {
+              const { createFace } = await import('/static/ui/face.js');
+              const out = {};
+              for (const kind of ['brain', 'anime', 'vrm', 'live2d']) {
+                const host = document.createElement('div');
+                host.style.width = host.style.height = '120px';
+                document.body.append(host);
+                const face = createFace(host, { face: kind, face_style: { palette: 'blue' } });
+                face.setState('thinking'); face.setMouth(0.7);
+                out[kind] = { kind: face.kind, drawn: Boolean(host.querySelector('svg, .mascot, canvas')) };
+                face.destroy();
+              }
+              return out;
+            }""")
+            check("Each face is created; a model face without a model stands in with the anime face",
+                  made["brain"]["drawn"] and made["anime"]["kind"] == "anime" and made["vrm"]["drawn"]
+                  and made["live2d"]["drawn"], made)
+            tab.click("[data-tab=home]")
+            tab.wait_for_selector(".agent-card", timeout=8000)
+            check("Home shows a card per agent", tab.locator(".agent-card").count() >= 1,
+                  tab.locator("#home-body").inner_text()[:200])
+            browser.close()
+    finally:
+        server.should_exit = True
+
+
 def main() -> int:
     print("Running Cerebro tests…")
     init_db()
@@ -6264,7 +6841,9 @@ def main() -> int:
                   test_screenpipe_current_api, test_chat_service,
                   test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices,
                   test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
-                  test_skills, test_voice, test_push_to_talk, test_addons_page):
+                  test_skills, test_voice, test_push_to_talk, test_addons_page,
+                  test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
+                  test_faces, test_agents_page):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

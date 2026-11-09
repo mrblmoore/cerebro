@@ -322,6 +322,14 @@ class Settings(BaseSettings):
     TASK_TICK_SECONDS: int = 30
     #: Surface proactive nudges (unanswered mail, cases resolved but not updated).
     NUDGES_ENABLED: bool = True
+    #: How many agent jobs may run at the same time.
+    JOBS_PARALLEL: int = 2
+    #: Suggest jobs ("ideas") from mail, cases and watches.
+    IDEAS_ENABLED: bool = True
+    #: Also let the AI read recent mail for ideas (at most hourly; uses the AI provider).
+    IDEAS_AI: bool = False
+    #: A case with nothing happening for this many days gets a follow-up idea.
+    IDEAS_QUIET_DAYS: int = 5
 
     # ------------------------------------------------------------- browser
     #: Report every page visited, not just recognised CRM cases.

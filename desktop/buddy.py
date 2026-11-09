@@ -76,6 +76,15 @@ def _caption(snapshot: dict) -> str:
     return text if len(text) <= 34 else text[:33].rstrip() + "…"
 
 
+def _height() -> int:
+    """Canvas height for the current face's frame shape."""
+    try:
+        frame = brain_frames.manifest()["frame"]
+        return int(SPRITE_WIDTH * frame["height"] / frame["width"])
+    except Exception:  # noqa: BLE001 - assets missing: the brain's shape
+        return int(SPRITE_WIDTH * 128 / 148)
+
+
 class Buddy(threading.Thread):
     """The overlay window. Feed it activity snapshots with :meth:`feed`."""
 
@@ -92,6 +101,9 @@ class Buddy(threading.Thread):
         self._shown = False
         self._sliding = False
         self.root = None
+        #: Lip sync: (start time, seconds per level, levels) while Cerebro speaks.
+        self._speech = None
+        self._face_request = None
 
     # ----------------------------------------------------------- public
     def feed(self, snapshot: dict) -> None:
@@ -99,6 +111,16 @@ class Buddy(threading.Thread):
 
     def set_enabled(self, enabled: bool) -> None:
         self.logic.enabled = bool(enabled)
+
+    def set_face(self, face: str, palette: str = None) -> None:
+        """Show the brain or the anime face (Live2D/VRM show as the anime face)."""
+        self._face_request = (face, palette)
+
+    def say(self, levels, step: float) -> None:
+        """Move the mouth in time with speech: ``levels`` (0..1) every ``step`` seconds."""
+        import time
+
+        self._speech = (time.time(), step, list(levels))
 
     def stop(self) -> None:
         self._halt.set()
@@ -135,7 +157,7 @@ class Buddy(threading.Thread):
             root.attributes("-transparentcolor", KEY_COLOUR)
         self.root, self._bg = root, background
 
-        self.canvas = tk.Canvas(root, width=SPRITE_WIDTH, height=int(SPRITE_WIDTH * 128 / 148),
+        self.canvas = tk.Canvas(root, width=SPRITE_WIDTH, height=_height(),
                                 bg=background, highlightthickness=0, cursor="hand2")
         self.canvas.pack()
         self.sprite_item = self.canvas.create_image(0, 0, anchor="nw")
@@ -169,12 +191,13 @@ class Buddy(threading.Thread):
         if sprite not in self._frames:
             from PIL import Image, ImageTk
 
-            height = int(SPRITE_WIDTH * 128 / 148)
+            height = _height()
             key = tuple(int(KEY_COLOUR[i:i + 2], 16) for i in (1, 3, 5)) \
                 if sys.platform == "win32" else (21, 23, 38)
             photos = []
+            smooth = brain_frames.FACE["face"] == "anime"
             for frame in brain_frames.raw_frames(sprite):
-                small = frame.resize((SPRITE_WIDTH, height), Image.BOX)
+                small = frame.resize((SPRITE_WIDTH, height), Image.LANCZOS if smooth else Image.BOX)
                 # A colour key is all-or-nothing, so edges are made hard first.
                 alpha = small.getchannel("A").point(lambda a: 255 if a >= 128 else 0)
                 flat = Image.new("RGB", small.size, key)
@@ -192,7 +215,18 @@ class Buddy(threading.Thread):
                 self.logic.update(self._inbox.get_nowait())
             except queue.Empty:
                 break
-        visible = self.logic.visible()
+        if self._face_request is not None:
+            face, palette = self._face_request
+            self._face_request = None
+            brain_frames.use_face(face, palette)
+            current = (brain_frames.FACE["face"], brain_frames.FACE["palette"])
+            if current != getattr(self, "_face", None):
+                self._face = current
+                self._frames.clear()
+                self._index = 0
+                self.canvas.configure(height=_height())
+        level = self._speech_level()
+        visible = self.logic.visible() or level is not None
         caption = self.logic.caption or "Working…"
         if self.caption.cget("text") != caption:
             self.caption.configure(text=caption)
@@ -203,13 +237,31 @@ class Buddy(threading.Thread):
         elif not visible and self._shown:
             self._hide()
         delay = 120
-        if self._shown:
+        if self._shown and level is not None and "talk" in brain_frames.manifest()["states"]:
+            talk = self._photo_frames("talk")
+            index = min(len(talk) - 1, max(0, round(level * (len(talk) - 1))))
+            self.canvas.itemconfigure(self.sprite_item, image=talk[index])
+            delay = 40
+        elif self._shown:
             sprite = self.logic.sprite
             photos = self._photo_frames(sprite)
             self._index = (self._index + 1) % len(photos)
             self.canvas.itemconfigure(self.sprite_item, image=photos[self._index])
             delay = int(brain_frames.manifest()["states"][sprite]["ms"])
         self.root.after(delay, self._tick)
+
+    def _speech_level(self):
+        """The mouth level now, or ``None`` when not speaking."""
+        if not self._speech:
+            return None
+        import time
+
+        start, step, levels = self._speech
+        index = int((time.time() - start) / max(step, 0.01))
+        if index >= len(levels):
+            self._speech = None
+            return None
+        return levels[index]
 
     def _placement(self):
         self.root.update_idletasks()

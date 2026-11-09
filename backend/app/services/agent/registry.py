@@ -161,7 +161,12 @@ def safe_name(text: str, limit: int = 64) -> str:
 
 
 def available_tools(ctx: ToolContext) -> List[Tool]:
-    return [item for item in list(REGISTRY.values()) if item.is_available(ctx)]
+    """The tools this caller may use: available now, and inside its agent's scope."""
+    from app.services.agents import in_scope
+
+    scope = (ctx.context or {}).get("tool_scope") if ctx is not None else None
+    return [item for item in list(REGISTRY.values())
+            if item.is_available(ctx) and in_scope(item, scope)]
 
 
 _WORD = re.compile(r"[a-z0-9]+")

@@ -1,6 +1,8 @@
 """API route registration."""
 
 from app.api.addons import router as addons_router
+from app.api.agents import router as agents_router
+from app.api.faces import router as faces_router
 from app.api.audio import router as audio_router
 from app.api.cases import router as cases_router
 from app.api.activity import router as activity_router
@@ -38,6 +40,8 @@ ROUTERS = [
     integrations_router,
     addons_router,
     voice_router,
+    agents_router,
+    faces_router,
 ]
 
 __all__ = [
@@ -60,4 +64,6 @@ __all__ = [
     "integrations_router",
     "addons_router",
     "voice_router",
+    "agents_router",
+    "faces_router",
 ]
