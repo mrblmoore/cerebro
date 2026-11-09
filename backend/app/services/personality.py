@@ -74,7 +74,7 @@ PALETTES = ("pink", "black", "silver", "blue", "brown", "green")
 SLOTS = ("calm", "happy", "wink", "love", "thinking", "focused", "listening", "surprised", "sorry",
          "pout", "smug", "dizzy", "asleep")
 GESTURE_EVENTS = ("greeting", "done", "approved", "thinking", "attention", "idle")
-PROVIDERS = ("", "auto", "polly", "sonic", "edge", "windows")
+PROVIDERS = ("", "auto", "kokoro", "polly", "sonic", "edge", "windows")
 ENGINES = ("", "generative", "neural", "long-form", "standard")
 
 

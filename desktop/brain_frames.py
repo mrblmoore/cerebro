@@ -49,21 +49,30 @@ REACTIONS = {"happy": "happy", "wink": "happy", "love": "happy", "smug": "happy"
              "sorry": "sorry", "pout": "sorry", "surprised": "surprised"}
 REACTION_SECONDS = 3.0
 
-#: Which face the tray and the buddy show (the default agent's): set by use_face().
-FACE = {"face": "brain", "palette": "pink", "hair": "long"}
+#: Which face the tray and the buddy show (the agent you're talking to): set by use_face().
+#: ``strips`` is a folder of rendered expression strips (a VRM model's, made by the app).
+FACE = {"face": "brain", "palette": "pink", "hair": "long", "strips": None}
 _REACTION = {"sprite": None, "until": 0.0}
 
 
-def use_face(face: str = "brain", palette: str = None, hair: str = None) -> bool:
-    """Switch the desktop face. Live2D/VRM can't be drawn here: they use the anime face.
+def use_face(face: str = "brain", palette: str = None, hair: str = None, strips: str = None) -> bool:
+    """Switch the desktop face.
 
-    Returns True when it changed (callers then redraw).
+    ``strips`` (a folder with ``face.json`` and expression strips, rendered from
+    the agent's VRM model) is used when given; otherwise a Live2D/VRM face shows
+    as the anime face. Returns True when it changed (callers then redraw).
     """
-    face = "anime" if face in ("anime", "live2d", "vrm") else "brain"
+    from pathlib import Path
+
+    if strips and (Path(strips) / "face.json").is_file():
+        face = "strips"
+    else:
+        strips = None
+        face = "anime" if face in ("anime", "live2d", "vrm", "strips") else "brain"
     palette = palette if palette in ANIME_PALETTES else "pink"
     hair = hair if hair in ANIME_HAIRS else "long"
     wanted = {"face": face, "palette": palette if face == "anime" else FACE["palette"],
-              "hair": hair if face == "anime" else FACE["hair"]}
+              "hair": hair if face == "anime" else FACE["hair"], "strips": strips}
     if wanted == FACE:
         return False
     FACE.update(wanted)
@@ -78,13 +87,17 @@ def react(emotion: str, seconds: float = REACTION_SECONDS) -> bool:
     import time
 
     sprite = REACTIONS.get(emotion or "")
-    if FACE["face"] != "anime" or not sprite:
+    if FACE["face"] not in ("anime", "strips") or not sprite:
         return False
     _REACTION.update(sprite=sprite, until=time.time() + seconds)
     return True
 
 
 def face_dir():
+    if FACE["face"] == "strips":
+        from pathlib import Path
+
+        return Path(FACE["strips"])
     if FACE["face"] == "anime":
         base = mascot_dir().parent / "faces" / "anime" / FACE["palette"]
         styled = base / FACE.get("hair", "long")
@@ -107,12 +120,12 @@ def mascot_dir():
 
 @lru_cache(maxsize=1)
 def manifest() -> Dict:
-    name = "face.json" if FACE["face"] == "anime" else "mascot.json"
+    name = "face.json" if FACE["face"] in ("anime", "strips") else "mascot.json"
     return json.loads((face_dir() / name).read_text(encoding="utf-8"))
 
 
 def sprite_for(state: str) -> str:
-    if FACE["face"] == "anime":
+    if FACE["face"] in ("anime", "strips"):
         import time
 
         states = manifest()["states"]
@@ -127,7 +140,7 @@ def sprite_for(state: str) -> str:
 
 def talk_frame(level: float, size: int = 64):
     """The anime face's mouth open by ``level`` (0..1); ``None`` for the brain."""
-    if FACE["face"] != "anime" or "talk" not in manifest()["states"]:
+    if FACE["face"] not in ("anime", "strips") or "talk" not in manifest()["states"]:
         return None
     talk = raw_frames("talk")
     index = min(len(talk) - 1, max(0, round(level * (len(talk) - 1))))
@@ -160,7 +173,7 @@ def _square(frame, size: int):
     square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     square.alpha_composite(frame, ((side - frame.width) // 2, side - frame.height))
     # Pixel art: BOX when shrinking, NEAREST when growing. The drawn face: LANCZOS.
-    if FACE["face"] == "anime":
+    if FACE["face"] in ("anime", "strips"):
         method = Image.LANCZOS
     else:
         method = Image.BOX if size < side else Image.NEAREST

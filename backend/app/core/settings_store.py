@@ -607,21 +607,23 @@ FIELDS: List[Field] = [
           "Hold these keys while you speak, e.g. ctrl+space, ctrl+shift+space or f9.",
           placeholder="ctrl+space"),
     Field("VOICE_MODEL", "Speech recognition", "voice",
-          "Downloaded once, on first use, and run on this PC.", type="select",
-          options=[{"value": "tiny.en", "label": "Fastest (tiny)"},
-                   {"value": "base.en", "label": "Balanced (base)"},
-                   {"value": "small.en", "label": "Most accurate (small)"}]),
+          "Runs on this PC; nothing is uploaded or downloaded. Balanced is built in; the others "
+          "can be imported from a zip with Import speech model.", type="select",
+          options=[{"value": "base.en", "label": "Balanced (base) — built in"},
+                   {"value": "tiny.en", "label": "Fastest (tiny) — import first"},
+                   {"value": "small.en", "label": "Most accurate (small) — import first"}]),
     Field("VOICE_SPEAK_REPLIES", "Speak replies", "voice",
           "Read a short summary of the answer aloud after you speak.", type="bool"),
     Field("VOICE_PROVIDER", "Voice", "voice",
-          "Amazon Polly needs the AWS keys or profile set for Bedrock (a Bedrock API key can't "
-          "use Polly). Edge voices are free online voices from Microsoft; the Windows voice "
-          "works offline.", type="select",
-          options=[{"value": "auto", "label": "Best available"},
-                   {"value": "polly", "label": "Amazon Polly"},
-                   {"value": "sonic", "label": "Amazon Nova Sonic (most expressive)"},
-                   {"value": "edge", "label": "Microsoft Edge online voices"},
-                   {"value": "windows", "label": "Windows (offline)"},
+          "The offline voice (Kokoro) is built in and works on any network. Nova Sonic goes "
+          "through Amazon Bedrock. Polly and Edge are online services that work networks often "
+          "block. Best available uses the offline voices first.", type="select",
+          options=[{"value": "auto", "label": "Best available (offline first)"},
+                   {"value": "kokoro", "label": "Kokoro — natural, offline (built in)"},
+                   {"value": "sonic", "label": "Amazon Nova Sonic — most expressive (via Bedrock)"},
+                   {"value": "polly", "label": "Amazon Polly (online — may be blocked)"},
+                   {"value": "edge", "label": "Microsoft Edge voices (online — may be blocked)"},
+                   {"value": "windows", "label": "Windows (offline, robotic)"},
                    {"value": "off", "label": "Don't speak"}]),
     Field("VOICE_PERSONALITY", "Personality", "voice",
           "How agents come across — in chat and out loud. Each agent can have its own "

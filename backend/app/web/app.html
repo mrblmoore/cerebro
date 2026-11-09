@@ -6,6 +6,7 @@
   <title>Cerebro</title>
   <link rel="icon" href="/static/cerebro-256.png">
   <link rel="stylesheet" href="/static/ui/app.css">
+  <link rel="stylesheet" href="/static/ui/settings-view.css">
   <!-- Three.js and its add-ons (VRM faces) import "three" by name. -->
   <script type="importmap">{"imports": {"three": "/static/vendor/three/three.module.js", "three/addons/": "/static/vendor/three/addons/"}}</script>
   <script>
@@ -71,6 +72,7 @@
         <button class="tab" role="tab" data-tab="activity" title="Activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span class="tab-label">Activity</span> <span class="count" id="approval-count"></span></button>
         <button class="tab" role="tab" data-tab="sources" title="Sources"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-2Z"/><path d="M8 7h6"/></svg><span class="tab-label">Sources</span></button>
         <button class="tab" role="tab" data-tab="connect" title="Connect"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0Z"/><path d="M12 16v5"/></svg><span class="tab-label">Connect</span></button>
+        <button class="tab" role="tab" data-tab="settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 7.2 19.73l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.27 7.18l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9.92 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 2.82 1.17l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg><span class="tab-label">Settings</span></button>
       </nav>
     </aside>
     <div class="side-scrim" id="side-scrim"></div>
@@ -166,6 +168,9 @@
 
       <section class="panel" id="panel-connect" role="tabpanel">
         <div class="scroll" id="connect-body"></div>
+      </section>
+      <section class="panel" id="panel-settings" role="tabpanel">
+        <div class="scroll" id="settings-body"></div>
       </section>
     </main>
     </div>

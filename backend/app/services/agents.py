@@ -181,10 +181,35 @@ _FIELDS = ("name", "role", "instructions", "face", "voice_name", "voice_rate", "
            "archived")
 
 
+def _builtin_model(template: str):
+    """The built-in VRM model a template starts with (spread across the models), if any."""
+    try:
+        from app.api.faces import builtin_faces
+
+        models = builtin_faces()
+    except Exception:  # noqa: BLE001 - no models: the anime face
+        return None
+    if not models:
+        return None
+    names = list(TEMPLATES)
+    index = names.index(template) if template in names else 0
+    return models[index % len(models)]
+
+
 def create(db, template: str = "blank", **fields):
     from app.models.agent import Agent
 
     base = dict(TEMPLATES.get(template) or TEMPLATES["blank"])
+    # With built-in 3D models installed, a new agent starts with one of them
+    # (each template its own, in turn) instead of the drawn anime face.
+    if "face" not in fields and base.get("face") == "anime":
+        builtin = _builtin_model(template)
+        if builtin is not None:
+            base["face"] = "vrm"
+            base["face_style"] = {**(base.get("face_style") or {}), "model": builtin["id"],
+                                  "entry": builtin["entry"],
+                                  **({"framing": builtin["framing"]} if builtin.get("framing") else {}),
+                                  **({"expressions": builtin["expressions"]} if builtin.get("expressions") else {})}
     base.update({k: v for k, v in fields.items() if v is not None})
     agent = Agent(template=template if template in TEMPLATES else "blank")
     _apply(agent, base)

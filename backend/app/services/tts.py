@@ -2,18 +2,28 @@
 Cerebro's spoken voice — expressive, and shaped by the agent's personality.
 
 Only a short summary of an answer is spoken (:func:`speakable`); the full
-answer stays in the chat. Providers, tried in order for ``VOICE_PROVIDER=auto``:
+answer stays in the chat. ``VOICE_PROVIDER=auto`` ("Best available") uses
+voices that work on any network first:
 
-1. **Amazon Polly** — with the AWS access keys, a profile or the default AWS
+1. **Kokoro** — a natural voice that runs on this PC and ships with Cerebro
+   (:mod:`app.services.kokoro_tts`). Works offline and behind any firewall.
+2. **The voice built into Windows** — offline, always there, robotic.
+3. Online voices, only if both of those fail.
+
+Online voices, chosen in Settings → Voice (any of them may be blocked on a
+work network; the error then says which address couldn't be reached):
+
+* **Amazon Polly** — with the AWS access keys, a profile or the default AWS
    identity set for Bedrock (a Bedrock API key can't call Polly). Engines:
    *generative* (most natural and emotional), *neural*, *long-form*, and
    *standard* (the one with special effects: whispers, soft voice, pitch,
    timbre, breaths). If a voice lacks the engine, Cerebro steps down.
-2. **Amazon Nova Sonic** — when chosen (``VOICE_PROVIDER=sonic``): Bedrock's
+* **Amazon Nova Sonic** — when chosen (``VOICE_PROVIDER=sonic``): Bedrock's
    speech-to-speech model reads the reply with natural, expressive delivery
    (see :mod:`app.services.sonic`).
-3. **Microsoft Edge online voices** (``edge-tts``) — free, no key.
-4. **The voice built into Windows** — offline, always there.
+  It goes through Amazon Bedrock, so it works wherever Bedrock does.
+* **Microsoft Edge online voices** (``edge-tts``) — free, no key; needs
+  speech.platform.bing.com.
 
 **Sound cues.** Spoken text can carry little reactions:
 
@@ -44,8 +54,11 @@ from app.core import logger
 from app.core.config import settings
 
 MAX_SPOKEN_CHARS = 420
-DEFAULTS = {"polly": "Ruth", "sonic": "tiffany", "edge": "en-US-AriaNeural", "windows": ""}
-ALL = ("polly", "sonic", "edge", "windows")
+DEFAULTS = {"kokoro": "af_heart", "polly": "Ruth", "sonic": "tiffany", "edge": "en-US-AriaNeural",
+            "windows": ""}
+ALL = ("kokoro", "polly", "sonic", "edge", "windows")
+#: Voices that need nothing from the network.
+OFFLINE = ("kokoro", "windows")
 
 #: name -> fn(text, voice, rate[, style]) -> (bytes, mime). Tests replace entries.
 PROVIDERS: Dict[str, Callable[..., tuple]] = {}
@@ -246,9 +259,9 @@ def order(preferred: str = None) -> List[str]:
     if chosen == "off":
         return []
     if chosen in ALL:
-        rest = [p for p in ("polly", "edge", "windows") if p != chosen]
-        return [chosen, *rest]
-    return ["polly", "edge", "windows"]
+        # A chosen online voice falls back to the offline ones, never to another online one.
+        return [chosen, *[p for p in OFFLINE if p != chosen]]
+    return ["kokoro", "windows", "polly", "edge"]
 
 
 def polly_ready() -> bool:
@@ -271,6 +284,12 @@ def _ready(name: str) -> bool:
         from app.services import sonic
 
         return sonic.available()[0]
+    if name == "kokoro":
+        from app.services import kokoro_tts
+
+        return kokoro_tts.available()[0]
+    if name == "windows":
+        return sys.platform == "win32"
     return True
 
 
@@ -310,7 +329,7 @@ def synthesize(text: str, fmt: str = "mp3", voice: str = None, rate: float = Non
             else:
                 audio, mime = fn(plain(text), chosen, rate)
         except Exception as exc:  # noqa: BLE001 - try the next voice
-            problems.append(f"{name}: {str(exc)[:160]}")
+            problems.append(explain(name, exc))
             continue
         if audio:
             if fmt == "wav" and mime != "audio/wav":
@@ -319,16 +338,22 @@ def synthesize(text: str, fmt: str = "mp3", voice: str = None, rate: float = Non
     raise SpeechFailed("No voice could speak: " + ("; ".join(problems) or "none available"))
 
 
+_KOKORO_VOICE = re.compile(r"^[a-z]{2}_[a-z]+(?::[\d.]+)?(?:[+,][a-z]{2}_[a-z]+(?::[\d.]+)?)*$")
+
+
 def _fits(provider: str, voice: str) -> bool:
     """Is ``voice`` a name this provider understands?
 
-    Edge names look like en-US-AriaNeural; Nova Sonic's are lower-case (tiffany);
-    Polly's are capitalised (Ruth)."""
+    Kokoro's look like af_heart (or a blend, af_heart+af_bella); Edge's like
+    en-US-AriaNeural; Nova Sonic's are lower-case (tiffany); Polly's are
+    capitalised (Ruth)."""
     edge_like = "-" in voice and voice.endswith("Neural")
+    if provider == "kokoro":
+        return bool(_KOKORO_VOICE.match(voice))
     if provider == "edge":
         return edge_like
     if provider == "sonic":
-        return not edge_like and voice.islower()
+        return not edge_like and voice.islower() and "_" not in voice
     if provider == "polly":
         return not edge_like and voice[:1].isupper()
     return not edge_like
@@ -417,6 +442,29 @@ def _polly(text: str, voice: str, rate: float, style: Dict[str, Any] = None) -> 
                                             VoiceId=voice, Engine=engine)
         return response["AudioStream"].read(), "audio/mpeg"
     raise last
+
+
+_HOSTS = {"polly": "Amazon Polly (polly.<region>.amazonaws.com)", "edge": "speech.platform.bing.com",
+          "sonic": "Amazon Bedrock (bedrock-runtime)"}
+_NETWORK_HINTS = ("cannot connect to host", "getaddrinfo", "name or service not known", "proxy", "403",
+                  "timed out", "timeout", "connection", "ssl", "certificate", "unreachable", "refused",
+                  "could not connect", "endpointconnectionerror", "nodename nor servname")
+
+
+def explain(name: str, exc: Exception) -> str:
+    """One provider's failure, in words a person can act on."""
+    text = str(exc) or type(exc).__name__
+    lowered = text.lower()
+    if name in _HOSTS and any(hint in lowered for hint in _NETWORK_HINTS):
+        return (f"{name}: couldn't reach {_HOSTS[name]} — your network probably blocks it. "
+                "The offline voice (Kokoro) works without the internet.")
+    return f"{name}: {text[:160]}"
+
+
+def _kokoro(text: str, voice: str, rate: float, style: Dict[str, Any] = None) -> tuple:
+    from app.services import kokoro_tts
+
+    return kokoro_tts.speak(text, voice=voice or None, style={**(style or {}), "rate": rate}), "audio/wav"
 
 
 def _sonic(text: str, voice: str, rate: float, style: Dict[str, Any] = None) -> tuple:
@@ -508,7 +556,7 @@ def _windows(text: str, voice: str, rate: float, style: Dict[str, Any] = None) -
         return out.read_bytes(), "audio/wav"
 
 
-_BUILT_IN = {"polly": _polly, "sonic": _sonic, "edge": _edge, "windows": _windows}
+_BUILT_IN = {"kokoro": _kokoro, "polly": _polly, "sonic": _sonic, "edge": _edge, "windows": _windows}
 PROVIDERS.update(_BUILT_IN)
 
 
@@ -556,8 +604,12 @@ def status() -> Dict[str, Any]:
         except (ImportError, ValueError):
             return False
 
+    from app.services import kokoro_tts
+
     sonic_ok, sonic_why = sonic.available()
+    kokoro_ok, kokoro_why = kokoro_tts.available()
     return {"provider": (settings.VOICE_PROVIDER or "auto").lower(), "order": order(),
+            "kokoro": kokoro_ok, "kokoro_detail": kokoro_why,
             "polly": polly_ready(), "polly_engine": settings.VOICE_POLLY_ENGINE,
             "sonic": sonic_ok, "sonic_detail": sonic_why, "sonic_voice": settings.VOICE_SONIC_VOICE,
             "edge": has("edge_tts"), "windows": sys.platform == "win32",
@@ -566,6 +618,10 @@ def status() -> Dict[str, Any]:
 
 def voices(provider: str) -> List[Dict[str, Any]]:
     """Voices to pick from, for the agent editor."""
+    if provider == "kokoro":
+        from app.services import kokoro_tts
+
+        return kokoro_tts.voices()
     if provider == "polly":
         try:
             return [{"id": vid, "engines": engines} for vid, engines in sorted(polly_voices().items())]

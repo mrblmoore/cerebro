@@ -92,6 +92,20 @@ jobs:
           pip install "mcp>=2,<3"
           pip install pyinstaller
 
+      # Everything the app needs ships inside the installer, so it works on a
+      # network that blocks model sites: the speech-to-text model, the offline
+      # voice (Kokoro) and uv. Fetched once and cached; checked by hash/size.
+      - name: Cache the bundled models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: bundled-models-${{ hashFiles('packaging/fetch_models.py') }}
+
+      - name: Fetch the bundled models
+        env:
+          PYTHONUTF8: "1"
+        run: python packaging/fetch_models.py
+
       - name: Run the test suite
         # PYTHONUTF8 makes Python read and write files as UTF-8 regardless of
         # the runner's ANSI codepage. The source tree contains em-dashes and

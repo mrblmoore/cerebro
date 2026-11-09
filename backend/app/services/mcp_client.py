@@ -41,7 +41,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 import requests
 
 from app.core import logger
-from app.core.paths import TOOLS_DIR
+from app.core.paths import BUNDLED_MODELS_DIR, TOOLS_DIR
 
 PROTOCOL_VERSION = "2025-11-25"
 CLIENT_INFO = {"name": "Cerebro", "version": "0.7"}
@@ -424,8 +424,12 @@ def _which(program: str) -> Optional[str]:
     found = shutil.which(program)
     if found:
         return found
-    local = TOOLS_DIR / (program + (".exe" if sys.platform == "win32" else ""))
-    return str(local) if local.is_file() else None
+    name = program + (".exe" if sys.platform == "win32" else "")
+    # Shipped with Cerebro first (works on networks that block downloads), then fetched.
+    for folder in (BUNDLED_MODELS_DIR / "tools", TOOLS_DIR):
+        if (folder / name).is_file():
+            return str(folder / name)
+    return None
 
 
 def ensure_uv() -> str:

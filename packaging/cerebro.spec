@@ -10,6 +10,7 @@
 # They share one bundle directory, so the Python runtime and libraries are
 # included once rather than three times.
 
+import os
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
@@ -30,7 +31,18 @@ datas = [
     (str(ROOT / "browser-extension" / "src"), "browser-extension"),
     (str(BACKEND / ".env.example"), "."),
     (str(ROOT / "VERSION"), "."),
+    # Cerebro's own text-to-phoneme data for the offline voice (misaki's
+    # dictionaries, Apache-2.0) and Kokoro's token table.
+    (str(BACKEND / "app" / "services" / "g2p_data"), "app/services/g2p_data"),
 ]
+# The bundled models (packaging/fetch_models.py): the speech-to-text model,
+# the offline voice and uv. A build without them would need downloads that
+# locked-down networks block, so a release build refuses to go without them.
+_MODELS = ROOT / "models"
+if (_MODELS / "MANIFEST.json").exists():
+    datas.append((str(_MODELS), "models"))
+elif os.environ.get("CI"):
+    raise SystemExit("models/ is missing: run python packaging/fetch_models.py before building.")
 datas += collect_data_files("rapidocr_onnxruntime")
 for name in ("README.md", "GETTING_STARTED.md"):
     if (ROOT / name).exists():
@@ -118,6 +130,8 @@ hiddenimports = [
     "app.services.agent.secretary_tools", "app.api.secretary",
     # 0.9: personality and expressive voice, Nova Sonic.
     "app.services.personality", "app.services.sonic",
+    # 0.10: offline voice and text-to-phoneme.
+    "app.services.g2p", "app.services.kokoro_tts", "onnxruntime",
     "edge_tts", "faster_whisper", "ctranslate2", "av", "tokenizers", "numpy",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")

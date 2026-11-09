@@ -1,0 +1,10 @@
+us_gold.json.gz and us_silver.json.gz are the American English pronunciation
+dictionaries from misaki 0.9.4 (https://github.com/hexgrad/misaki), by hexgrad,
+licensed under the Apache License 2.0 (see LICENSE in this folder).
+
+Changes: the original us_gold.json and us_silver.json were gzip-compressed for
+size. Their contents are unchanged.
+
+Cerebro's own text-to-phoneme code (app/services/g2p.py) reads these
+dictionaries. It follows misaki's dictionary-lookup and suffix rules, without
+misaki's spaCy tagging or eSpeak fallback.

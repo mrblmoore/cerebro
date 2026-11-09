@@ -6010,6 +6010,9 @@ def test_voice():
     heard = []
     speech.set_transcriber(lambda audio, prompt: heard.append((len(audio), prompt)) or "summarise case CAS-1")
     spoken_calls = []
+    # The offline voices are covered in test_voice_expression; here they're unavailable,
+    # so an online voice is tried after them.
+    tts.use_provider("kokoro", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no model")))
     tts.use_provider("polly", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no AWS")))
     tts.use_provider("edge", lambda text, voice, rate: spoken_calls.append(text) or (b"MP3DATA", "audio/mpeg"))
     systems = []
@@ -6033,7 +6036,7 @@ def test_voice():
             check("A spoken request is acted on", body["transcript"] == "summarise case CAS-1"
                   and "waiting on the customer" in body["reply"], body)
             check("…as a spoken request, answered briefly", "This request was SPOKEN" in systems[-1])
-            check("…with a spoken summary from the next voice when Polly isn't available",
+            check("…with a spoken summary from the next voice when the others aren't available",
                   body["speech"]["provider"] == "edge" and base64.b64decode(body["speech"]["audio"]) == b"MP3DATA")
             check("Only plain words are spoken — no Markdown, citations or links",
                   spoken_calls[-1] == "Case CAS-1 is waiting on the customer . See the link for more.",
@@ -6113,6 +6116,7 @@ def test_voice():
             print("  - skipped MP3 conversion: PyAV is not installed")
     finally:
         speech.set_transcriber(None)
+        tts.use_provider("kokoro", None)
         tts.use_provider("polly", None)
         tts.use_provider("edge", None)
 
@@ -6411,11 +6415,11 @@ def test_voice_expression():
                 spoken = tts.synthesize("Yay! [giggle]", style={"provider": "sonic", "voice": "matthew"})
             check("Nova Sonic voices replies when chosen, with the cues as directions",
                   spoken["provider"] == "sonic" and sonic_calls == [("Yay! (giggles)", "matthew")], sonic_calls)
-            tts.use_provider("edge", lambda text, voice, rate: (b"MP3", "audio/mpeg"))
+            tts.use_provider("kokoro", lambda text, voice, rate, style: (b"RIFF", "audio/wav"))
             with mock.patch.object(sonic, "speak", lambda *a, **k: (_ for _ in ()).throw(sonic.SonicUnavailable("x"))):
                 spoken = tts.synthesize("Hello [giggle]", style={"provider": "sonic"})
-            tts.use_provider("edge", None)
-            check("…and the next voice speaks if Nova Sonic fails", spoken["provider"] == "edge")
+            tts.use_provider("kokoro", None)
+            check("…and the offline voice speaks if Nova Sonic fails", spoken["provider"] == "kokoro")
 
         # ---- Talk live
         asked, events = [], []
@@ -6520,6 +6524,149 @@ def test_voice_expression():
                 check("Other websites can't open a live session", True)
     finally:
         sonic.set_client_factory(None)
+
+
+def test_offline_voice():
+    """0.10: speech that works on a locked-down network — Kokoro and a bundled speech model."""
+    print("\nVoice — offline (Kokoro, bundled speech model)")
+    import io
+    import sys as _sys
+    import wave
+    import zipfile
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import g2p, kokoro_tts, speech, tts
+
+    # ---- text → phonemes, without eSpeak or spaCy
+    check("Words come from the pronunciation dictionary", g2p.phonemize("Hello there") == "həlˈO ðɛɹ",
+          g2p.phonemize("Hello there"))
+    check("…with English endings worked out", g2p.word_phonemes("printers") == "pɹˈɪntəɹz"
+          and g2p.word_phonemes("checked") == "ʧˈɛkt", (g2p.word_phonemes("printers"), g2p.word_phonemes("checked")))
+    check("Cerebro's own words are said right", g2p.word_phonemes("Cerebro") == "səɹˈɛbɹO")
+    check("Numbers, times, money and case numbers are said as words",
+          g2p.normalise("CAS-01234 at 9:30 costs $5 (25%) in 2026")
+          == "CAS zero one two three four at nine thirty costs five dollars (twenty five percent) in twenty twenty six",
+          g2p.normalise("CAS-01234 at 9:30 costs $5 (25%) in 2026"))
+    check("Acronyms are spelled out", g2p.word_phonemes("VPN") == "vˌipˌiˈɛn" and "ˈɛs" in g2p.word_phonemes("CAS"))
+    unknown = g2p.phonemize("Zorbulax")
+    check("An unknown word still gets a pronunciation", unknown and unknown[0] == "z" and "ˈ" in unknown, unknown)
+    check("Only Kokoro's own symbols come out",
+          all(c in g2p.VOCAB for c in g2p.phonemize("Hehe — it's done! Ünïcödé & “quotes”, 100%…")))
+
+    # ---- the offline voice comes first, and a blocked online voice is explained
+    with mock.patch.object(settings, "VOICE_PROVIDER", "auto"):
+        check("Best available tries the offline voices first", tts.order()[:2] == ["kokoro", "windows"])
+    check("A chosen online voice falls back to the offline ones, not to another online one",
+          tts.order("polly") == ["polly", "kokoro", "windows"] and tts.order("edge") == ["edge", "kokoro", "windows"])
+    message = tts.explain("edge", RuntimeError("Cannot connect to host speech.platform.bing.com:443 ssl:default"))
+    check("A blocked online voice says which address was blocked and what works instead",
+          "speech.platform.bing.com" in message and "blocks" in message and "Kokoro" in message, message)
+    check("Kokoro voice names are recognised (blends too)", tts._fits("kokoro", "af_heart+af_bella")
+          and not tts._fits("kokoro", "tiffany") and not tts._fits("sonic", "af_heart"))
+
+    # ---- the Kokoro engine itself (needs the model; in CI the real voices too)
+    ok, why = kokoro_tts.available()
+    if not ok:
+        print(f"  - skipped Kokoro synthesis: {why}")
+    else:
+        names = [v["id"] for v in kokoro_tts.voices()]
+        voice = "af_heart" if "af_heart" in names else names[0]
+
+        def seconds(wav):
+            with wave.open(io.BytesIO(wav)) as handle:
+                return handle.getnframes() / handle.getframerate(), handle.getframerate()
+
+        def loudness(wav):
+            import numpy as np
+
+            with wave.open(io.BytesIO(wav)) as handle:
+                samples = np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2").astype("float32")
+            return float(np.sqrt(np.mean(samples ** 2)))
+
+        line = "The printer on the second floor is working again."
+        plain = kokoro_tts.speak(line, voice=voice)
+        length, rate = seconds(plain)
+        check("Kokoro speaks offline, as 24 kHz audio", rate == 24000 and 1.0 < length < 12, (rate, length))
+        fast, _ = seconds(kokoro_tts.speak(f"[excited]{line}[/excited]", voice=voice))
+        slow, _ = seconds(kokoro_tts.speak(f"[slow]{line}[/slow]", voice=voice))
+        check("Excited is quicker and slow is slower", fast < length < slow, (fast, length, slow))
+        check("A whisper is quieter", loudness(kokoro_tts.speak(f"[whisper]{line}[/whisper]", voice=voice))
+              < loudness(plain) * 0.7)
+        if len(names) > 1:
+            mixed = kokoro_tts.blend(f"{names[0]}+{names[1]}")
+            check("Voices can be blended", mixed.shape == kokoro_tts.blend(names[0]).shape)
+        spoken = tts.synthesize("Yay, all done! [giggle]", style={"provider": "kokoro", "voice": voice})
+        check("Kokoro is a voice like any other", spoken["provider"] == "kokoro" and spoken["mime"] == "audio/wav")
+
+        # In CI both real models are bundled: what Kokoro says, Whisper must hear.
+        if "af_heart" in names and speech.installed() and speech.model_folder("base.en"):
+            with mock.patch.object(settings, "VOICE_MODEL", "base.en"):
+                heard = speech.transcribe(kokoro_tts.speak(
+                    "Hello! Your case is closed and the printer is fixed.", voice="af_heart"))["text"].lower()
+            words = {"hello", "your", "case", "is", "closed", "and", "the", "printer", "fixed"}
+            got = {w.strip(".,!?") for w in heard.split()}
+            check("Kokoro is understandable: Whisper hears what it said", len(words & got) >= 7, heard)
+        else:
+            print("  - skipped the Kokoro → Whisper round trip: needs the real models (CI has them)")
+
+    # ---- speech-to-text loads its model from a folder, never from the internet
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(dir=_TEMP_DIR))
+    (root / "whisper" / "base.en").mkdir(parents=True)
+    for name in ("model.bin", "config.json"):
+        (root / "whisper" / "base.en" / name).write_bytes(b"x")
+    loaded = []
+
+    class FakeWhisper:
+        def __init__(self, path, **kwargs):
+            loaded.append((path, kwargs, dict(__import__("os").environ)))
+
+    fake_module = type(_sys)("faster_whisper")
+    fake_module.WhisperModel = FakeWhisper
+    with mock.patch.object(speech, "model_folders", lambda: [root / "whisper"]), \
+            mock.patch.dict(_sys.modules, {"faster_whisper": fake_module}), \
+            mock.patch.object(speech, "installed", lambda: True), \
+            mock.patch.object(settings, "VOICE_MODEL", "base.en"):
+        speech._model, speech._model_name = None, ""
+        speech.model()
+        check("The speech model is loaded from its folder, by path",
+              loaded and loaded[-1][0] == str(root / "whisper" / "base.en") and "download_root" not in loaded[-1][1],
+              loaded[-1:])
+        check("…with the model site switched off", loaded[-1][2].get("HF_HUB_OFFLINE") == "1")
+        check("The installed models are listed", speech.installed_models() == ["base.en"])
+        with mock.patch.object(settings, "VOICE_MODEL", "small.en"):
+            speech._model, speech._model_name = None, ""
+            calls = len(loaded)
+            try:
+                speech.model()
+                check("A model that isn't installed says how to get it, without going online", False)
+            except speech.SpeechUnavailable as exc:
+                check("A model that isn't installed says how to get it, without going online",
+                      "import" in str(exc).lower() and len(loaded) == calls, str(exc))
+            bundle = io.BytesIO()
+            with zipfile.ZipFile(bundle, "w") as archive:
+                for name in ("model.bin", "config.json", "tokenizer.json"):
+                    archive.writestr(f"faster-whisper-small.en/{name}", "x")
+            with mock.patch.object(speech, "MODELS_DIR", root):
+                result = speech.import_model(bundle.getvalue())
+            check("A speech model can be imported from a zip", result["name"] == "small.en"
+                  and (root / "whisper" / "small.en" / "tokenizer.json").is_file(), result)
+            speech.model()
+            check("…and is then used", loaded[-1][0] == str(root / "whisper" / "small.en"))
+            evil = io.BytesIO()
+            with zipfile.ZipFile(evil, "w") as archive:
+                archive.writestr("m/model.bin", "x")
+                archive.writestr("m/config.json", "x")
+                archive.writestr("m/../../escape.txt", "x")
+            try:
+                with mock.patch.object(speech, "MODELS_DIR", root):
+                    speech.import_model(evil.getvalue(), "evil")
+                check("A zip that tries to write outside its folder is refused", False)
+            except speech.SpeechUnavailable:
+                check("A zip that tries to write outside its folder is refused", not (root.parent / "escape.txt").exists())
+        speech._model, speech._model_name = None, ""
 
 
 def test_browser_worker_shutdown():
@@ -7116,7 +7263,7 @@ def test_faces():
                   and brain_frames.talk_frame(0.0, 32).tobytes() != brain_frames.talk_frame(1.0, 32).tobytes())
             brain_frames.use_face("vrm", "green")
             check("A VRM or Live2D face shows as the anime face on the desktop",
-                  brain_frames.FACE == {"face": "anime", "palette": "green", "hair": "long"})
+                  brain_frames.FACE == {"face": "anime", "palette": "green", "hair": "long", "strips": None})
         finally:
             brain_frames.use_face("brain")
         check("…and the brain is back when chosen", brain_frames.sprite_for("browsing") == "working")
@@ -7181,7 +7328,8 @@ def test_faces():
     agents.update(db, default, face="vrm", face_style={"palette": "blue", "model": "x", "hair": "bob"})
     desktop = client.get("/api/faces/desktop").json()
     check("The desktop shows the default agent's face (VRM → its anime stand-in)",
-          desktop == {"face": "anime", "palette": "blue", "hair": "bob", "agent": default.name, "react": None},
+          desktop == {"face": "anime", "palette": "blue", "hair": "bob", "agent": default.name,
+                      "agent_id": default.id, "react": None, "strips": None},
           desktop)
     client.post("/api/faces/react", json={"emotion": "happy"})
     check("…and the app's passing reaction", client.get("/api/faces/desktop").json()["react"] == "happy")
@@ -8120,7 +8268,7 @@ def main() -> int:
                   test_screenpipe_current_api, test_chat_service,
                   test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices,
                   test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
-                  test_skills, test_voice, test_voice_expression, test_browser_worker_shutdown, test_push_to_talk, test_addons_page,
+                  test_skills, test_voice, test_voice_expression, test_offline_voice, test_browser_worker_shutdown, test_push_to_talk, test_addons_page,
                   test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
                   test_faces, test_agents_page, test_desktop_apps,
                   test_desktop_apps_notepad, test_keep_it_updated, test_attached_files,
