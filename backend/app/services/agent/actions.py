@@ -55,6 +55,8 @@ def card(action: AgentAction) -> dict:
         "detail": action.summary, "preview": action.preview_dict(),
         "approve_label": "Approve", "discard_label": "Discard",
         "automatic": bool(result.get("automatic")),
+        "after_image": result.get("after_image"),
+        "unconfirmed": bool(result.get("unconfirmed")),
         "can_undo": can_undo(action),
         "error": action.error,
     }
@@ -67,6 +69,14 @@ def can_undo(action: AgentAction) -> bool:
 
 def auto_apply(integration: str) -> bool:
     """Has the user let changes in ``integration`` skip approval?"""
+    if (integration or "").startswith("app:"):
+        from app.services import desktop_apps
+
+        return desktop_apps.auto_apply(integration.split(":", 1)[1])
+    if integration == "documents":
+        from app.core.config import settings
+
+        return bool(settings.DOCUMENTS_AUTO_APPLY)
     try:
         from app.services import browser
 
@@ -89,6 +99,29 @@ def propose_or_apply(db: Session, tool: str, integration: str, title: str, args:
         db.refresh(action)
     return {"action": action, "card": card(action), "outcome": outcome,
             "applied": action.status == "done"}
+
+
+def offer(ctx, tool: str, integration: str, title: str, args: dict, preview: dict = None,
+          summary: str = None) -> Dict[str, Any]:
+    """Prepare a change for a tool — or make it now when the user switched
+    ``integration`` to apply automatically — and tell the model which happened."""
+    made = propose_or_apply(ctx.db, tool, integration, title, args, preview, summary)
+    ctx.drafts.append(made["card"])
+    action = made["action"]
+    if made["applied"]:
+        result = action.result_dict()
+        note = (" The page didn't visibly change — tell the user to check it."
+                if result.get("unconfirmed") else "")
+        return {"content": f"Done automatically (the user lets {integration} changes apply "
+                           f"without asking): {result.get('detail') or title}. It's logged as "
+                           f"change #{action.id}.{note}", "summary": "Applied automatically"}
+    if action.status == "failed":
+        return {"content": f"It was tried automatically and failed: {action.error}. Don't retry "
+                           "it yourself — tell the user, who can retry it from the card.",
+                "summary": "Failed"}
+    return {"content": f"“{title}” prepared as change #{action.id}; it happens only when the user "
+                       "approves it. Say what it will do; never claim it's done.",
+            "summary": "Waiting for approval"}
 
 
 def propose(db: Session, tool: str, integration: str, title: str, args: dict,
@@ -194,7 +227,8 @@ def _result_json(result: dict) -> str:
     text = json.dumps(result, default=str)
     if len(text) <= 4000:
         return text
-    keep = {key: result[key] for key in ("detail", "url", "undo", "automatic") if key in result}
+    keep = {key: result[key] for key in ("detail", "url", "undo", "automatic", "after_image",
+                                         "unconfirmed", "output") if key in result}
     return json.dumps(keep, default=str)[:4000]
 
 
@@ -246,6 +280,8 @@ def refresh_cards(db: Session, cards: list) -> list:
         cards = [{**c, **_draft_card(current[c["action_id"]])}
                  if isinstance(c, dict) and c.get("type") == "draft" and c.get("action_id") in current
                  else c for c in cards]
+    if any(isinstance(c, dict) and c.get("type") == "keep_updated" for c in cards or []):
+        cards = _refresh_keep(db, cards)
     ids = [c.get("action_id") for c in cards or []
            if isinstance(c, dict) and c.get("kind") == "agent" and c.get("action_id")]
     if not ids:
@@ -268,3 +304,17 @@ def discard(db: Session, action_id: int) -> Dict[str, Any]:
     return {"reply": "Discarded. Nothing was changed.", "kind": "completion",
             "agent_action": action.to_dict(),
             "cards": [_completion("Change discarded", "Nothing was changed")]}
+
+
+def _refresh_keep(db: Session, cards: list) -> list:
+    """"Keeping X updated" cards show the job as it is now."""
+    from app.models.task import Task
+    from app.services import keeping
+
+    out = []
+    for c in cards:
+        if isinstance(c, dict) and c.get("type") == "keep_updated":
+            task = db.get(Task, c.get("task_id"))
+            c = keeping.card(db, task) if task is not None else {**c, "status": "cancelled"}
+        out.append(c)
+    return out

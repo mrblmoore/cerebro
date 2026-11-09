@@ -185,7 +185,7 @@ def _browser_on(ctx: ToolContext) -> bool:
       "buttons and fields to use with browse_click and browse_type. Use the site's own tools "
       "(search/read) first when they can do the job.",
       schema(["url"], url=string_param("Full address of the page.")),
-      label="Open a page", activity="reading", available=_browser_on)
+      label="Open a page", activity="browsing", available=_browser_on)
 def browse_open(ctx: ToolContext, url: str = "", **_) -> dict:
     from app.services.browser.connector import SignInRequired
 
@@ -216,7 +216,7 @@ def browse_open(ctx: ToolContext, url: str = "", **_) -> dict:
 @tool("browse_read",
       "Read the page that is open in the hidden browser again (after it changed), with its "
       "numbered links, buttons and fields.",
-      schema([]), label="Read the page", activity="reading", available=_browser_on)
+      schema([]), label="Read the page", activity="browsing", available=_browser_on)
 def browse_read(ctx: ToolContext, **_) -> dict:
     try:
         snap = _in_tab(_snapshot, "Reading the page")
@@ -308,15 +308,17 @@ def browse_click(ctx: ToolContext, ref: str = "", why: str = "", **_) -> dict:
                "url": snap["url"]}
     if outcome.get("image"):
         preview["image"] = outcome["image"]
-    action = actions.propose(
-        ctx.db, "browse_click", "browser", f"Click “{element['label'] or 'button'}” on {host}",
+    connector = site_for(snap["url"])
+    integration = connector.name if connector is not None else "browser"
+    result = actions.offer(
+        ctx, "browse_click", integration, f"Click “{element['label'] or 'button'}” on {host}",
         {"url": snap["url"], "ref": element["ref"], "label": element["label"], "fills": fills},
         preview=preview, summary=why or f"On {outcome['site']}")
-    ctx.drafts.append(actions.card(action))
-    return {"content": f"That click would submit or change something, so it's prepared as change "
-                       f"#{action.id} with a screenshot, waiting for the user's approval. Tell them "
-                       "what it will do; nothing has been sent yet.",
-            "summary": "Waiting for approval"}
+    if result["summary"] == "Waiting for approval":
+        result["content"] = ("That click would submit or change something, so it's prepared as a "
+                             "change with a screenshot, waiting for the user's approval. Tell them "
+                             "what it will do; nothing has been sent yet.")
+    return result
 
 
 # ---------------------------------------------------------- executor
@@ -334,6 +336,7 @@ def _do_click(db, args: dict) -> dict:
                 if target and target["editable"]:
                     _element(page, target["ref"]).fill(fill["value"])
         snap = _snapshot(page)
+        before_text = snap["text"]
         target = next((el for el in snap["elements"] if el["ref"] == args["ref"]
                        and el["label"] == args["label"]), None) or _find_by_label(page, args["label"])
         if target is None:
@@ -345,12 +348,26 @@ def _do_click(db, args: dict) -> dict:
             raise BrowseError(f"The click may or may not have gone through ({exc}). Check "
                               f"{connector.label} before trying again.") from exc
         connector.settle(page, 6000)
-        return {"title": page.title(), "url": page.url}
+        after = _snapshot(page)
+        return {"title": page.title(), "url": page.url, "image": _screenshot(page),
+                "changed": after["text"] != before_text or page.url.split("#")[0] != args["url"].split("#")[0]}
 
     result = _in_tab(work, "Making the approved click")
     logger.info("browser", "Approved click made", {"url": result["url"]})
-    return {"detail": f"Clicked “{args['label']}” — now on {result['title'] or result['url']}",
-            "url": result["url"]}
+    out = {"detail": f"Clicked “{args['label']}” — now on {result['title'] or result['url']}",
+           "url": result["url"], "after_image": result.get("image")}
+    if not result.get("changed"):
+        # Nothing visibly happened: it may not have gone through. Never retried.
+        out["unconfirmed"] = True
+        out["detail"] += " — but the page didn't change, so check it went through"
+        try:
+            from app.core import activity_state
+
+            activity_state.notice(f"Check: {args['label']}", out["detail"], kind="change",
+                                  link={"tab": "activity"})
+        except Exception:  # noqa: BLE001
+            pass
+    return out
 
 
 # ------------------------------------------------------- take control

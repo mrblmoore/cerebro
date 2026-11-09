@@ -116,8 +116,19 @@ class GenericSiteConnector(BrowserConnector):
         self.definition["enabled"] = bool(enabled)
         save_definition(self.name, self.definition)
 
+    # Changes on this site (a click that saves or submits) can be made
+    # without asking, per site — like SharePoint's switch.
+    @property
+    def auto_apply(self) -> bool:
+        return bool(self.definition.get("auto_apply"))
+
+    def set_auto_apply(self, enabled: bool) -> None:
+        self.definition["auto_apply"] = bool(enabled)
+        save_definition(self.name, self.definition)
+
     def status(self) -> Dict[str, Any]:
-        return {**super().status(), "generic": True,
+        return {**super().status(), "generic": True, "can_auto_apply": True,
+                "auto_apply": self.auto_apply,
                 "description": self.definition.get("description"),
                 "added_by": self.definition.get("added_by")}
 
@@ -386,7 +397,7 @@ def _register_tools(connector: GenericSiteConnector) -> None:
     register_dynamic(Tool(
         f"{prefix}_read", f"Open a page on {label} (a result link, or a path) and read its text.",
         read, schema([], url=string_param("The page address or path; empty for the start page.")),
-        "read", f"Read {label}", "reading", enabled, keywords=keywords), owner)
+        "read", f"Read {label}", "browsing", enabled, keywords=keywords), owner)
     register_dynamic(Tool(
         f"{prefix}_api_get", f"GET a JSON address on {label} with the user's signed-in session "
                              "(for sites with their own API under the same address). Read-only.",

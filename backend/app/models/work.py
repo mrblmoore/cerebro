@@ -92,6 +92,10 @@ class Watch(Base):
     checks = Column(Integer, nullable=True)
     #: A job prompt to run when it fires (optional).
     follow_up = Column(Text, nullable=True)
+    #: An existing job to run when it fires ("keep it updated" from a source).
+    task_id = Column(Integer, nullable=True, index=True)
+    #: A watched file's "modified time:size", so unchanged files aren't re-read.
+    last_stamp = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
     def to_dict(self) -> dict:
@@ -102,7 +106,17 @@ class Watch(Base):
                 "last_value": (self.last_value or "")[:300], "last_alert_at": _iso(self.last_alert_at),
                 "failures": self.failures or 0, "last_error": self.last_error,
                 "checks": self.checks or 0, "follow_up": self.follow_up,
+                "task_id": self.task_id, "kind": "file" if is_file_target(self.target) else "page",
                 "created_at": _iso(self.created_at)}
+
+
+def is_file_target(target: str) -> bool:
+    """A local or synced file (C:\\…, \\\\server\\…, /…, file://…) rather than a web page."""
+    import re
+
+    text = (target or "").strip()
+    return (text.lower().startswith("file:") or bool(re.match(r"^[a-zA-Z]:[\\/]", text))
+            or text.startswith("\\\\") or text.startswith("/"))
 
 
 class Idea(Base):

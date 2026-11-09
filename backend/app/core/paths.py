@@ -54,6 +54,8 @@ AUDIO_DIR = DATA_DIR / "audio"
 VECTOR_DIR = DATA_DIR / "vectors"
 ACTIVITY_DIR = DATA_DIR / "activity"
 CHAT_IMAGES_DIR = DATA_DIR / "chat_images"
+#: Documents attached in chat (Word, Excel, PDF, logs…), one folder each.
+UPLOADS_DIR = DATA_DIR / "uploads"
 #: The hidden browser's own profile: cookies and sign-ins for RightAnswers
 #: and Dynamics live here, never in Cerebro's settings.
 BROWSER_PROFILE_DIR = DATA_DIR / "browser_profile"

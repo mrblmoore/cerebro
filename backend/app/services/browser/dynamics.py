@@ -70,6 +70,7 @@ class DynamicsConnector(BrowserConnector):
     label = "Dynamics 365"
     enabled_setting = "DYNAMICS_ENABLED"
     url_setting = "DYNAMICS_URL"
+    auto_apply_setting = "DYNAMICS_AUTO_APPLY"
     default_selectors: Dict[str, Any] = {}
 
     def __init__(self):

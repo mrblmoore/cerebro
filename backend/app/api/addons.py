@@ -42,6 +42,13 @@ class SiteIn(BaseModel):
     description: Optional[str] = None
 
 
+class AppIn(BaseModel):
+    label: str
+    path: Optional[str] = None
+    window: Optional[str] = None
+    description: Optional[str] = None
+
+
 class SkillIn(BaseModel):
     name: str
     description: str = ""
@@ -122,6 +129,43 @@ def add_site(body: SiteIn, db: Session = Depends(get_db)) -> Dict[str, Any]:
         settings_store.update({"BROWSER_AUTOMATION_ENABLED": True})
     capabilities.record_added(db, "site", outcome["name"], outcome["label"], outcome["url"], "user")
     return {"ok": True, **outcome}
+
+
+@router.post("/apps")
+def add_app(body: AppIn, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    from app.services import desktop_apps
+
+    try:
+        data = desktop_apps.register(db, body.label, path=body.path or "", window=body.window or "",
+                                     added_by="user", description=body.description or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    capabilities.record_added(db, "app", data["name"], data["label"],
+                              body.path or body.window or "", "user")
+    return {"ok": True, "available": desktop_apps.available(), **data}
+
+
+@router.post("/{kind}/{name}/auto-apply")
+def set_auto_apply(kind: str, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Let a website's or desktop app's changes apply without asking."""
+    enabled = bool(body.get("enabled"))
+    if kind == "app":
+        from app.services import desktop_apps
+
+        try:
+            desktop_apps.set_auto_apply(name, enabled)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+    elif kind == "site":
+        from app.services.browser import generic
+
+        connector = generic._LOADED.get(name) or generic.load(name)
+        if connector is None:
+            raise HTTPException(status_code=404, detail="No such website")
+        connector.set_auto_apply(enabled)
+    else:
+        raise HTTPException(status_code=400, detail="Only websites and desktop apps have this switch")
+    return {"ok": True, "auto_apply": enabled}
 
 
 @router.post("/skills")

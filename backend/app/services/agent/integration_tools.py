@@ -131,15 +131,12 @@ def dynamics_add_note(ctx: ToolContext, case: str = "", text: str = "", subject:
                       **_) -> dict:
     if not case.strip() or not text.strip():
         return {"content": "A note needs a case number and text.", "summary": "Needs details"}
-    action = actions.propose(
-        ctx.db, "dynamics_add_note", "dynamics", f"Add a note to {case}",
+    return actions.offer(
+        ctx, "dynamics_add_note", "dynamics", f"Add a note to {case}",
         {"case": case, "text": text, "subject": subject or "Note from Cerebro"},
         preview={"fields": [{"name": "Note", "before": "", "after": text}],
                  "target": case},
         summary=subject or text[:80])
-    ctx.drafts.append(actions.card(action))
-    return {"content": f"Note for {case} prepared as change #{action.id}; it will be "
-                       "posted when the user approves it.", "summary": "Waiting for approval"}
 
 
 @tool("dynamics_update_case",
@@ -168,16 +165,13 @@ def dynamics_update_case(ctx: ToolContext, case: str = "", fields: dict = None, 
         except DynamicsError as exc:
             return {"content": str(exc), "summary": "Not allowed"}
         current, rows = prepared["case"], prepared["rows"]
-        action = actions.propose(
-            ctx.db, "dynamics_update_case", "dynamics",
+        return actions.offer(
+            ctx, "dynamics_update_case", "dynamics",
             f"Update {current.get('ticket') or case}",
             {"case": case, "fields": prepared["payload"]},
             preview={"fields": rows, "target": current.get("ticket") or case,
                      "url": current.get("url")},
             summary=", ".join(f"{r['name']}: {r['before']} → {r['after']}" for r in rows))
-        ctx.drafts.append(actions.card(action))
-        return {"content": f"Update prepared as change #{action.id}; waiting for approval.",
-                "summary": "Waiting for approval"}
 
     return _guard(ctx, connector, run)
 
@@ -193,16 +187,13 @@ def dynamics_resolve_case(ctx: ToolContext, case: str = "", resolution: str = ""
     if not case.strip() or not resolution.strip():
         return {"content": "Resolving needs a case number and a resolution.",
                 "summary": "Needs details"}
-    action = actions.propose(
-        ctx.db, "dynamics_resolve_case", "dynamics", f"Resolve {case}",
+    return actions.offer(
+        ctx, "dynamics_resolve_case", "dynamics", f"Resolve {case}",
         {"case": case, "resolution": resolution},
         preview={"fields": [{"name": "Status", "before": "Active", "after": "Resolved"},
                             {"name": "Resolution", "before": "", "after": resolution}],
                  "target": case},
         summary=resolution[:80])
-    ctx.drafts.append(actions.card(action))
-    return {"content": f"Resolution prepared as change #{action.id}; waiting for approval.",
-            "summary": "Waiting for approval"}
 
 
 # ============================================================ RightAnswers
@@ -365,15 +356,12 @@ def rightanswers_update_article(ctx: ToolContext, article: str = "", body: str =
         fields = [{"name": "Body", "before": current["body"], "after": body}]
         if title and title != current["title"]:
             fields.insert(0, {"name": "Title", "before": current["title"], "after": title})
-        action = actions.propose(
-            ctx.db, "rightanswers_update_article", "rightanswers",
+        return actions.offer(
+            ctx, "rightanswers_update_article", "rightanswers",
             f"Update article “{current['title']}”",
             {"article": current.get("id") or article, "body": body, "title": title or None},
             preview={"fields": fields, "target": current["title"], "url": current.get("url")},
             summary=f"{len(body)} characters, was {len(current['body'])}")
-        ctx.drafts.append(actions.card(action))
-        return {"content": f"Article update prepared as change #{action.id}; waiting for approval.",
-                "summary": "Waiting for approval"}
 
     return _guard(ctx, connector, run)
 
@@ -388,15 +376,12 @@ def rightanswers_update_article(ctx: ToolContext, article: str = "", body: str =
 def rightanswers_create_article(ctx: ToolContext, title: str = "", body: str = "", **_) -> dict:
     if not title.strip() or not body.strip():
         return {"content": "A new article needs a title and a body.", "summary": "Needs details"}
-    action = actions.propose(
-        ctx.db, "rightanswers_create_article", "rightanswers", f"Create article “{title}”",
+    return actions.offer(
+        ctx, "rightanswers_create_article", "rightanswers", f"Create article “{title}”",
         {"title": title, "body": body},
         preview={"fields": [{"name": "Title", "before": "", "after": title},
                             {"name": "Body", "before": "", "after": body}]},
         summary=f"New article, {len(body)} characters")
-    ctx.drafts.append(actions.card(action))
-    return {"content": f"New article prepared as change #{action.id}; waiting for approval.",
-            "summary": "Waiting for approval"}
 
 
 # ============================================================== SharePoint

@@ -253,7 +253,7 @@ def list_addons(ctx: ToolContext, **_) -> dict:
 @tool("use_skill",
       "Load one of the skills you were taught (listed in your instructions) and follow it.",
       schema(["name"], name=string_param("The skill's name.")),
-      label="Use a skill", activity="reading")
+      label="Use a skill", activity="browsing")
 def use_skill(ctx: ToolContext, name: str = "", **_) -> dict:
     skill = skills.get(name)
     if skill is None:

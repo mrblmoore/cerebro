@@ -47,7 +47,7 @@ def summarise_log(text: str, focus: str = "", limit: int = 12) -> str:
       "grouped with counts and first/last timestamps. Use 'focus' to pick out a word or ID.",
       schema(["path"], path=string_param("Full path of the log file."),
              focus=string_param("Optional word, error code or ID to concentrate on.")),
-      label="Review a log", activity="reading")
+      label="Review a log", activity="browsing")
 def review_log(ctx: ToolContext, path: str = "", focus: str = "", **_) -> dict:
     path = os.path.expandvars(os.path.expanduser((path or "").strip().strip('"')))
     if not os.path.isfile(path):

@@ -173,6 +173,40 @@ def control_job(task_id: int, action: str, body: Dict[str, Any] = None,
     return result
 
 
+# --------------------------------------------------------- keeping updated
+@router.get("/updates")
+def list_updates(agent_id: Optional[int] = None, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """What's being kept updated ("Keeping X updated" cards)."""
+    from app.services import keeping
+
+    return {"updates": keeping.listing(db, agent_id)}
+
+
+@router.get("/updates/{task_id}")
+def get_update(task_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    from app.services import keeping
+
+    return keeping.card(db, _task(db, task_id))
+
+
+@router.post("/updates/{task_id}/auto-apply")
+def set_update_auto_apply(task_id: int, body: Dict[str, Any], db: Session = Depends(get_db)):
+    """The target's own "apply changes automatically" switch."""
+    from app.services import keeping
+
+    task = _task(db, task_id)
+    integration = (json.loads(task.spec or "{}").get("keep") or {}).get("integration")
+    if not integration:
+        raise HTTPException(status_code=400, detail="This one always needs approval.")
+    try:
+        keeping.set_auto_apply(integration, bool((body or {}).get("enabled")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    jobs.event(db, task.id, "status", "Updates by itself now" if (body or {}).get("enabled")
+               else "Changes wait for approval again")
+    return keeping.card(db, task)
+
+
 # ---------------------------------------------------------------- projects
 class ProjectIn(BaseModel):
     title: Optional[str] = None
@@ -343,4 +377,7 @@ def home(db: Session = Depends(get_db)) -> Dict[str, Any]:
         Task.status.in_(("waiting_input", "waiting_approval"))).order_by(Task.updated_at.desc()).limit(20)]
     fired = [w.to_dict() for w in db.query(Watch).filter(Watch.last_alert_at.isnot(None))
              .order_by(Watch.last_alert_at.desc()).limit(5)]
-    return {"agents": board, "needs_you": needs, "watches_fired": fired}
+    from app.services import keeping
+
+    return {"agents": board, "needs_you": needs, "watches_fired": fired,
+            "updates": keeping.listing(db)[:8]}

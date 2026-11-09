@@ -208,7 +208,7 @@ class ChatService:
 
     # --------------------------------------------------------------- intent
     def handle_message(self, text: str, context: Dict[str, Any] = None,
-                       image: str = None, emit=None) -> Dict[str, Any]:
+                       image: str = None, emit=None, attachments: list = None) -> Dict[str, Any]:
         """
         The front door: one message in, one reply out — everything else
         (was this a question, an instruction, or the answer to a clarifying
@@ -225,6 +225,9 @@ class ChatService:
 
         if image:
             return self._answer_with_image(text, image, context)
+
+        if attachments:
+            return self._answer_with_files(text, attachments, context, emit)
 
         if not text:
             return {"reply": "Say something and I'll take it from there.",
@@ -298,13 +301,39 @@ class ChatService:
                     case_id=context.get("crm_case"))
         return tool_result
 
+    def _answer_with_files(self, text: str, ids: list, context: Dict[str, Any],
+                           emit=None) -> Dict[str, Any]:
+        """Documents attached in chat: the agent is told where they are."""
+        from app.services import chat_files
+        from app.services.llm_service import LLMService
+
+        files = chat_files.resolve_all(ids)
+        if not files:
+            return {"reply": "That attachment is no longer available — attach it again.",
+                    "kind": "answer"}
+        chat_files.track(self.db, files)
+        shown = [{k: f[k] for k in ("id", "name", "size", "kind")} for f in files]
+        context["attachments"] = files
+        if not LLMService().enabled:
+            self._store("user", text or "(attached files)", kind="question",
+                        meta={"attachments": shown})
+            reply = (f"Saved {', '.join(f['name'] for f in files)}. Connect an AI provider "
+                     "(Settings → AI) and I can read and work on attached files.")
+            self._store("assistant", reply, kind="answer")
+            return {"reply": reply, "kind": "answer"}
+        asked = text or "Have a look at the attached file and tell me what it is and what stands out."
+        return self.answer_with_agent(asked, context, emit=emit,
+                                      prompt=f"{asked}\n\n{chat_files.note(files)}",
+                                      meta={"attachments": shown})
+
     def answer_with_agent(self, text: str, context: Dict[str, Any],
-                          emit=None) -> Dict[str, Any]:
+                          emit=None, prompt: str = None, meta: Dict[str, Any] = None) -> Dict[str, Any]:
         """Answer through the tool-using agent (AI provider required)."""
         from app.services.agent import loop
 
         history = loop._history(self.db, self.conversation_id)
-        self._store("user", text, kind="question")
+        self._store("user", text, kind="question", meta=meta)
+        text = prompt or text
         from app.services import agents
 
         result = loop.run(self.db, text, context, emit=emit, history=history,

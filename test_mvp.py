@@ -6807,6 +6807,503 @@ def test_agents_page():
         server.should_exit = True
 
 
+
+class FakeDesktop:
+    """A stand-in Windows desktop for the app tools: one editor window."""
+
+    def __init__(self):
+        from app.services import desktop_apps
+
+        self.desktop_apps = desktop_apps
+        self.wins = {}
+        self.log = []
+        self.saved = None
+
+    def _editor(self, title):
+        handle = 100 + len(self.wins)
+        self.wins[handle] = {"title": title, "pid": 7, "controls": [
+            {"type": "Edit", "name": "Customer", "id": "customer", "value": "", "enabled": True},
+            {"type": "Edit", "name": "Notes", "id": "notes", "value": "", "enabled": True},
+            {"type": "TabItem", "name": "History", "id": "tab-history", "value": "", "enabled": True},
+            {"type": "Button", "name": "Save", "id": "save", "value": "", "enabled": True}],
+            "text": "Billing tool — record 42"}
+        return handle
+
+    def windows(self):
+        return [{"handle": h, "title": w["title"], "pid": w["pid"]} for h, w in self.wins.items()]
+
+    def open(self, target):
+        self.log.append(("open", target))
+        for h, w in self.wins.items():
+            if target.lower() in w["title"].lower():
+                return {"handle": h, "title": w["title"], "pid": w["pid"]}
+        handle = self._editor("Billing Tool - record 42")
+        return {"handle": handle, "title": self.wins[handle]["title"], "pid": 7}
+
+    def snapshot(self, handle):
+        w = self.wins[handle]
+        return {"handle": handle, "title": w["title"], "text": w["text"],
+                "controls": [{**c, "ref": str(i + 1)} for i, c in enumerate(w["controls"])]}
+
+    def type(self, handle, ref, text):
+        self.wins[handle]["controls"][int(ref) - 1]["value"] = text
+        self.log.append(("type", ref, text))
+
+    def click(self, handle, ref):
+        control = self.wins[handle]["controls"][int(ref) - 1]
+        self.log.append(("click", control["name"]))
+        if control["name"] == "Save":
+            self.saved = {c["id"]: c["value"] for c in self.wins[handle]["controls"]}
+            self.wins[handle]["text"] = "Billing tool — record 42 (saved)"
+        if control["name"] == "History":
+            self.wins[handle]["text"] = "History: paid in March"
+
+    def keys(self, handle, keys):
+        self.log.append(("keys", keys))
+
+    def screenshot(self, handle):
+        from PIL import Image
+        import io
+
+        out = io.BytesIO()
+        Image.new("RGB", (40, 30), (200, 200, 220)).save(out, "JPEG")
+        return out.getvalue()
+
+
+def test_desktop_apps():
+    """Desktop apps: read, type, ordinary clicks, risky clicks become approvals, auto-apply."""
+    print("\nDesktop apps")
+    from app.services import capabilities, desktop_apps
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext, available_tools
+    from app.services.agents import group_of
+
+    db = session()
+    check("Desktop apps aren't offered where they can't run",
+          desktop_apps.available() == (sys.platform == "win32" and desktop_apps.available()))
+    fake = FakeDesktop()
+    desktop_apps.set_backend(fake)
+    try:
+        ctx = ToolContext(db=db, context={"_user_text": "open the billing tool and note the payment"})
+        names = {t.name for t in available_tools(ctx)}
+        check("The app tools are offered with a desktop", {"app_open", "app_read", "app_type",
+                                                          "app_click", "app_keys"} <= names)
+        check("…in their own scope group", group_of(REGISTRY["app_click"]) == "desktop"
+              and group_of(REGISTRY["add_desktop_app"]) == "desktop")
+        refused = REGISTRY["app_open"].handler(ToolContext(db=db, context={"_user_text": "hi"}),
+                                               app="Payroll")
+        check("A program the user didn't name isn't opened", refused["summary"] == "Not added"
+              and not desktop_apps.definitions())
+        opened = REGISTRY["app_open"].handler(ctx, app="billing tool")
+        check("A program the user named is added and opened, with numbered controls",
+              "[1] Edit: Customer" in opened["content"] and "Save ⚠ needs approval" in opened["content"]
+              and desktop_apps.match("billing tool"), opened["content"])
+        rows = [r for r in capabilities.list_all(db) if r["kind"] == "app"]
+        check("…and listed under Add-ons → Desktop apps", rows and rows[0]["auto_apply"] is False, rows)
+        REGISTRY["app_type"].handler(ctx, ref="1", text="Smile Dental")
+        REGISTRY["app_type"].handler(ctx, ref="2", text="Paid in full")
+        clicked = REGISTRY["app_click"].handler(ctx, ref="3")
+        check("Ordinary clicks happen straight away", "History: paid in March" in clicked["content"])
+        before = len(ctx.drafts)
+        risky = REGISTRY["app_click"].handler(ctx, ref="4", why="Save the payment note")
+        card = ctx.drafts[-1] if len(ctx.drafts) > before else {}
+        check("Save becomes an approval card with a screenshot and what was typed",
+              risky["summary"] == "Waiting for approval" and fake.saved is None
+              and card.get("tool") == "app_action" and card["preview"].get("image")
+              and any(f["after"] == "Paid in full" for f in card["preview"]["fields"]), card)
+        keys = REGISTRY["app_keys"].handler(ctx, keys="ctrl+s")
+        check("Ctrl+S needs approval too", keys["summary"] == "Waiting for approval")
+        plain = REGISTRY["app_keys"].handler(ctx, keys="tab")
+        check("…but ordinary keys don't", plain["summary"] == "Pressed" and ("keys", "tab") in fake.log)
+        # The user typed something else meanwhile; approving puts the values back and saves.
+        fake.wins[100]["controls"][1]["value"] = ""
+        outcome = actions.approve(db, card["action_id"])
+        check("Approving saves it, with what was typed put back",
+              fake.saved == {"customer": "Smile Dental", "notes": "Paid in full", "tab-history": "",
+                             "save": ""}, (outcome.get("reply"), fake.saved))
+        done = actions.card(db.get(__import__("app.models.agent_action", fromlist=["x"]).AgentAction,
+                                   card["action_id"]))
+        check("…with an after screenshot in the log", done["status"] == "done" and done["after_image"])
+
+        desktop_apps.set_auto_apply(desktop_apps.match("billing tool"), True)
+        fake.saved = None
+        auto = REGISTRY["app_click"].handler(ctx, ref="4")
+        check("With the app's auto-apply on, Save goes straight through and is logged",
+              auto["summary"] == "Applied automatically" and fake.saved is not None
+              and ctx.drafts[-1]["automatic"])
+        auto = REGISTRY["app_keys"].handler(ctx, keys="ctrl+s")
+        check("An automatic change that shows no effect is flagged, not retried",
+              ctx.drafts[-1]["unconfirmed"] and "check" in auto["content"].lower()
+              and sum(1 for e in fake.log if e == ("keys", "ctrl+s")) == 1, auto)
+        added = REGISTRY["add_desktop_app"].handler(
+            ToolContext(db=db, context={"_user_text": "add our CRM, it's at C:\\Apps\\crm.exe"}),
+            label="CRM", path="C:\\Apps\\crm.exe")
+        check("add_desktop_app adds a program the user named", added["summary"] == "Added"
+              and desktop_apps.match("crm"))
+        removed = capabilities.remove(db, "app", "crm")
+        check("…and it can be removed", removed["ok"] and not desktop_apps.match("crm.exe"))
+    finally:
+        desktop_apps.set_backend(None)
+        app_tools = sys.modules["app.services.agent.app_tools"]
+        app_tools._last.clear()
+
+
+
+def test_desktop_apps_notepad():
+    """On Windows: drive the real Notepad through UI Automation."""
+    print("\nDesktop apps — real Notepad (Windows only)")
+    if sys.platform != "win32":
+        print("  – skipped: not Windows")
+        return
+    from app.services import desktop_apps
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext
+
+    if not desktop_apps.available():
+        check("pywinauto is installed on Windows", False, "pip install pywinauto")
+        return
+    db = session()
+    app_tools = sys.modules["app.services.agent.app_tools"]
+    ctx = ToolContext(db=db, context={"_user_text": "open notepad and write a note"})
+    pid = None
+    try:
+        opened = REGISTRY["app_open"].handler(ctx, app="notepad")
+        state = ctx.context.get("_app") or {}
+        pid = next((w["pid"] for w in desktop_apps.backend().windows()
+                    if w["handle"] == state.get("handle")), None)
+        check("Notepad opens and its window is read", "Notepad" in opened["content"]
+              and state.get("handle"), opened["content"][:400])
+        snap = desktop_apps.backend().snapshot(state["handle"])
+        editor = next((c for c in snap["controls"] if c["type"] in ("Edit", "Document")), None)
+        check("…with its text area listed", editor is not None, snap["controls"][:10])
+        if editor is None:
+            return
+        REGISTRY["app_type"].handler(ctx, ref=editor["ref"], text="Hello from Cerebro")
+        read = REGISTRY["app_read"].handler(ctx)
+        check("Typing into it and reading it back works", "Hello from Cerebro" in read["content"],
+              read["content"][:400])
+        windows_before = len(desktop_apps.backend().windows())
+        saved = REGISTRY["app_keys"].handler(ctx, keys="ctrl+s", why="Save the note")
+        check("Ctrl+S waits for approval, and nothing is saved",
+              saved["summary"] == "Waiting for approval"
+              and len(desktop_apps.backend().windows()) == windows_before, saved)
+        if ctx.drafts:
+            actions.discard(db, ctx.drafts[-1]["action_id"])
+    finally:
+        if pid:
+            desktop_apps.kill(pid)
+        app_tools._last.clear()
+
+
+
+def _job_script(turns, prompts=None):
+    """A scripted model for one job run: tool calls in order, then a reply."""
+    def script(self, messages, tools=None, **kwargs):
+        if prompts is not None and messages:
+            prompts.append(messages[-1]["content"] if messages[-1]["role"] == "user" else
+                           next((m["content"] for m in reversed(messages) if m["role"] == "user"), ""))
+        step = sum(1 for m in messages if m["role"] == "tool")
+        if step < len(turns) - 1 and tools:
+            name, args = turns[step]
+            return {"content": "", "tool_calls": [{"id": f"k{step}", "name": name, "arguments": args}]}
+        return {"content": turns[-1], "tool_calls": []}
+    return script
+
+
+def test_keep_it_updated():
+    """Keep it updated: one command connects the target, makes the job, learns, then runs by itself."""
+    print("\nKeep it updated — files")
+    import json as _json
+    from unittest import mock
+
+    from app.core import settings_store
+    from app.core.config import settings
+    from app.models.task import Task
+    from app.models.work import Watch
+    from app.services import agents, conversations, jobs, keeping, skills, watches
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext
+    from app.services.task_executors import skill_name
+
+    from app.core.activity_state import STATES
+
+    bad = [t.name for t in REGISTRY.values() if t.activity not in STATES]
+    check("Every tool shows a real activity while it runs", not bad, bad)
+    root, patches = _addon_dirs()
+    for patch in patches:
+        patch.start()
+    db = session()
+    try:
+        import docx
+
+        folder = Path(_TEMP_DIR) / "keep"
+        folder.mkdir(exist_ok=True)
+        report = folder / "Weekly status.docx"
+        document = docx.Document()
+        document.add_heading("Weekly status", 1)
+        document.add_paragraph("Nothing yet.")
+        document.save(str(report))
+        export = folder / "export.csv"
+        export.write_text("case,status\nCAS-1,open\n", encoding="utf-8")
+
+        agent = agents.default_agent(db)
+        chat = conversations.create(db, "Status report", agent_id=agent.id)
+        said = f"keep {report} updated from {export} whenever it changes"
+        ctx = ToolContext(db=db, context={"_user_text": said, "agent_id": agent.id,
+                                          "conversation_id": chat.id})
+        with mock.patch.object(jobs, "start_now") as started:
+            result = REGISTRY["keep_updated"].handler(
+                ctx, target=str(report), source=str(export), when="whenever it changes",
+                instructions="Add a line with the number of open cases")
+        card = next((c for c in ctx.drafts if c.get("type") == "keep_updated"), {})
+        task = db.get(Task, card.get("task_id") or 0)
+        check("keep_updated makes the job in one step and runs the first update now",
+              result["summary"] == "Keeping it updated" and task is not None and started.called
+              and task.source == "keep" and task.schedule == "manual", result)
+        check("…its card says what it keeps updated and how often",
+              card.get("kind") == "file" and card.get("label") == "Weekly status.docx"
+              and "export.csv changes" in card.get("when", "") and card.get("can_auto_apply"), card)
+        watch = db.query(Watch).filter(Watch.task_id == task.id).first()
+        check("…and it watches the source file", watch is not None and watch.interval_minutes == 5
+              and watch.to_dict()["kind"] == "file")
+
+        operation = _json.dumps([{"op": "append_paragraph", "text": "Open cases: 1"}])
+        name = skill_name(task)
+        prompts = []
+        enabled, patched = _with_ai(_job_script([
+            ("edit_document", {"path": str(report), "operations": operation, "why": "Open cases"}),
+            ("save_skill", {"name": name, "description": "Update the weekly status",
+                            "instructions": "1. Count open cases in the export.\n2. Append a line."}),
+            "I've prepared the update."], prompts))
+        with enabled, patched:
+            jobs.run(task.id)
+        db.expire_all()
+        task = db.get(Task, task.id)
+        check("The first run waits for approval and changes nothing yet",
+              task.status == "waiting_approval" and "Open cases" not in
+              "\n".join(p.text for p in docx.Document(str(report)).paragraphs), task.to_dict())
+        check("…and was told to save how it did it",
+              any("save the steps that worked" in p for p in prompts))
+        check("…which it did, as a skill", skills.exact(name) is not None)
+        waiting = task.state_dict().get("waiting") or []
+        actions.approve(db, int(waiting[0].split(":")[1]))
+        text = "\n".join(p.text for p in docx.Document(str(report)).paragraphs)
+        check("Approving it updates the Word file, keeping a backup",
+              "Open cases: 1" in text and list(folder.glob("*cerebro-backup*")))
+        db.expire_all()
+        task = db.get(Task, task.id)
+        check("…and the job carries on", task.status == "active", task.status)
+        fresh = keeping.card(db, task)
+        check("The card then offers to let it update by itself",
+              fresh["learned"] and not fresh["auto_apply"] and (fresh["offer_auto"] or task.run_count == 1),
+              fresh)
+
+        # The source changes: the watch runs the job.
+        watches.check(db, watch)
+        check("An untouched source file isn't read again", watches.check(db, watch).get("skipped"))
+        export.write_text("case,status\nCAS-1,open\nCAS-2,open\n", encoding="utf-8")
+        import os
+        import time as _time
+
+        os.utime(export, (_time.time() + 5, _time.time() + 5))
+        fired = watches.check(db, watch)
+        db.expire_all()
+        task = db.get(Task, task.id)
+        check("When the source changes, the job runs", fired.get("fired") and task.next_run is not None
+              and "source changed" in (task.state_dict().get("trigger") or ""), (fired, task.to_dict()))
+
+        previous = settings.DOCUMENTS_AUTO_APPLY
+        keeping.set_auto_apply("documents", True)
+        try:
+            prompts.clear()
+            operation = _json.dumps([{"op": "append_paragraph", "text": "Open cases: 2"}])
+            enabled, patched = _with_ai(_job_script([
+                ("edit_document", {"path": str(report), "operations": operation}), "Updated."], prompts))
+            with enabled, patched:
+                jobs.run(task.id)
+            db.expire_all()
+            task = db.get(Task, task.id)
+            text = "\n".join(p.text for p in docx.Document(str(report)).paragraphs)
+            check("Switched to update by itself, the next run saves on its own",
+                  "Open cases: 2" in text and task.status == "active", task.to_dict())
+            check("…following the saved steps, and knowing why it ran",
+                  any("You saved how to do this job before" in p and "source changed" in p for p in prompts))
+            check("…and it's logged as an automatic change",
+                  any(e["kind"] == "tool" for e in jobs.events(db, task.id))
+                  and task.state_dict().get("auto_applied"))
+        finally:
+            settings_store.update({"DOCUMENTS_AUTO_APPLY": previous})
+
+        check("list_updates lists it", "Weekly status.docx" in
+              REGISTRY["list_updates"].handler(ToolContext(db=db, context={}))["content"])
+        unknown = REGISTRY["keep_updated"].handler(
+            ToolContext(db=db, context={"_user_text": "keep the zork thing updated"}),
+            target="the zork thing", instructions="refresh it")
+        check("Something it can't reach yet sends it to find a connector",
+              unknown["summary"] == "Not connected yet" and "find_connector" in unknown["content"])
+    finally:
+        for patch in reversed(patches):
+            patch.stop()
+
+
+def test_attached_files():
+    """Documents attached in chat are read by the agent and kept with the message."""
+    print("\nChat — attached documents")
+    import io
+
+    import docx
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.services import chat_files, conversations
+    from app.services.chat_service import ChatService
+
+    client = TestClient(app)
+    buffer = io.BytesIO()
+    document = docx.Document()
+    document.add_paragraph("Smile Dental renewal is due on 1 March.")
+    document.save(buffer)
+    uploaded = client.post("/api/chat/upload-file",
+                           files={"file": ("Renewal notes.docx", buffer.getvalue())})
+    info = uploaded.json().get("file") or {}
+    check("A Word file can be attached", uploaded.status_code == 200 and info.get("name") == "Renewal notes.docx",
+          uploaded.text)
+    refused = client.post("/api/chat/upload-file", files={"file": ("setup.exe", b"MZ")})
+    check("…but not a program", refused.status_code == 422)
+
+    db = session()
+    chat = conversations.create(db, "Renewals")
+    script = ScriptedLLM([{"name": "read_document", "arguments": {
+        "name": chat_files.resolve(info["id"])["path"]}}, "The renewal is due on 1 March."])
+    enabled, patched = _with_ai(script)
+    with enabled, patched:
+        reply = ChatService(db, chat.id).handle_message("When is it due?", attachments=[info["id"]])
+    first = script.requests[0]["messages"][-1]["content"] if script.requests else ""
+    check("The agent is told where the attachment is", f"Attached: Renewal notes.docx —" in first, first)
+    tool_text = next((m["content"] for m in (script.requests[-1]["messages"] if script.requests else [])
+                      if m["role"] == "tool"), "")
+    check("…and reads it with the document tools", "Renewal notes.docx" in tool_text
+          and "not found" not in tool_text.lower() and "1 March" in reply["reply"], tool_text[:300])
+    history = ChatService(db, chat.id).history()
+    asked = next((m for m in history if m["role"] == "user"), {})
+    check("The message keeps its file chip", (asked.get("meta") or {}).get("attachments", [{}])[0]
+          .get("name") == "Renewal notes.docx", asked)
+    from app.models.tracked_document import TrackedDocument
+
+    check("…and the document is tracked, so it's searchable",
+          db.query(TrackedDocument).filter(TrackedDocument.name == "Renewal notes.docx").first() is not None)
+
+
+
+def test_keep_website_updated():
+    """A page on an internal site: connected by itself, approved once, then automatic."""
+    print("\nKeep it updated — a website")
+    import importlib
+    import sys as _sys
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.models.task import Task
+    from app.services import browser, jobs, keeping
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext, unregister_owner
+    from app.services.browser import generic
+    from app.services.browser.engine import playwright_installed
+
+    root, patches = _addon_dirs()
+    for patch in patches:
+        patch.start()
+    db = session()
+    server, submitted = _fake_website()
+    base = f"http://127.0.0.1:{server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    browser_patches = [mock.patch.object(settings, k, v) for k, v in {
+        "BROWSER_AUTOMATION_ENABLED": True, "BROWSER_MODE": "headless", "BROWSER_TIMEOUT_SECONDS": 15,
+        "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium"}.items()]
+    browser_patches.append(mock.patch.object(engine_module, "BROWSER_PROFILE_DIR", Path(_TEMP_DIR) / "keep_profile"))
+    for patch in browser_patches:
+        patch.start()
+    name = None
+    try:
+        ctx = ToolContext(db=db, context={"_user_text": f"start updating {base}/request every day with the "
+                                                        "sensor status"})
+        with mock.patch.object(jobs, "start_now"):
+            REGISTRY["keep_updated"].handler(ctx, target=f"{base}/request", when="every day at 8",
+                                             instructions="Send a request with today's sensor status")
+        card = next((c for c in ctx.drafts if c.get("type") == "keep_updated"), {})
+        name = card.get("integration")
+        check("A site it isn't connected to is added by itself",
+              name and browser.get(name) is not None and card.get("kind") == "site", card)
+        check("…the user is asked to sign in once",
+              any(c.get("type") == "signin" and c.get("integration") == name for c in ctx.drafts))
+        task = db.get(Task, card["task_id"])
+        check("…and the job runs daily at 08:00", task.schedule == "daily" and task.at_time == "08:00",
+              (task.schedule, task.at_time))
+        if not playwright_installed():
+            print("  - skipped browser part: Playwright is not installed")
+            return
+
+        def run_once(text):
+            def script(self, messages, tools=None, **kwargs):
+                step = sum(1 for m in messages if m["role"] == "tool")
+                tool_text = [m["content"] for m in messages if m["role"] == "tool"]
+                if step == 0:
+                    return {"content": "", "tool_calls": [{"id": "w0", "name": "browse_open",
+                                                           "arguments": {"url": f"{base}/request"}}]}
+                lines = [l for l in tool_text[0].splitlines() if l.startswith("  [")]
+                if step == 1:
+                    ref = next(l for l in lines if "field: Subject" in l).split("]")[0].split("[")[1]
+                    return {"content": "", "tool_calls": [{"id": "w1", "name": "browse_type",
+                                                           "arguments": {"ref": ref, "text": text}}]}
+                if step == 2:
+                    ref = next(l for l in lines if "Send request" in l).split("]")[0].split("[")[1]
+                    return {"content": "", "tool_calls": [{"id": "w2", "name": "browse_click",
+                                                           "arguments": {"ref": ref, "why": "Send it"}}]}
+                return {"content": "Done.", "tool_calls": []}
+            return script
+
+        enabled, patched = _with_ai(run_once("Sensors fine"))
+        try:
+            with enabled, patched:
+                jobs.run(task.id)
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+        db.expire_all()
+        task = db.get(Task, task.id)
+        check("The first run waits for approval and sends nothing",
+              task.status == "waiting_approval" and not submitted, task.to_dict())
+        waiting = task.state_dict().get("waiting") or []
+        from app.models.agent_action import AgentAction
+
+        action = db.get(AgentAction, int(waiting[0].split(":")[1])) if waiting else None
+        check("…recorded under the site itself", action is not None and action.integration == name)
+        actions.approve(db, action.id)
+        check("Approving sends it", submitted == [{"subject": "Sensors fine"}], submitted)
+
+        keeping.set_auto_apply(name, True)
+        check("The site's own switch turns automatic changes on",
+              browser.get(name).auto_apply and keeping.card(db, task)["auto_apply"])
+        enabled, patched = _with_ai(run_once("Sensors still fine"))
+        with enabled, patched:
+            jobs.run(task.id)
+        db.expire_all()
+        task = db.get(Task, task.id)
+        last = db.query(AgentAction).order_by(AgentAction.id.desc()).first()
+        check("Next time it saves by itself", submitted[-1] == {"subject": "Sensors still fine"}
+              and task.status == "active" and last.status == "done", task.to_dict())
+        check("…with an after screenshot in its receipt", actions.card(last)["after_image"]
+              and actions.card(last)["automatic"])
+    finally:
+        browser.engine().shutdown()
+        if name:
+            generic.unload(name)
+            unregister_owner(f"site:{name}")
+        for patch in reversed(browser_patches + patches):
+            patch.stop()
+        server.shutdown()
+
+
 def main() -> int:
     print("Running Cerebro tests…")
     init_db()
@@ -6843,7 +7340,9 @@ def main() -> int:
                   test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
                   test_skills, test_voice, test_push_to_talk, test_addons_page,
                   test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
-                  test_faces, test_agents_page):
+                  test_faces, test_agents_page, test_desktop_apps,
+                  test_desktop_apps_notepad, test_keep_it_updated, test_attached_files,
+                  test_keep_website_updated):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace

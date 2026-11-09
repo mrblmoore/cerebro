@@ -10,3 +10,5 @@ from app.services.agent import capability_tools as _capability_tools  # noqa: F4
 from app.services.agent import web_tools as _web_tools  # noqa: F401,E402
 from app.services.agent import plan_tools as _plan_tools  # noqa: F401,E402
 from app.services.agent import agent_tools as _agent_tools  # noqa: F401,E402
+from app.services.agent import app_tools as _app_tools  # noqa: F401,E402
+from app.services.agent import keep_tools as _keep_tools  # noqa: F401,E402
