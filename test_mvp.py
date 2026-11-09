@@ -6796,6 +6796,11 @@ def test_install_and_avatars():
             check("…the default agent gets the chosen look and personality",
                   default.face == "vrm" and default.style().get("model") == "builtin-miko"
                   and default.persona().get("preset") == "professional", (default.face, default.style()))
+            with mock.patch.object(faces_api, "builtin_faces", lambda: []), \
+                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test):
+                install_setup.run({"agent": {"face": "builtin"}})
+            check("…and without built-in 3D models, \"3D character\" falls back to the anime face",
+                  agents.default_agent(session()).face == "anime")
             check("…the choices file (it can hold keys) is removed, and a readable summary is written",
                   not choice_file.exists() and "OK" in (root / "result.txt").read_text(encoding="utf-8") and code in (0, 2))
         finally:

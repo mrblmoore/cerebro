@@ -80,7 +80,9 @@ def run(choices: Dict[str, Any], verify: bool = True) -> Dict[str, Any]:
                     models = builtin_faces()
                     # "builtin" alone: the first built-in model.
                     meta = next((m for m in models if m["id"] == face), models[0] if models else None)
-                    if meta:
+                    if meta is None:
+                        fields["face"] = "anime"          # no built-in 3D models in this build
+                    else:
                         fields["face"] = "vrm"
                         fields["face_style"] = {"model": meta["id"], "entry": meta["entry"],
                                                 **({"framing": meta["framing"]} if meta.get("framing") else {}),
