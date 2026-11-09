@@ -1,5 +1,6 @@
 """API route registration."""
 
+from app.api.addons import router as addons_router
 from app.api.audio import router as audio_router
 from app.api.cases import router as cases_router
 from app.api.activity import router as activity_router
@@ -16,6 +17,7 @@ from app.api.style import router as style_router
 from app.api.tasks import router as tasks_router
 from app.api.system import router as system_router
 from app.api.sources import router as sources_router
+from app.api.voice import router as voice_router
 
 ROUTERS = [
     system_router,
@@ -34,6 +36,8 @@ ROUTERS = [
     audio_router,
     sources_router,
     integrations_router,
+    addons_router,
+    voice_router,
 ]
 
 __all__ = [
@@ -54,4 +58,6 @@ __all__ = [
     "system_router",
     "sources_router",
     "integrations_router",
+    "addons_router",
+    "voice_router",
 ]

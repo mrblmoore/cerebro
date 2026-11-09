@@ -69,6 +69,15 @@ class MessageIn(BaseModel):
     image: Optional[str] = None
     #: The chat this message belongs to; the latest open chat when omitted.
     conversation_id: Optional[int] = None
+    #: Spoken (the mic button): Ask answers briefly and acts on it.
+    voice: bool = False
+
+
+def _message_context(db: Session, request: MessageIn) -> Dict[str, Any]:
+    context = _context(db)
+    if request.voice:
+        context["voice"] = True
+    return context
 
 
 @router.post("/message", dependencies=[Depends(require_local_origin)])
@@ -78,7 +87,7 @@ def send_message(request: MessageIn, db: Session = Depends(get_db)) -> Dict[str,
     service = _service(db, request.conversation_id)
     _working(service.conversation_id, 1)
     try:
-        result = service.handle_message(request.message, context=_context(db),
+        result = service.handle_message(request.message, context=_message_context(db, request),
                                         image=request.image)
     finally:
         _working(service.conversation_id, -1)
@@ -121,7 +130,7 @@ def stream_message(request: MessageIn):
         try:
             service = ChatService(db, conversation_id)
             result = service.handle_message(
-                request.message, context=_context(db), image=request.image,
+                request.message, context=_message_context(db, request), image=request.image,
                 emit=lambda card: events.put(("card", card)))
             result["conversation"] = service.conversation.to_dict()
             events.put(("message", result))

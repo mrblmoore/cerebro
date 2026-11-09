@@ -68,6 +68,17 @@ while Cerebro searches and works, source citations, and before/after approval
 cards. Closing it leaves Cerebro running in the system tray, where an animated
 brain shows what it is doing. See [docs/WIDGET.md](docs/WIDGET.md).
 
+**Add-ons — connects to anything new, by itself**
+Ask for something Cerebro can't reach yet ("what's PROJ-142 in Jira?") and it
+finds a connector in the MCP Registry, adds it, and carries on. It can also add
+any website you sign in to, and learn procedures you teach it. Anything that
+changes something still waits for your approval. See [docs/ADDONS.md](docs/ADDONS.md).
+
+**Talk to it**
+Hold **Ctrl+Space** anywhere (or click the mic), say what you want, let go.
+Speech is turned into text on your PC; Cerebro acts and answers aloud.
+"Yes, send it" approves. See [docs/VOICE.md](docs/VOICE.md).
+
 **Browser extension**
 Detects Salesforce, Dynamics 365, ServiceNow and Zendesk cases and the SharePoint
 documents you open. **Read this page** explicitly captures the current tab and
@@ -165,6 +176,8 @@ from that one state.
 | [docs/INSTALL.md](docs/INSTALL.md) | Full install guide, per platform, plus troubleshooting |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting and what it does |
 | [docs/WIDGET.md](docs/WIDGET.md) | The desktop widget in detail |
+| [docs/ADDONS.md](docs/ADDONS.md) | MCP servers, websites and skills added at runtime |
+| [docs/VOICE.md](docs/VOICE.md) | Push-to-talk, the mic button and spoken replies |
 | [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md) | Outlook and Teams integration, flow by flow |
 | [docs/DOCUMENTS.md](docs/DOCUMENTS.md) | Reading and editing Word, Excel and PDF |
 | [docs/SECOND_BRAIN.md](docs/SECOND_BRAIN.md) | Memory, writing voice, tasks, nudges, activity capture |
@@ -205,5 +218,9 @@ The pieces that touch other systems stay deliberately narrow:
   every tab is off by default, capturing page text is off by default, and any
   domain on your exclusion list is never read. Clicking **Read this page** grants
   access only to the selected tab and shows a success or failure result.
+- **Voice** is transcribed on your PC; only the short spoken reply uses an online
+  voice (Polly or Edge), and you can choose the offline Windows voice instead.
+- **Add-ons** keep their keys and sign-in tokens encrypted for your Windows
+  account, and an export never includes them.
 - **Documents** are read from disk when you open them. Edits are explicit,
   backed up, and refused while the file is open in Office.

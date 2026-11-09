@@ -190,7 +190,7 @@ let currentPopover = null;
 function closePopover() { currentPopover?.remove(); currentPopover = null; }
 document.addEventListener('click', e => {
   if (currentPopover && !currentPopover.contains(e.target) &&
-      !e.target.closest('.cite, #menu-btn, #chat-menu-btn, [data-chat-menu], .source-pill')) closePopover();
+      !e.target.closest('.cite, #menu-btn, #chat-menu-btn, [data-chat-menu], .source-pill, #addon-add, #addon-menu')) closePopover();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closePopover(); });
 
@@ -525,10 +525,32 @@ function actionCard(card) {
   if (card.type === 'approval') return changeCard(card);
   if (card.type === 'draft') return draftCard(card);
   if (card.type === 'signin') return signinCard(card);
+  if (card.type === 'addon_signin') return addonSigninCard(card);
+  if (card.type === 'plan') return planCard(card);
   return null;
 }
 
-const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint', beyondtrust: 'BeyondTrust', genesys: 'Genesys Cloud' };
+const INTEGRATION_LABEL = { dynamics: 'Dynamics 365', rightanswers: 'RightAnswers', sharepoint: 'SharePoint', beyondtrust: 'BeyondTrust', genesys: 'Genesys Cloud', addons: 'Add-ons', browser: 'Website', files: 'Files', computer: 'This PC' };
+const integrationLabel = name => INTEGRATION_LABEL[name] || (String(name || '').startsWith('mcp:') ? String(name).slice(4) : name) || 'Change';
+
+function planCard(card) {
+  const node = document.createElement('div');
+  node.className = 'action-card plan';
+  node.innerHTML = `<div class="action-head"><span class="title">${esc(card.title || 'Plan')}</span><span class="badge accent">Plan</span></div>
+    <ol class="plan-steps">${(card.steps || []).map(step => `<li>${esc(step)}</li>`).join('')}</ol>`;
+  return node;
+}
+
+function addonSigninCard(card) {
+  const node = document.createElement('div');
+  node.className = 'action-card awaiting';
+  node.innerHTML = `
+    <div class="action-head"><span class="title">${esc(card.title)}</span><span class="badge warn">Sign-in needed</span></div>
+    <p style="margin:0;color:var(--text-dim);font-size:12.5px">${esc(card.detail || '')}</p>
+    <div class="btn-row"><button class="btn primary" data-signin>Sign in</button></div>`;
+  $('[data-signin]', node).addEventListener('click', e => addonSignIn(card.name, e.currentTarget));
+  return node;
+}
 
 function changeCard(card) {
   const node = document.createElement('div');
@@ -538,9 +560,10 @@ function changeCard(card) {
   node.innerHTML = `
     <div class="action-head">
       <span class="title">${esc(card.title)}</span>
-      <span class="badge accent">${esc(INTEGRATION_LABEL[card.integration] || card.integration || 'Change')}</span>
+      <span class="badge accent">${esc(integrationLabel(card.integration))}</span>
       ${card.automatic && status !== 'undone' ? '<span class="badge ok">Applied automatically</span>' : statusBadge(status)}
     </div>
+    ${card.preview?.image ? `<img class="card-shot" src="/api/chat/image/${encodeURIComponent(card.preview.image)}" alt="The page as it is now">` : ''}
     <div class="diff">${fields.map(diffField).join('')}</div>
     ${card.error && status === 'failed' ? `<div class="card-error">${esc(card.error)}</div>` : ''}
     ${status === 'awaiting_approval' ? `
@@ -552,7 +575,7 @@ function changeCard(card) {
       <div class="btn-row"><button class="btn primary" data-approve>Retry</button>
         <button class="btn ghost" data-discard>${esc(card.discard_label || 'Discard')}</button></div>` : card.can_undo || card.preview?.url ? `
       <div class="btn-row">
-        ${card.can_undo ? '<button class="btn sm" data-undo>Undo</button>' : ''}
+        ${card.can_undo ? `<button class="btn sm" data-undo>${esc(card.undo_label || (card.tool === 'capability_added' ? 'Remove' : 'Undo'))}</button>` : ''}
         ${card.preview?.url ? '<button class="btn sm ghost" data-open>Open</button>' : ''}
       </div>` : ''}`;
   $('[data-approve]', node)?.addEventListener('click', () => decide(node, `/api/chat/changes/${card.action_id}/approve`));
@@ -685,7 +708,9 @@ input.addEventListener('keydown', event => {
   }
 });
 $('#composer').addEventListener('submit', event => { event.preventDefault(); send(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') voice.audio?.pause(); });
 $('#attach-btn').addEventListener('click', () => $('#file-input').click());
+$('#mic-btn').addEventListener('click', toggleMic);
 $('#file-input').addEventListener('change', e => e.target.files[0] && attach(e.target.files[0]));
 input.addEventListener('paste', event => {
   const file = [...(event.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
@@ -720,7 +745,72 @@ function clearImage() {
   $('#send').disabled = busy() || !input.value.trim();
 }
 
-async function send() {
+// ------------------------------------------------------------------ voice
+// The mic: click to start, click again to stop. The words are turned into
+// text on this PC, then either put in the box to check or sent straight away
+// (Settings → Voice). A request sent by voice gets a short spoken answer.
+const voice = { recorder: null, chunks: [], status: null, audio: null };
+
+async function voiceStatus() {
+  if (!voice.status) voice.status = await api.get('/api/voice/status').catch(() => ({ enabled: false }));
+  return voice.status;
+}
+
+async function toggleMic() {
+  const button = $('#mic-btn');
+  if (voice.recorder?.state === 'recording') { voice.recorder.stop(); return; }
+  voice.audio?.pause();
+  const status = await voiceStatus();
+  if (!status.enabled) { toast('Voice is switched off in Settings → Voice.', 'err'); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    toast(`The microphone isn't available: ${error.message}`, 'err');
+    return;
+  }
+  voice.chunks = [];
+  voice.recorder = new MediaRecorder(stream);
+  voice.recorder.ondataavailable = e => e.data.size && voice.chunks.push(e.data);
+  voice.recorder.onstop = async () => {
+    stream.getTracks().forEach(track => track.stop());
+    button.classList.remove('recording');
+    button.classList.add('busy');
+    input.placeholder = 'Understanding…';
+    try {
+      const form = new FormData();
+      form.append('audio', new Blob(voice.chunks, { type: voice.recorder.mimeType || 'audio/webm' }), 'speech.webm');
+      const { text } = await api.post('/api/voice/transcribe', form);
+      if (!text) { toast("I didn't catch that.", 'err'); return; }
+      input.value = (input.value ? input.value + ' ' : '') + text;
+      input.dispatchEvent(new Event('input'));
+      if (status.mic_mode === 'send') send({ spoken: true });
+      else input.focus();
+    } catch (error) {
+      toast(error.message, 'err');
+    } finally {
+      button.classList.remove('busy');
+      input.placeholder = 'Ask anything — or tell Cerebro what to do…';
+    }
+  };
+  voice.recorder.start();
+  button.classList.add('recording');
+  input.placeholder = 'Listening… click the mic again when you\'re done';
+}
+
+async function speak(text) {
+  const status = await voiceStatus();
+  if (!status.speak_replies || !text) return;
+  try {
+    const response = await fetch('/api/voice/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    if (!response.ok) return;
+    voice.audio?.pause();
+    voice.audio = new Audio(URL.createObjectURL(await response.blob()));
+    voice.audio.play();
+  } catch { /* speaking is a nicety */ }
+}
+
+async function send({ spoken = false } = {}) {
   const text = input.value.trim();
   if (busy() || (!text && !state.image)) return;
   const image = state.image?.name || null;
@@ -749,7 +839,8 @@ async function send() {
   };
 
   try {
-    const final = await streamChat({ message: text, image, conversation_id: chatId }, card => {
+    const final = await streamChat({ message: text, image, conversation_id: chatId, voice: spoken }, card => {
+      if (card.type === 'plan') { steps.push({ type: 'progress', status: 'complete', title: card.title || 'Plan', detail: (card.steps || []).join(' → ') }); paintSteps(); return; }
       if (card.type !== 'progress') return;
       const running = steps.findLast?.(s => s.title === card.title && s.status === 'running')
         ?? [...steps].reverse().find(s => s.title === card.title && s.status === 'running');
@@ -771,6 +862,7 @@ async function send() {
       };
       state.history.push({ role: 'user', content: text, image_path: image }, message);
       thread.append(messageNode(message));
+      if (spoken) speak(final.reply);
       if (final.conversation) { state.chat = { ...state.chat, ...final.conversation }; paintChatBar(); }
       if (final.task) loadChatTasks();
     } else if (state.chatId === chatId) {
@@ -1377,14 +1469,219 @@ async function loadConnect() {
       <div class="logo browser">${b.running ? '●' : '○'}</div>
       <div><h4>${b.enabled ? (b.running ? `Running · ${esc(b.channel || '')} · ${esc(b.mode || '')}` : 'Ready — starts when needed') : 'Switched off'}</h4>
         <div class="meta">${b.installed ? 'Uses your own sign-ins in a separate, private browser profile.' : 'Install backend/requirements-browser.txt to enable.'}</div></div>
-      <button class="btn sm" data-settings>Settings</button>
+      <div class="btn-row" style="margin:0;flex-direction:column">
+        <button class="btn sm" data-settings>Settings</button>
+        ${b.enabled ? `<button class="btn sm ghost" data-control title="Show the hidden browser at the page Cerebro has open, to finish something by hand">${state.controlling ? 'Done' : 'Take control'}</button>` : ''}
+      </div>
     </div>
     <div class="section-title">Systems<span class="grow"></span></div>
-    <div id="integration-list"></div>`;
+    <div id="integration-list"></div>
+    <div class="section-title">Add-ons<span class="grow"></span>
+      <button class="btn sm primary" id="addon-add">+ Add</button>
+      <button class="icon-btn" id="addon-menu" title="Import or export add-ons" aria-label="More">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>'}</button></div>
+    <p class="section-note">Anything Cerebro should reach: an MCP server, any website you sign in to, or a skill you teach it. Just ask in chat (“connect to Jira”) and Cerebro adds what it needs itself.</p>
+    <div id="addon-list"></div>`;
   $('[data-settings]', body).addEventListener('click', () => openExternal(`${location.origin}/settings#integrations`));
+  $('[data-control]', body)?.addEventListener('click', toggleControl);
+  $('#addon-add').addEventListener('click', e => showMenu(e.currentTarget, [
+    ['MCP server…', addMcpServer],
+    ['Website…', addWebsite],
+    ['Skill…', () => editSkill()],
+  ]));
+  $('#addon-menu').addEventListener('click', e => showMenu(e.currentTarget, [
+    ['Import skills (.zip or SKILL.md)…', () => pickFile('.zip,.md', file => upload('/api/addons/skills/import', file))],
+    ['Import add-ons file…', () => pickFile('.json', file => upload('/api/addons/import', file))],
+    { label: 'Export add-ons', action: () => openExternal(`${location.origin}/api/addons/export`) },
+  ]));
   const list = $('#integration-list');
   state.monitor = data.monitor || state.monitor;
   (data.integrations || []).forEach(item => list.append(integrationCard(item)));
+  loadAddons();
+}
+
+// ================================================================ Add-ons
+async function loadAddons() {
+  const host = $('#addon-list');
+  if (!host) return;
+  const data = await api.get('/api/addons').catch(error => ({ error: error.message }));
+  if (data.error) { host.innerHTML = `<div class="empty-note">${esc(data.error)}</div>`; return; }
+  const items = data.addons || [];
+  if (!items.length) { host.innerHTML = '<div class="empty-note">Nothing added yet.</div>'; return; }
+  host.innerHTML = '';
+  items.forEach(item => host.append(addonCard(item)));
+}
+
+const ADDON_KIND = { mcp: 'MCP', site: 'Website', skill: 'Skill' };
+
+function addonCard(item) {
+  const card = document.createElement('div');
+  card.className = 'card glass integration addon';
+  const status = !item.enabled ? '<span class="badge">Off</span>'
+    : item.status === 'ready' ? '<span class="badge ok">Ready</span>'
+    : item.status === 'needs_sign_in' ? '<span class="badge warn">Sign-in needed</span>'
+    : item.status === 'error' ? '<span class="badge err">Not working</span>'
+    : `<span class="badge">${esc(item.status || '')}</span>`;
+  const where = item.kind === 'mcp' ? (item.url || item.command || '') : item.kind === 'skill' ? (item.description || '') : '';
+  card.innerHTML = `
+    <div class="logo addon-${item.kind}">${esc(ADDON_KIND[item.kind]?.[0] || '+')}</div>
+    <div style="min-width:0"><h4>${esc(item.label)} ${status}</h4>
+      <div class="meta">${esc(ADDON_KIND[item.kind])}${item.kind !== 'skill' ? ` · ${item.tool_count} tools` : ''} · added by ${item.added_by === 'cerebro' ? 'Cerebro' : 'you'}${item.last_used_at ? ` · used ${relTime(item.last_used_at)}` : ''}</div>
+      ${where ? `<div class="meta mono">${esc(where.slice(0, 140))}</div>` : ''}
+      ${item.error && item.status === 'error' ? `<p class="card-error">${esc(item.error)}</p>` : ''}
+      ${item.kind === 'mcp' && item.sign_in?.status === 'failed' ? `<p class="card-error">${esc(item.sign_in.detail || '')}</p>` : ''}
+      <label class="auto-apply"><span class="switch"><input type="checkbox" data-enabled ${item.enabled ? 'checked' : ''}><span></span></span>On</label>
+      ${item.kind === 'mcp' ? `<label class="auto-apply" title="Off: anything that changes something waits for your approval. On: its tools run straight away.">
+        <span class="switch"><input type="checkbox" data-auto ${item.auto_approve ? 'checked' : ''}><span></span></span>Approve its actions automatically</label>` : ''}</div>
+    <div class="btn-row" style="margin:0;flex-direction:column">
+      ${item.kind === 'mcp' && item.status === 'needs_sign_in' ? '<button class="btn sm primary" data-signin>Sign in</button>' : ''}
+      ${item.kind === 'mcp' ? '<button class="btn sm ghost" data-refresh>Reconnect</button><button class="btn sm ghost" data-keys>Keys…</button>' : ''}
+      ${item.kind === 'skill' ? '<button class="btn sm ghost" data-edit>Edit</button>' : ''}
+      <button class="btn sm ghost danger" data-remove>Remove</button>
+    </div>`;
+  const kind = item.kind, name = encodeURIComponent(item.name);
+  $('[data-enabled]', card).addEventListener('change', async e => {
+    await api.post(`/api/addons/${kind}/${name}/enabled`, { enabled: e.currentTarget.checked }).catch(err => toast(err.message, 'err'));
+    loadAddons();
+  });
+  $('[data-auto]', card)?.addEventListener('change', async e => {
+    const enabled = e.currentTarget.checked;
+    await api.post(`/api/addons/mcp/${name}/auto-approve`, { enabled }).catch(err => toast(err.message, 'err'));
+    toast(enabled ? `${item.label}'s actions will run without asking` : `${item.label}'s actions will wait for your approval`, 'ok');
+  });
+  $('[data-signin]', card)?.addEventListener('click', e => addonSignIn(item.name, e.currentTarget));
+  $('[data-refresh]', card)?.addEventListener('click', async e => {
+    e.currentTarget.disabled = true;
+    const result = await api.post(`/api/addons/mcp/${name}/refresh`).catch(err => ({ detail: err.message }));
+    toast(result.ok ? `${item.label}: ${result.count} tools` : (result.detail || 'It didn\'t connect'), result.ok ? 'ok' : 'err');
+    loadAddons();
+  });
+  $('[data-keys]', card)?.addEventListener('click', async () => {
+    const values = await sheet({ title: `Keys for ${item.label}`, ok: 'Save and reconnect',
+      body: `<p class="sheet-note">${item.transport === 'stdio' ? 'Environment variables' : 'Request headers'} the server needs, one per line as NAME=value. They're kept encrypted on this PC.</p>
+        <textarea class="input" name="keys" rows="4" placeholder="${item.transport === 'stdio' ? 'API_TOKEN=…' : 'Authorization=Bearer …'}"></textarea>` });
+    if (!values?.keys?.trim()) return;
+    const keys = Object.fromEntries(values.keys.split('\n').filter(l => l.includes('=')).map(l => [l.split('=')[0].trim(), l.slice(l.indexOf('=') + 1).trim()]));
+    const result = await api.post(`/api/addons/mcp/${name}/keys`, keys).catch(err => ({ detail: err.message }));
+    toast(result.ok ? `${item.label} connected` : (result.detail || 'Saved'), result.ok ? 'ok' : 'err');
+    loadAddons();
+  });
+  $('[data-edit]', card)?.addEventListener('click', () => editSkill(item));
+  $('[data-remove]', card).addEventListener('click', async () => {
+    if (!confirm(`Remove ${item.label}? Its tools go too.`)) return;
+    const result = await api.del(`/api/addons/${kind}/${name}`).catch(err => ({ detail: err.message }));
+    toast(result.detail || 'Removed', result.ok ? 'ok' : 'err');
+    loadConnect();
+  });
+  return card;
+}
+
+async function addMcpServer() {
+  const values = await sheet({ title: 'Add an MCP server', ok: 'Add',
+    body: `<label class="field"><span>Search the MCP Registry</span><input class="input" name="q" placeholder="e.g. jira, github, servicenow"></label>
+      <div id="registry-results" class="registry-results"></div>
+      <label class="field"><span>…or its web address, or the command that runs it</span>
+        <input class="input" name="target" placeholder="https://example.com/mcp  ·  uvx mcp-server-time"></label>
+      <label class="field"><span>Name</span><input class="input" name="label" placeholder="Optional"></label>
+      <label class="field"><span>Keys it needs (NAME=value, one per line)</span><textarea class="input" name="keys" rows="2"></textarea></label>
+      <input type="hidden" name="registry_name">`,
+    setup: form => {
+      let timer;
+      $('[name=q]', form).addEventListener('input', e => {
+        clearTimeout(timer);
+        const q = e.target.value.trim();
+        timer = setTimeout(async () => {
+          const host = $('#registry-results', form);
+          if (q.length < 2) { host.innerHTML = ''; return; }
+          host.innerHTML = '<div class="meta">Searching…</div>';
+          const data = await api.get(`/api/addons/registry?q=${encodeURIComponent(q)}`).catch(err => ({ error: err.message }));
+          host.innerHTML = data.error ? `<div class="meta">${esc(data.error)}</div>` : (data.servers || []).map((s, i) => `
+            <button type="button" class="registry-hit" data-i="${i}"><b>${esc(s.label)}</b> <span class="meta">${esc(s.registry_name)}</span>
+              <span class="meta">${esc(s.description)}</span>${s.needs.length ? `<span class="meta">Needs: ${esc(s.needs.map(n => n.name).join(', '))}</span>` : ''}</button>`).join('') || '<div class="meta">Nothing found — try the website instead.</div>';
+          $$('.registry-hit', host).forEach(button => button.addEventListener('click', () => {
+            const server = data.servers[Number(button.dataset.i)];
+            $$('.registry-hit', host).forEach(b => b.classList.toggle('chosen', b === button));
+            form.registry_name.value = server.registry_name;
+            form.target.value = server.config.url || [server.config.command, ...(server.config.args || [])].join(' ');
+            form.label.value = server.label;
+            if (server.needs.length && !form.keys.value) form.keys.value = server.needs.map(n => `${n.name}=`).join('\n');
+          }));
+        }, 300);
+      });
+    } });
+  if (!values || !(values.target || values.registry_name)) return;
+  const keys = Object.fromEntries((values.keys || '').split('\n').filter(l => l.includes('=') && l.split('=')[1].trim()).map(l => [l.split('=')[0].trim(), l.slice(l.indexOf('=') + 1).trim()]));
+  const target = (values.target || '').trim();
+  const body = values.registry_name ? { registry_name: values.registry_name, label: values.label || null, keys }
+    : /^https?:\/\//.test(target) ? { url: target, label: values.label || null, keys } : { command: null, url: target, label: values.label || null, keys };
+  toast('Connecting…');
+  const result = await api.post('/api/addons/mcp', body).catch(err => ({ detail: err.message }));
+  if (result.status === 'needs_sign_in') { toast(`${result.label} added — sign in to use it`); loadAddons(); addonSignIn(result.name); return; }
+  toast(result.ok ? `Added ${result.label} — ${result.count} tools` : (result.detail || 'It didn\'t connect'), result.ok ? 'ok' : 'err');
+  loadAddons();
+}
+
+async function addWebsite() {
+  const values = await sheet({ title: 'Add a website', ok: 'Add',
+    body: `<p class="sheet-note">Cerebro works in it through its hidden browser, signed in as you, and learns where its search is.</p>
+      <label class="field"><span>Address</span><input class="input" name="url" required placeholder="https://portal.example.com"></label>
+      <label class="field"><span>Name</span><input class="input" name="name" placeholder="e.g. Vendor portal"></label>
+      <label class="field"><span>What's on it</span><input class="input" name="description" placeholder="Optional — helps Cerebro know when to use it"></label>` });
+  if (!values?.url) return;
+  const result = await api.post('/api/addons/sites', values).catch(err => ({ detail: err.message }));
+  if (!result.ok) { toast(result.detail || 'Couldn\'t add it', 'err'); return; }
+  toast(`Added ${result.label} — sign in on its card`, 'ok');
+  loadConnect();
+}
+
+async function editSkill(item) {
+  const values = await sheet({ title: item ? `Skill: ${item.label}` : 'Teach Cerebro a skill', ok: 'Save',
+    body: `<label class="field"><span>Name</span><input class="input" name="name" required value="${esc(item?.name || '')}" placeholder="e.g. close-ticket"></label>
+      <label class="field"><span>When to use it</span><input class="input" name="description" value="${esc(item?.description || '')}" placeholder="One line"></label>
+      <label class="field"><span>Steps</span><textarea class="input" name="instructions" rows="9" required placeholder="1. …">${esc(item?.instructions || '')}</textarea></label>` });
+  if (!values) return;
+  const result = await api.post('/api/addons/skills', values).catch(err => ({ detail: err.message }));
+  toast(result.ok ? `Saved ${result.name}` : result.detail, result.ok ? 'ok' : 'err');
+  loadAddons();
+}
+
+function pickFile(accept, then) {
+  const picker = document.createElement('input');
+  picker.type = 'file';
+  picker.accept = accept;
+  picker.addEventListener('change', () => picker.files[0] && then(picker.files[0]));
+  picker.click();
+}
+
+async function upload(path, file) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const result = await api.post(path, form).catch(err => ({ detail: err.message }));
+  const names = result.imported || result.added || [];
+  toast(result.ok ? `Imported ${names.length}: ${names.join(', ')}` : result.detail, result.ok ? 'ok' : 'err');
+  loadConnect();
+}
+
+async function addonSignIn(name, button) {
+  if (button) button.disabled = true;
+  const started = await api.post(`/api/addons/mcp/${encodeURIComponent(name)}/sign-in`).catch(err => ({ ok: false, detail: err.message }));
+  if (!started.ok) { toast(started.detail || 'Sign-in could not start', 'err'); if (button) button.disabled = false; return; }
+  toast('Sign in in the browser tab that opened.');
+  const poll = setInterval(async () => {
+    const status = await api.get(`/api/addons/mcp/${encodeURIComponent(name)}/sign-in`).catch(() => null);
+    if (!status || status.status === 'waiting') return;
+    clearInterval(poll);
+    toast(status.detail || 'Done', status.status === 'connected' ? 'ok' : 'err');
+    if (state.tab === 'connect') loadAddons();
+    if (button) button.disabled = false;
+  }, 2000);
+}
+
+async function toggleControl() {
+  const path = state.controlling ? '/api/addons/browser/release' : '/api/addons/browser/take-control';
+  const result = await api.post(path).catch(err => ({ ok: false, detail: err.message }));
+  if (result.ok) state.controlling = !state.controlling;
+  toast(result.detail, result.ok ? 'ok' : 'err');
+  loadConnect();
 }
 
 function integrationCard(item) {

@@ -1,0 +1,8 @@
+# Talking to Cerebro: push-to-talk, the mic button, and spoken replies.
+# Installed in the Windows build. Speech is turned into text on this PC with
+# faster-whisper (the model is downloaded once, on first use, not bundled).
+#   pip install -r desktop/requirements-voice.txt
+faster-whisper>=1.0,<2.0
+sounddevice>=0.4,<1.0
+# Natural online voices when Amazon Polly isn't set up (no key needed).
+edge-tts>=6.1,<8.0

@@ -15,6 +15,7 @@ Every tool declares a *mode*, which is the safety contract:
               as a draft card, and runs when the user approves it.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -68,6 +69,10 @@ class Tool:
     #: Activity state shown while it runs (see app.core.activity_state).
     activity: str = "searching"
     available: Optional[Callable[[ToolContext], bool]] = None
+    #: Who added it at runtime ("mcp:jira", "site:wiki", …); "" for built-ins.
+    owner: str = ""
+    #: Short words find_tools matches on, besides the name and description.
+    keywords: str = ""
 
     def spec(self) -> dict:
         return {"name": self.name, "description": self.description,
@@ -121,10 +126,73 @@ def schema(required: List[str] = None, **properties: dict) -> dict:
     return {"type": "object", "properties": properties, "required": required or []}
 
 
+def register_dynamic(item: Tool, owner: str) -> Tool:
+    """Add a tool at runtime (an MCP server's, a website's) under ``owner``.
+
+    Built-in tools are never replaced: an add-on tool whose name is taken gets
+    the owner's name in front instead.
+    """
+    if item.mode not in MODES:
+        raise ValueError(f"Unknown tool mode: {item.mode}")
+    item.owner = owner
+    existing = REGISTRY.get(item.name)
+    if existing is not None and existing.owner != owner:
+        item.name = safe_name(f"{owner.split(':', 1)[-1]}_{item.name}")
+    REGISTRY[item.name] = item
+    return item
+
+
+def unregister_owner(owner: str) -> int:
+    """Remove every tool ``owner`` added. Returns how many went."""
+    names = [name for name, item in list(REGISTRY.items()) if item.owner == owner]
+    for name in names:
+        REGISTRY.pop(name, None)
+    return len(names)
+
+
+def owned_by(owner: str) -> List[Tool]:
+    return [item for item in list(REGISTRY.values()) if item.owner == owner]
+
+
+def safe_name(text: str, limit: int = 64) -> str:
+    """A tool name every provider accepts: letters, digits, ``_`` and ``-``."""
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", text or "").strip("_") or "tool"
+    return name[:limit]
+
+
 def available_tools(ctx: ToolContext) -> List[Tool]:
-    return [item for item in REGISTRY.values() if item.is_available(ctx)]
+    return [item for item in list(REGISTRY.values()) if item.is_available(ctx)]
+
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def search(query: str, tools: List[Tool], limit: int = 8) -> List[Tool]:
+    """The tools best matching ``query`` by name, keywords and description."""
+    words = {w for w in _WORD.findall((query or "").lower()) if len(w) > 1 or w.isdigit()}
+    if not words:
+        return []
+    scored = []
+    for item in tools:
+        name = set(_WORD.findall(item.name.lower().replace("__", " ")))
+        extra = set(_WORD.findall((item.keywords + " " + item.owner).lower()))
+        text = set(_WORD.findall(item.description.lower()))
+        score = 0.0
+        for word in words:
+            stem = word.rstrip("s")
+            if word in name or any(n.startswith(stem) for n in name):
+                score += 3
+            if word in extra or any(e.startswith(stem) for e in extra):
+                score += 2
+            if word in text or any(t.startswith(stem) for t in text if len(stem) > 3):
+                score += 1
+        if score:
+            scored.append((score, item.name, item))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    return [row[2] for row in scored[:limit]]
 
 
 def catalog() -> List[dict]:
     return [{"name": item.name, "mode": item.mode, "label": item.label,
-             "description": item.description} for item in REGISTRY.values()]
+             "description": item.description, "owner": item.owner or None}
+            for item in list(REGISTRY.values())]

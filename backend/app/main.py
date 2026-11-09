@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     # Sweeps the Power Automate inbox folder in the background when the bridge
     # is enabled, so nobody has to keep an importer console open.
     watchers.start()
+    # MCP servers, websites and skills added at runtime (loaded in the background).
+    from app.services import capabilities
+
+    capabilities.start()
 
     url = f"http://{'localhost' if settings.HOST in ('0.0.0.0', '127.0.0.1') else settings.HOST}:{settings.PORT}"
     print(STARTUP_BANNER)
@@ -59,6 +63,7 @@ async def lifespan(app: FastAPI):
     yield
 
     watchers.stop()
+    capabilities.stop()
     from app.services import browser
 
     browser.engine().shutdown()

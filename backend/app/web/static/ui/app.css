@@ -728,3 +728,23 @@ body.maximized .app { max-width: none; }
   .brand .brain-host { width: 38px; }
   .brand .brain-host .mascot { width: 38px !important; height: 33px !important; }
 }
+
+/* ------------------------------------------------------- 0.7: add-ons & voice */
+.icon-btn.mic.recording { color: #fff; background: var(--err); animation: mic-pulse 1.2s ease-in-out infinite; }
+.icon-btn.mic.busy { color: var(--violet); background: var(--accent-soft); }
+@keyframes mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(251, 113, 133, .45); } 50% { box-shadow: 0 0 0 6px rgba(251, 113, 133, 0); } }
+@media (prefers-reduced-motion: reduce) { .icon-btn.mic.recording { animation: none; } }
+.section-note { margin: -2px 2px 10px; font-size: 12px; color: var(--text-faint); line-height: 1.45; }
+.addon .meta.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.logo.addon-mcp { background: linear-gradient(135deg, #7c3aed, #22d3ee); }
+.logo.addon-site { background: linear-gradient(135deg, #0ea5e9, #22c55e); }
+.logo.addon-skill { background: linear-gradient(135deg, #f59e0b, #ec4899); }
+.btn.danger { color: var(--err); }
+.registry-results { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; margin: 4px 0 10px; }
+.registry-hit { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 8px 10px;
+  border-radius: 10px; border: 1px solid var(--stroke); background: var(--glass); color: var(--text); cursor: pointer; font: inherit; font-size: 12.5px; }
+.registry-hit:hover, .registry-hit.chosen { border-color: var(--violet); background: var(--accent-soft); }
+.registry-hit .meta { font-size: 11.5px; color: var(--text-faint); }
+.action-card.plan { border-color: rgba(139, 92, 246, .35); }
+.plan-steps { margin: 2px 0 0; padding-left: 20px; font-size: 12.5px; color: var(--text-dim); line-height: 1.55; }
+.card-shot { display: block; width: 100%; max-height: 220px; object-fit: cover; object-position: top; border-radius: 10px; border: 1px solid var(--stroke); margin: 2px 0 8px; }

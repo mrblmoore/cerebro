@@ -12,7 +12,7 @@
 
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 ROOT = Path(SPECPATH).parent
 BACKEND = ROOT / "backend"
@@ -36,7 +36,7 @@ for name in ("README.md", "GETTING_STARTED.md"):
     if (ROOT / name).exists():
         datas.append((str(ROOT / name), "."))
 for name in ("INSTALL.md", "CONFIGURATION.md", "WIDGET.md", "POWER_AUTOMATE.md",
-             "POWER_AUTOMATE_QUICKSTART.md"):
+             "POWER_AUTOMATE_QUICKSTART.md", "ADDONS.md", "VOICE.md"):
     if (ROOT / "docs" / name).exists():
         datas.append((str(ROOT / "docs" / name), "docs"))
 
@@ -100,6 +100,13 @@ hiddenimports = [
     "app.services.agent.system_tools", "app.services.connector_backup",
     "app.api.integrations",
     "app.models.agent_action",
+    # 0.7: add-ons (MCP servers, websites, skills) and voice.
+    "app.services.capabilities", "app.services.mcp_client", "app.services.skills",
+    "app.services.speech", "app.services.tts",
+    "app.services.agent.capability_tools", "app.services.agent.web_tools",
+    "app.services.agent.plan_tools", "app.services.browser.generic",
+    "app.api.addons", "app.api.voice", "app.models.capability",
+    "edge_tts", "faster_whisper", "ctranslate2", "av", "tokenizers", "numpy",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
 # Playwright drives the installed Edge through its own Node-based driver, which
@@ -109,13 +116,24 @@ try:
     datas += collect_data_files("playwright")
 except Exception:  # Playwright not installed: integrations are simply unavailable
     pass
+# Speech to text: faster-whisper carries the Silero VAD model as package data,
+# and CTranslate2 and PyAV load native libraries at runtime. The Whisper model
+# itself is downloaded on first use, not bundled.
+binaries = []
+for package in ("faster_whisper", "ctranslate2", "av", "edge_tts"):
+    try:
+        hiddenimports += collect_submodules(package)
+        datas += collect_data_files(package)
+        binaries += collect_dynamic_libs(package)
+    except Exception:  # voice not installed at build time: voice is simply unavailable
+        pass
 
 excludes = ["tkinter"]   # the server build has no interface
 
 server = Analysis(
     [str(ROOT / "packaging" / "cerebro_app.py")],
     pathex=[str(BACKEND), str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -127,7 +145,7 @@ server = Analysis(
 # The desktop app window is pywebview over Edge WebView2 (with pythonnet on
 # Windows); the tray is pystray. Both carry data files their imports don't show.
 widget_datas, widget_hidden = [], []
-for package in ("webview", "pystray", "clr_loader", "pythonnet"):
+for package in ("webview", "pystray", "clr_loader", "pythonnet", "_sounddevice_data"):
     try:
         widget_hidden += collect_submodules(package)
         widget_datas += collect_data_files(package)
@@ -145,6 +163,8 @@ widget = Analysis(
         "PIL.Image", "pynput", "pynput.keyboard",
         "shell", "tray", "brain_frames", "buddy", "webview", "pystray", "clr",
         "tkinter", "PIL.ImageTk",
+        # Push-to-talk: the microphone (PortAudio through sounddevice) and WAV playback.
+        "voice", "sounddevice", "_sounddevice", "numpy", "winsound", "wave",
     ] + widget_hidden,
     hookspath=[],
     runtime_hooks=[],

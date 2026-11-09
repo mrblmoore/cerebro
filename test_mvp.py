@@ -5233,6 +5233,1003 @@ def test_tray_notices():
 
 
 # -------------------------------------------------------------------- main
+# =================================================================== 0.7.0
+# Add-ons (MCP servers, websites, skills) and voice.
+
+_STDIO_MCP = r'''
+import json, sys
+TICKETS = {"T-1": "Printer offline at front desk"}
+TOOLS = [
+    {"name": "get_ticket", "description": "Look up a ticket by id.",
+     "inputSchema": {"type": "object", "properties": {"ticket_id": {"type": "string"}}, "required": ["ticket_id"]},
+     "annotations": {"readOnlyHint": True}},
+    {"name": "create_ticket", "description": "Create a ticket.",
+     "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}},
+]
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method, params = message.get("method"), message.get("params") or {}
+    if method == "initialize":
+        result = {"protocolVersion": params.get("protocolVersion"), "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "tickets", "version": "1"}, "instructions": "Ticket ids look like T-1."}
+    elif method == "tools/list":
+        result = {"tools": TOOLS}
+    elif method == "tools/call":
+        args = params.get("arguments") or {}
+        if params["name"] == "get_ticket":
+            text = TICKETS.get(args.get("ticket_id"), "no such ticket")
+        else:
+            key = "T-%d" % (len(TICKETS) + 1)
+            TICKETS[key] = args.get("title")
+            text = "created %s: %s" % (key, args.get("title"))
+        result = {"content": [{"type": "text", "text": text}], "isError": False}
+    else:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                                     "error": {"code": -32601, "message": "no"}}) + "\n")
+        sys.stdout.flush()
+        continue
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}) + "\n")
+    sys.stdout.flush()
+'''
+
+_SDK_MCP = r'''
+import sys
+from mcp.server.mcpserver import MCPServer
+from mcp_types import ToolAnnotations
+server = MCPServer("sdk-tickets")
+@server.tool(description="Look up a ticket by id.", annotations=ToolAnnotations(readOnlyHint=True))
+def get_ticket(ticket_id: str) -> str:
+    return "Printer offline" if ticket_id == "T-1" else "no such ticket"
+@server.tool(description="Create a ticket.")
+def create_ticket(title: str) -> str:
+    return "created T-2: " + title
+mode = sys.argv[1] if len(sys.argv) > 1 else "stdio"
+if mode == "stdio":
+    server.run("stdio")
+elif mode == "http":
+    server.run("streamable-http", host="127.0.0.1", port=int(sys.argv[2]))
+else:
+    server.run("sse", host="127.0.0.1", port=int(sys.argv[2]))
+'''
+
+
+def _addon_dirs():
+    """Point add-ons and connector files at a fresh temporary folder."""
+    import tempfile
+    from unittest import mock
+
+    from app.services import capabilities, skills
+    from app.services.browser import connector as connector_module
+
+    root = Path(tempfile.mkdtemp(dir=_TEMP_DIR, prefix="addons-"))
+    return root, [mock.patch.object(capabilities, "CAPABILITIES_DIR", root / "capabilities"),
+                  mock.patch.object(skills, "CAPABILITIES_DIR", root / "capabilities"),
+                  mock.patch.object(connector_module, "CONNECTORS_DIR", root / "connectors")]
+
+
+def _fake_oauth_mcp(token: str = "good-token"):
+    """An MCP server over streamable HTTP that needs OAuth sign-in, plus its
+    authorization server — discovery, client registration, PKCE and tokens."""
+    import base64
+    import hashlib
+    import http.server
+    import json as _json
+    import threading
+    from urllib.parse import parse_qs, urlencode, urlparse
+
+    state = {"codes": {}, "registered": [], "calls": [], "tokens": 0}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _json(self, status, body, headers=None):
+            data = _json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):  # noqa: N802
+            base = f"http://127.0.0.1:{self.server.server_port}"
+            url = urlparse(self.path)
+            if url.path.startswith("/.well-known/oauth-protected-resource"):
+                return self._json(200, {"resource": f"{base}/mcp", "authorization_servers": [base],
+                                        "scopes_supported": ["tickets"]})
+            if url.path == "/.well-known/oauth-authorization-server":
+                return self._json(200, {"issuer": base, "authorization_endpoint": f"{base}/authorize",
+                                        "token_endpoint": f"{base}/token",
+                                        "registration_endpoint": f"{base}/register",
+                                        "code_challenge_methods_supported": ["S256"]})
+            if url.path == "/authorize":
+                query = {k: v[0] for k, v in parse_qs(url.query).items()}
+                code = "code-" + str(len(state["codes"]) + 1)
+                state["codes"][code] = query
+                self.send_response(302)
+                self.send_header("Location", query["redirect_uri"] + "?" + urlencode(
+                    {"code": code, "state": query["state"]}))
+                self.end_headers()
+                return
+            self._json(404, {})
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode()
+            url = urlparse(self.path)
+            base = f"http://127.0.0.1:{self.server.server_port}"
+            if url.path == "/register":
+                body = _json.loads(raw)
+                state["registered"].append(body)
+                return self._json(201, {"client_id": "cerebro-client", **body})
+            if url.path == "/token":
+                form = {k: v[0] for k, v in parse_qs(raw).items()}
+                request = state["codes"].get(form.get("code"), {})
+                challenge = base64.urlsafe_b64encode(hashlib.sha256(
+                    (form.get("code_verifier") or "").encode()).digest()).decode().rstrip("=")
+                if challenge != request.get("code_challenge"):
+                    return self._json(400, {"error": "invalid_grant"})
+                state["tokens"] += 1
+                return self._json(200, {"access_token": token, "refresh_token": "r1",
+                                        "expires_in": 3600, "token_type": "Bearer"})
+            if url.path == "/mcp":
+                if self.headers.get("Authorization") != f"Bearer {token}":
+                    return self._json(401, {"error": "unauthorized"}, {
+                        "WWW-Authenticate": f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource/mcp"'})
+                message = _json.loads(raw)
+                if "id" not in message:
+                    self.send_response(202)
+                    self.end_headers()
+                    return
+                method = message["method"]
+                if method == "initialize":
+                    result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                              "serverInfo": {"name": "secure-tickets"}}
+                elif method == "tools/list":
+                    result = {"tools": [{"name": "whoami", "description": "Who is signed in.",
+                                         "inputSchema": {"type": "object", "properties": {}},
+                                         "annotations": {"readOnlyHint": True}}]}
+                else:
+                    state["calls"].append(message)
+                    result = {"content": [{"type": "text", "text": "signed in as Sam"}]}
+                return self._json(200, {"jsonrpc": "2.0", "id": message["id"], "result": result},
+                                  {"Mcp-Session-Id": "s-1"})
+            self._json(404, {})
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, state
+
+
+def _fake_registry(entries):
+    import http.server
+    import json as _json
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            url = urlparse(self.path)
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            seen.append(query)
+            needle = (query.get("search") or "").lower()
+            found = [{"server": e, "_meta": {}} for e in entries
+                     if needle in (e["name"] + " " + e.get("description", "")).lower()]
+            data = _json.dumps({"servers": found, "metadata": {"count": len(found)}}).encode()
+            self.send_response(200 if url.path == "/v0.1/servers" else 404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, seen
+
+
+def test_mcp_servers():
+    """MCP servers: added at runtime, tools appear, reads run, writes ask first."""
+    print("\nAdd-ons — MCP servers")
+    import importlib.util
+    import socket
+    import subprocess
+    import sys as _sys
+    import time as _time
+    from unittest import mock
+
+    from app.services import capabilities, mcp_client
+    from app.services.agent import actions, loop
+    from app.services.agent.registry import (REGISTRY, Tool, ToolContext, register_dynamic, search,
+                                             unregister_owner)
+
+    root, patches = _addon_dirs()
+    script = root / "tickets_server.py"
+    script.write_text(_STDIO_MCP, encoding="utf-8")
+    for patch in patches:
+        patch.start()
+    db = session()
+    try:
+        outcome = capabilities.add_mcp(db, "Tickets", {"transport": "stdio", "command": _sys.executable,
+                                                       "args": [str(script)], "source": "user"})
+        check("A local MCP server is added and connected", outcome.get("ok") and outcome["count"] == 2, outcome)
+        check("Its tools appear without a restart",
+              {"tickets__get_ticket", "tickets__create_ticket"} <= set(REGISTRY), sorted(REGISTRY)[-5:])
+        check("A read-only tool runs straight away; others need approval",
+              REGISTRY["tickets__get_ticket"].mode == "read"
+              and REGISTRY["tickets__create_ticket"].mode == "approval")
+        check("The server's own instructions are passed on", "T-1" in (outcome.get("instructions") or ""))
+        ctx = ToolContext(db=db, context={})
+        read = REGISTRY["tickets__get_ticket"].handler(ctx, ticket_id="T-1")
+        check("A read tool returns the server's answer", "Printer offline" in read["content"], read)
+
+        ctx = ToolContext(db=db, context={})
+        write = REGISTRY["tickets__create_ticket"].handler(ctx, title="Scanner jammed")
+        card = ctx.drafts[0] if ctx.drafts else {}
+        check("A write tool becomes an approval card, not a change",
+              card.get("type") == "approval" and card.get("status") == "awaiting_approval"
+              and "approves" in write["content"], write)
+        check("…showing the arguments it will send",
+              any(f["after"] == "Scanner jammed" for f in card.get("preview", {}).get("fields", [])), card)
+        approved = actions.approve(db, card["action_id"])
+        check("Approving it calls the server", "created T-2" in approved["reply"], approved)
+
+        capabilities.set_auto_approve(db, "tickets", True)
+        ctx = ToolContext(db=db, context={})
+        auto = REGISTRY["tickets__create_ticket"].handler(ctx, title="Monitor flicker")
+        check("With auto-approve on, it runs at once and is still recorded",
+              "created T-3" in auto["content"] and ctx.drafts and ctx.drafts[0]["automatic"], auto)
+        capabilities.set_auto_approve(db, "tickets", False)
+
+        with mock.patch.object(capabilities, "connection",
+                               return_value=mock.Mock(call_tool=mock.Mock(
+                                   side_effect=mcp_client.OutcomeUnknown("No answer within 120 s")))):
+            ctx = ToolContext(db=db, context={})
+            REGISTRY["tickets__create_ticket"].handler(ctx, title="Lost")
+            failed = actions.approve(db, ctx.drafts[0]["action_id"])
+        check("A call whose outcome is unknown fails without retrying, and says to check",
+              "may or may not" in failed["reply"], failed)
+
+        capabilities.set_enabled(db, "mcp", "tickets", False)
+        check("Switching a server off removes its tools", "tickets__get_ticket" not in REGISTRY)
+        capabilities.set_enabled(db, "mcp", "tickets", True)
+        check("…and switching it on brings them back", "tickets__get_ticket" in REGISTRY)
+
+        unregister_owner("mcp:tickets")
+        capabilities.stop()
+        capabilities.load_all(db, connect=False)
+        check("Saved servers' tools load from cache at start-up, before connecting",
+              "tickets__create_ticket" in REGISTRY)
+
+        # Lots of tools: only the relevant add-on tools are offered.
+        for index in range(120):
+            register_dynamic(Tool(f"bulk__tool_{index}", f"Bulk operation number {index} on widgets.",
+                                  lambda ctx, **_: {"content": "x"}, {"type": "object", "properties": {}}),
+                             "mcp:bulk")
+        ctx = ToolContext(db=db, context={})
+        offered = [t.name for t in loop.offered_tools(ctx, "create a ticket for the scanner")]
+        check("With 100+ tools, the matching add-on tool is offered and the rest held back",
+              "tickets__create_ticket" in offered and sum(n.startswith("bulk__") for n in offered) <= 8,
+              len(offered))
+        found = REGISTRY["find_tools"].handler(ctx, query="widgets bulk operation 7")
+        check("find_tools surfaces held-back tools for the rest of the turn",
+              "bulk__tool_7" in found["content"] and "bulk__tool_7" in ctx.context["_offered"]
+              and "bulk__tool_7" in [t.name for t in loop.offered_tools(ctx, "anything")])
+        check("Tool search ranks by name and description",
+              search("create ticket", [REGISTRY["tickets__create_ticket"], REGISTRY["bulk__tool_1"]])[0].name
+              == "tickets__create_ticket")
+        unregister_owner("mcp:bulk")
+
+        capabilities.set_secret("tickets", {"env": {"API_TOKEN": "s3cret-value"}})
+        check("Keys are kept in the encrypted store, not the add-on file",
+              capabilities.get_secret("tickets")["env"]["API_TOKEN"] == "s3cret-value"
+              and "s3cret" not in (root / "capabilities" / "mcp" / "tickets.json").read_text(encoding="utf-8"))
+        exported = capabilities.export_all()
+        check("Export holds the definitions but no keys",
+              exported["mcp"][0]["name"] == "tickets" and "s3cret" not in json.dumps(exported))
+
+        removed = capabilities.remove(db, "mcp", "tickets")
+        check("Removing a server removes its tools, file and keys",
+              removed["ok"] and "tickets__get_ticket" not in REGISTRY
+              and not (root / "capabilities" / "mcp" / "tickets.json").exists()
+              and capabilities.get_secret("tickets") == {})
+        imported = capabilities.import_all(db, exported)
+        _time.sleep(0.2)
+        check("An exported file imports on another PC", imported["added"] == ["tickets"])
+        for _ in range(50):
+            if "tickets__get_ticket" in REGISTRY:
+                break
+            _time.sleep(0.2)
+        check("…and the imported server connects by itself", "tickets__get_ticket" in REGISTRY)
+        capabilities.remove(db, "mcp", "tickets")
+
+        # The official MCP SDK's own server, over every transport.
+        if importlib.util.find_spec("mcp") is None:
+            print("  - skipped SDK interop: the mcp package is not installed")
+        else:
+            sdk = root / "sdk_server.py"
+            sdk.write_text(_SDK_MCP, encoding="utf-8")
+            conn = mcp_client.MCPConnection("sdk", {"transport": "stdio", "command": _sys.executable,
+                                                    "args": [str(sdk)]})
+            info = conn.connect()
+            tools = conn.list_tools()
+            text = mcp_client.result_text(conn.call_tool("get_ticket", {"ticket_id": "T-1"}))
+            conn.close()
+            check("Works with the official SDK's server over stdio",
+                  info.get("name") == "sdk-tickets" and len(tools) == 2 and "Printer" in text)
+            for mode, path in (("http", "/mcp"), ("sse", "/sse")):
+                sock = socket.socket()
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+                sock.close()
+                process = subprocess.Popen([_sys.executable, str(sdk), mode, str(port)],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    conn = None
+                    for _ in range(40):
+                        try:
+                            conn = mcp_client.MCPConnection("sdk", {"url": f"http://127.0.0.1:{port}{path}"})
+                            conn.connect()
+                            break
+                        except mcp_client.MCPError:
+                            conn = None
+                            _time.sleep(0.25)
+                    created = conn and mcp_client.result_text(conn.call_tool("create_ticket", {"title": "x"}))
+                    check(f"…and over {'streamable HTTP' if mode == 'http' else 'SSE (found by itself)'}",
+                          bool(created) and "created T-2" in created, created)
+                    if conn:
+                        conn.close()
+                finally:
+                    process.terminate()
+    finally:
+        capabilities.stop()
+        unregister_owner("mcp:tickets")
+        unregister_owner("mcp:bulk")
+        for patch in reversed(patches):
+            patch.stop()
+
+
+def test_mcp_sign_in_and_self_adding():
+    """OAuth sign-in, the MCP Registry, and Cerebro adding a connection mid-task."""
+    print("\nAdd-ons — sign-in, the MCP Registry, and adding by itself")
+    import sys as _sys
+    import time as _time
+    from unittest import mock
+
+    import requests as _requests
+
+    from app.services import capabilities, mcp_client
+    from app.services.agent import actions, loop
+    from app.services.agent.registry import REGISTRY, ToolContext, unregister_owner
+
+    root, patches = _addon_dirs()
+    oauth, oauth_state = _fake_oauth_mcp()
+    base = f"http://127.0.0.1:{oauth.server_port}"
+    for patch in patches:
+        patch.start()
+    db = session()
+    try:
+        added = capabilities.add_mcp(db, "secure", {"url": f"{base}/mcp", "source": "user"})
+        check("A server that needs sign-in is added and says so", added["status"] == "needs_sign_in", added)
+        started = capabilities.begin_sign_in("secure", open_browser=lambda url: _requests.get(url, timeout=10))
+        check("Sign-in starts in the browser", started["ok"] and started["status"] == "waiting")
+        for _ in range(60):
+            if capabilities.sign_in_state("secure")["status"] != "waiting":
+                break
+            _time.sleep(0.2)
+        check("OAuth with discovery, client registration and PKCE signs in",
+              capabilities.sign_in_state("secure")["status"] == "connected"
+              and oauth_state["registered"] and oauth_state["tokens"] == 1,
+              capabilities.sign_in_state("secure"))
+        check("…registering Cerebro as a public client with a local redirect",
+              oauth_state["registered"][0]["token_endpoint_auth_method"] == "none"
+              and oauth_state["registered"][0]["redirect_uris"][0].startswith("http://127.0.0.1:"))
+        result = REGISTRY["secure__whoami"].handler(ToolContext(db=db, context={}))
+        check("After sign-in its tools work with the token", "signed in as Sam" in result["content"], result)
+        check("The token is kept encrypted, not in the add-on file",
+              capabilities.get_secret("secure")["oauth"]["access_token"] == "good-token"
+              and "good-token" not in (root / "capabilities" / "mcp" / "secure.json").read_text(encoding="utf-8"))
+        capabilities.remove(db, "mcp", "secure")
+
+        # Registry entries become ready-to-add connections.
+        remote = capabilities.registry_option({"name": "io.test/remote", "description": "Remote",
+                                               "remotes": [{"type": "streamable-http", "url": "https://x.test/mcp",
+                                                            "headers": [{"name": "X-Api-Key", "isRequired": True,
+                                                                         "isSecret": True}]}]})
+        check("A registry remote is added by address, listing the key it needs",
+              remote["config"] == {"transport": "http", "url": "https://x.test/mcp", "source": "registry",
+                                   "registry_name": "io.test/remote"} and remote["needs"][0]["name"] == "X-Api-Key")
+        pypi = capabilities.registry_option({"name": "io.test/py", "packages": [
+            {"registryType": "pypi", "identifier": "mcp-server-time", "version": "1.2.0",
+             "transport": {"type": "stdio"}}]})
+        npm = capabilities.registry_option({"name": "io.test/js", "packages": [
+            {"registryType": "npm", "identifier": "@scope/server", "version": "0.3.0",
+             "transport": {"type": "stdio"}, "environmentVariables": [{"name": "TOKEN", "isRequired": True}]}]})
+        check("A Python package runs with uvx, pinned to its version",
+              pypi["config"]["command"] == "uvx" and pypi["config"]["args"] == ["mcp-server-time==1.2.0"])
+        check("A Node package runs with npx -y, and its required variables are listed",
+              npm["config"]["args"] == ["-y", "@scope/server@0.3.0"] and npm["needs"][0]["name"] == "TOKEN")
+        with mock.patch.object(mcp_client, "_which", return_value=None):
+            try:
+                mcp_client.resolve_command("npx", ["-y", "x"])
+                check("A Node server without Node.js says where to get it", False)
+            except mcp_client.MCPError as exc:
+                check("A Node server without Node.js says where to get it", "nodejs.org" in str(exc))
+
+        # Cerebro finds and adds a server by itself, then carries on with it.
+        script = root / "tickets_server.py"
+        script.write_text(_STDIO_MCP, encoding="utf-8")
+        entry = {"name": "io.test/tickets", "description": "Help-desk tickets",
+                 "packages": [{"registryType": "pypi", "identifier": "tickets-mcp",
+                               "transport": {"type": "stdio"}}]}
+        registry, queries = _fake_registry([entry])
+        real_option = capabilities.registry_option
+
+        def local_option(server):
+            option = real_option(server)
+            if option and server["name"] == "io.test/tickets":
+                option["config"].update(command=_sys.executable, args=[str(script)])
+            return option
+
+        seen_tools = []
+
+        def script_llm(self, messages, tools=None, **kwargs):
+            names = [t["name"] for t in tools or []]
+            seen_tools.append(names)
+            step = sum(1 for m in messages if m["role"] == "tool")
+            calls = [("find_connector", {"query": "tickets"}),
+                     ("add_mcp_server", {"registry_name": "io.test/tickets"}),
+                     ("tickets__get_ticket", {"ticket_id": "T-1"})]
+            if step < len(calls) and names:
+                name, args = calls[step]
+                return {"content": "", "tool_calls": [{"id": f"c{step}", "name": name, "arguments": args}]}
+            return {"content": "Ticket T-1: the printer at the front desk is offline.", "tool_calls": []}
+
+        enabled, patched = _with_ai(script_llm)
+        with enabled, patched, mock.patch.object(capabilities, "REGISTRY_URL",
+                                                 f"http://127.0.0.1:{registry.server_port}"), \
+                mock.patch.object(capabilities, "registry_option", side_effect=local_option):
+            result = loop.run(db, "What's the status of ticket T-1 in our help desk?", {})
+        check("Cerebro searches the MCP Registry for a connection",
+              any(q.get("search") == "tickets" for q in queries), queries)
+        check("…adds it, and uses its new tool in the same answer",
+              result["tools_used"] == ["find_connector", "add_mcp_server", "tickets__get_ticket"]
+              and "offline" in result["reply"], result["tools_used"])
+        check("The new tool is offered right after it's added",
+              "tickets__get_ticket" in seen_tools[2] and "tickets__get_ticket" not in seen_tools[0])
+        added_card = next((c for c in result["cards"] if c.get("tool") == "capability_added"), {})
+        check("An “Added … — N tools” card with Remove is posted",
+              added_card.get("title", "").startswith("Added") and added_card.get("undo_label") == "Remove"
+              and added_card.get("can_undo"), added_card)
+        row = next(r for r in capabilities.list_all(db) if r["name"] == "tickets")
+        check("It's listed under Add-ons as added by Cerebro", row["added_by"] == "cerebro" and row["tool_count"] == 2)
+        undone = actions.undo(db, added_card["action_id"])
+        check("Remove on the card takes it away again",
+              "Undone" in undone["reply"] and "tickets__get_ticket" not in REGISTRY, undone)
+
+        # A local program the user didn't name, not from the Registry: ask once.
+        ctx = ToolContext(db=db, context={"_user_text": "check the help desk"})
+        asked = REGISTRY["add_mcp_server"].handler(ctx, command=_sys.executable, args=[str(script)], name="tickets")
+        check("A local program Cerebro chose itself waits for approval",
+              ctx.drafts and ctx.drafts[0]["tool"] == "add_mcp_server" and "tickets__get_ticket" not in REGISTRY,
+              asked)
+        approved = actions.approve(db, ctx.drafts[0]["action_id"])
+        check("…and is added once approved", "2 tools" in approved["reply"] and "tickets__get_ticket" in REGISTRY,
+              approved)
+        capabilities.remove(db, "mcp", "tickets")
+        ctx = ToolContext(db=db, context={"_user_text": f"add this server: {_sys.executable} {script}"})
+        direct = REGISTRY["add_mcp_server"].handler(ctx, command=_sys.executable, args=[str(script)], name="tickets")
+        check("A program the user named themselves is added straight away",
+              "tickets__get_ticket" in REGISTRY and "Added" in direct["content"], direct)
+        capabilities.remove(db, "mcp", "tickets")
+        registry.shutdown()
+    finally:
+        capabilities.stop()
+        for owner in ("mcp:tickets", "mcp:secure"):
+            unregister_owner(owner)
+        for patch in reversed(patches):
+            patch.stop()
+        oauth.shutdown()
+
+
+def _fake_website():
+    """A small web app: a home page linking to a knowledge base with search,
+    articles, a JSON API, and a form that submits."""
+    import http.server
+    import json as _json
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    submitted = []
+    articles = {"1": ("Resetting a sensor", "Unplug the sensor, wait ten seconds, and plug it into a rear USB port."),
+                "2": ("Printer offline", "Restart the print spooler service.")}
+
+    def page(title, body):
+        return (f"<html><head><title>{title}</title></head><body><nav><a href='/'>Home</a> "
+                f"<a href='/kb'>Knowledge base</a> <a href='/logout'>Log out</a></nav>"
+                f"<main>{body}</main></body></html>")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, status, body, kind="text/html; charset=utf-8"):
+            data = body.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):  # noqa: N802
+            url = urlparse(self.path)
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            if url.path == "/":
+                return self._send(200, page("Vendor portal", "<h1>Welcome</h1><p>See the knowledge base.</p>"))
+            if url.path == "/kb":
+                return self._send(200, page("Knowledge base", "<form action='/kb/search'>"
+                                            "<input type='search' name='q' aria-label='Search articles'></form>"))
+            if url.path == "/kb/search":
+                words = (query.get("q") or "").lower().split()
+                hits = [f"<li><a href='/kb/article/{key}'>{title}</a> {text[:40]}</li>"
+                        for key, (title, text) in articles.items()
+                        if any(w in (title + text).lower() for w in words)]
+                return self._send(200, page("Results", "<ul>" + "".join(hits) + "</ul>"))
+            if url.path.startswith("/kb/article/"):
+                title, text = articles[url.path.rsplit("/", 1)[-1]]
+                return self._send(200, page(title, f"<article><h1>{title}</h1><p>{text}</p></article>"))
+            if url.path == "/api/items":
+                return self._send(200, _json.dumps({"items": [{"id": 7, "name": "Sensor"}]}), "application/json")
+            if url.path == "/request":
+                return self._send(200, page("New request", "<form method='post' action='/request'>"
+                                            "<label for='subj'>Subject</label><input id='subj' name='subject'>"
+                                            "<button type='submit'>Send request</button></form>"
+                                            "<a href='/kb'>Browse articles</a>"))
+            if url.path == "/done":
+                return self._send(200, page("Thanks", "<p>Request received.</p>"))
+            self._send(404, page("Not found", "Not found"))
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            form = {k: v[0] for k, v in parse_qs(self.rfile.read(length).decode()).items()}
+            submitted.append(form)
+            self.send_response(303)
+            self.send_header("Location", "/done")
+            self.end_headers()
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, submitted
+
+
+def test_websites_and_browsing():
+    """Any website through the hidden browser: added, self-tuning, and safe to click in."""
+    print("\nAdd-ons — any website, through the hidden browser")
+    import importlib
+    import sys as _sys
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import browser, capabilities
+    from app.services.agent import actions
+    from app.services.agent.registry import REGISTRY, ToolContext, unregister_owner
+    from app.services.browser import generic
+    from app.services.browser.engine import playwright_installed
+
+    root, patches = _addon_dirs()
+    for patch in patches:
+        patch.start()
+    db = session()
+    server, submitted = _fake_website()
+    base = f"http://127.0.0.1:{server.server_port}"
+    engine_module = importlib.import_module("app.services.browser.engine")
+    browser_patches = [mock.patch.object(settings, k, v) for k, v in {
+        "BROWSER_AUTOMATION_ENABLED": True, "BROWSER_MODE": "headless", "BROWSER_TIMEOUT_SECONDS": 15,
+        "BROWSER_CHANNEL": "msedge" if _sys.platform == "win32" else "chromium"}.items()]
+    browser_patches.append(mock.patch.object(engine_module, "BROWSER_PROFILE_DIR", Path(_TEMP_DIR) / "site_profile"))
+    for patch in browser_patches:
+        patch.start()
+    try:
+        added = generic.add(db, "Vendor portal", f"{base}/", "Vendor articles and requests", added_by="user")
+        check("A website becomes a connector with its own tools",
+              added["name"] == "vendor-portal" and browser.get("vendor-portal").label == "Vendor portal"
+              and {"vendor_portal_search", "vendor_portal_read", "vendor_portal_api_get"} <= set(REGISTRY), added)
+        check("…and a card on the Connect tab",
+              any(s["name"] == "vendor-portal" and s.get("generic") for s in
+                  [c.status() for c in browser.connectors()]))
+        site = browser.get("vendor-portal")
+        check("Its address is the page given", site.start_url == f"{base}/" and site.on_own_site(f"{base}/kb"))
+        if not playwright_installed():
+            print("  - skipped browser part: Playwright is not installed")
+            return
+        try:
+            found = site.search("sensor")
+        except browser.BrowserUnavailable as exc:
+            print(f"  - skipped browser part: {exc}")
+            return
+        check("It finds the search by following the site's own links",
+              [r["title"] for r in found["results"]] == ["Resetting a sensor"], found)
+        learned = site.selectors()
+        check("…and remembers the page and the search address",
+              learned.get("start_url") == f"{base}/kb" and learned.get("search_url") == f"{base}/kb/search?q={{query}}",
+              learned)
+        again = site.search("printer")
+        check("The next search goes straight to the learned address",
+              [r["title"] for r in again["results"]] == ["Printer offline"] and "/kb/search?q=printer" in again["url"])
+        ctx = ToolContext(db=db, context={})
+        read = REGISTRY["vendor_portal_read"].handler(ctx, url=found["results"][0]["url"])
+        check("An article is read and cited", "rear USB port" in read["content"] and ctx.sources, read)
+        data = REGISTRY["vendor_portal_api_get"].handler(ctx, path="/api/items")
+        check("The site's own JSON is read with the signed-in page", '"Sensor"' in data["content"], data)
+        refused = REGISTRY["vendor_portal_read"].handler(ctx, url="https://elsewhere.example.com/")
+        check("Pages on other sites are refused", "only Vendor portal pages" in refused["content"], refused)
+
+        ctx = ToolContext(db=db, context={})
+        opened = REGISTRY["browse_open"].handler(ctx, url=f"{base}/request")
+        check("browse_open lists what can be clicked and typed into",
+              "field: Subject" in opened["content"] and "Send request ⚠ needs approval" in opened["content"], opened)
+        lines = [l for l in opened["content"].splitlines() if l.startswith("  [")]
+        field = next(l for l in lines if "field: Subject" in l).split("]")[0].split("[")[1]
+        button = next(l for l in lines if "Send request" in l).split("]")[0].split("[")[1]
+        typed = REGISTRY["browse_type"].handler(ctx, ref=field, text="New sensor please")
+        check("Typing doesn't submit anything", "Nothing has been submitted" in typed["content"] and not submitted)
+        clicked = REGISTRY["browse_click"].handler(ctx, ref=button, why="Sends the request")
+        card = ctx.drafts[-1] if ctx.drafts else {}
+        check("A submit click becomes an approval card with a screenshot, and nothing is sent",
+              card.get("tool") == "browse_click" and card["preview"].get("image") and not submitted, clicked)
+        check("…showing what was typed",
+              any(f["after"] == "New sensor please" for f in card["preview"]["fields"]), card)
+        done = actions.approve(db, card["action_id"])
+        check("Approving it makes the click", submitted == [{"subject": "New sensor please"}]
+              and "Thanks" in done["reply"], (done, submitted))
+        REGISTRY["browse_open"].handler(ctx, url=f"{base}/request")
+        link = next(l for l in REGISTRY["browse_read"].handler(ctx)["content"].splitlines()
+                    if l.startswith("  [") and "Browse articles" in l).split("]")[0].split("[")[1]
+        plain = REGISTRY["browse_click"].handler(ctx, ref=link)
+        check("An ordinary link is clicked straight away", "Clicked" in plain["content"]
+              and "Knowledge base" in plain["content"], plain)
+        outside = REGISTRY["browse_open"].handler(ctx, url="https://not-connected.example.com/")
+        check("Sites Cerebro isn't connected to can't be browsed", "only browses sites" in outside["content"])
+
+        capabilities.set_enabled(db, "site", "vendor-portal", False)
+        check("Switching a website off removes its tools", "vendor_portal_search" not in REGISTRY)
+        capabilities.set_enabled(db, "site", "vendor-portal", True)
+        capabilities.remove(db, "site", "vendor-portal")
+        check("Removing it removes the connector and tools",
+              "vendor_portal_search" not in REGISTRY and "vendor-portal" not in [c.name for c in browser.connectors()])
+    finally:
+        browser.engine().shutdown()
+        generic.unload("vendor-portal")
+        unregister_owner("site:vendor-portal")
+        for patch in reversed(browser_patches + patches):
+            patch.stop()
+        server.shutdown()
+
+
+def test_skills():
+    """Skills: taught procedures in the Agent Skills format."""
+    print("\nAdd-ons — skills")
+    import io
+    import zipfile
+
+    from app.services import skills
+    from app.services.agent import loop
+    from app.services.agent.registry import REGISTRY, ToolContext
+
+    root, patches = _addon_dirs()
+    for patch in patches:
+        patch.start()
+    db = session()
+    try:
+        ctx = ToolContext(db=db, context={})
+        saved = REGISTRY["save_skill"].handler(ctx, name="Close ticket", description="Closing a support ticket",
+                                               instructions="1. Add a resolution note.\n2. Set status to Resolved.")
+        path = root / "capabilities" / "skills" / "close-ticket" / "SKILL.md"
+        check("save_skill writes an Agent Skills SKILL.md",
+              path.exists() and path.read_text(encoding="utf-8").startswith("---\nname: close-ticket\ndescription: Closing a support ticket"))
+        check("…and posts an “Added” card", ctx.drafts and ctx.drafts[0]["title"] == "Added Close ticket (skill)", saved)
+        used = REGISTRY["use_skill"].handler(ToolContext(db=db, context={}), name="close ticket")
+        check("use_skill loads the steps by name", "Set status to Resolved" in used["content"], used)
+        check("Only names and one-liners go in Ask's instructions",
+              "- close-ticket: Closing a support ticket" in skills.prompt_block(db)
+              and "Resolved" not in skills.prompt_block(db))
+
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("escalate/SKILL.md", "---\nname: escalate\ndescription: Escalating to tier 2\n---\n"
+                                                  "Run check.ps1, then email tier 2.")
+            archive.writestr("escalate/check.ps1", "Get-Service spooler")
+        names = skills.import_archive(db, bundle.getvalue(), "skills.zip")
+        check("A zip of skill folders imports, with its helper files",
+              names == ["escalate"] and (root / "capabilities" / "skills" / "escalate" / "check.ps1").exists())
+        check("…and a script beside a skill is named but never run directly",
+              "run only through run_command" in REGISTRY["use_skill"].handler(ToolContext(db=db, context={}),
+                                                                             name="escalate")["content"])
+        names = skills.import_archive(db, b"---\nname: greet\ndescription: Say hi\n---\nSay hello.", "greet.md")
+        check("A bare SKILL.md imports too", names == ["greet"])
+
+        systems = []
+
+        def script_llm(self, messages, tools=None, system=None, **kwargs):
+            systems.append(system or "")
+            return {"content": "ok", "tool_calls": []}
+
+        enabled, patched = _with_ai(script_llm)
+        with enabled, patched:
+            loop.run(db, "close CAS-1 for me", {})
+        check("Ask is told about its skills", "escalate: Escalating to tier 2" in systems[0])
+        exported = skills.export_all()
+        check("Skills export with their instructions", any(s["name"] == "escalate" and "tier 2" in s["instructions"]
+                                                           for s in exported))
+    finally:
+        for patch in reversed(patches):
+            patch.stop()
+
+
+def test_voice():
+    """Talking to Cerebro: speech to text, spoken requests and approvals, spoken replies."""
+    print("\nVoice — speech in, action, speech out")
+    import base64
+    import io
+    import wave
+    from unittest import mock
+
+    from fastapi.testclient import TestClient
+
+    from app.core.config import settings
+    from app.main import app
+    from app.services import speech, tts
+    from app.services.agent import actions, loop
+    from app.models.agent_action import AgentAction
+
+    check("Spoken case numbers are written as case numbers",
+          speech.normalise("reply to CAS zero one two three four please") == "reply to CAS-01234 please",
+          speech.normalise("reply to CAS zero one two three four please"))
+    check("…and spoken ticket numbers as digits",
+          speech.normalise("open ticket number four five six seven") == "open ticket number 4567")
+    check("Short spoken decisions are recognised",
+          [speech.spoken_intent(t) for t in ("Yes, send it.", "Yeah, go ahead please", "approve",
+                                             "Cancel that.", "No.", "Stop.", "send a message to Priya")]
+          == ["approve", "approve", "approve", "discard", "discard", "stop", None])
+    hints = speech.hints(None, {"crm_case": "CAS-555", "customer": "Smile Dental"})
+    check("Words Cerebro knows are given as hints", "CAS-555" in hints and "Smile Dental" in hints, hints)
+
+    heard = []
+    speech.set_transcriber(lambda audio, prompt: heard.append((len(audio), prompt)) or "summarise case CAS-1")
+    spoken_calls = []
+    tts.use_provider("polly", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no AWS")))
+    tts.use_provider("edge", lambda text, voice, rate: spoken_calls.append(text) or (b"MP3DATA", "audio/mpeg"))
+    systems = []
+
+    def script_llm(self, messages, tools=None, system=None, **kwargs):
+        systems.append(system or "")
+        return {"content": "**Case CAS-1** is waiting on the customer [K1]. See https://x.test/case for more.",
+                "tool_calls": []}
+
+    client = TestClient(app)
+    enabled, patched = _with_ai(script_llm)
+    try:
+        with enabled, patched, mock.patch.object(settings, "VOICE_PROVIDER", "auto"):
+            response = client.post("/api/voice/transcribe", files={"audio": ("a.wav", b"RIFFfake", "audio/wav")})
+            check("The mic's recording is turned into text", response.json()["text"] == "summarise case CAS-1",
+                  response.text)
+            check("…with Cerebro's hints", heard and "Cerebro" in heard[0][1])
+            response = client.post("/api/voice/command", files={"audio": ("a.wav", b"RIFFfake", "audio/wav")},
+                                   data={"speak": "true"})
+            body = response.json()
+            check("A spoken request is acted on", body["transcript"] == "summarise case CAS-1"
+                  and "waiting on the customer" in body["reply"], body)
+            check("…as a spoken request, answered briefly", "This request was SPOKEN" in systems[-1])
+            check("…with a spoken summary from the next voice when Polly isn't available",
+                  body["speech"]["provider"] == "edge" and base64.b64decode(body["speech"]["audio"]) == b"MP3DATA")
+            check("Only plain words are spoken — no Markdown, citations or links",
+                  spoken_calls[-1] == "Case CAS-1 is waiting on the customer . See the link for more.",
+                  spoken_calls[-1])
+            check("A voice turn may take more steps", loop.VOICE_MAX_STEPS >= 12)
+
+            db = session()
+            from app.models.enterprise import EnterpriseAction
+
+            for row in db.query(EnterpriseAction).filter(EnterpriseAction.status.in_(("draft", "failed"))):
+                row.status = "discarded"
+            for row in db.query(AgentAction).filter(AgentAction.status == "draft"):
+                row.status = "discarded"
+            db.commit()
+            target = Path(_TEMP_DIR) / "voice-approval.txt"
+            action = actions.propose(db, "write_file", "files", "Create voice-approval.txt",
+                                     {"path": str(target), "content": "hi", "mode": "replace"})
+            body = client.post("/api/voice/command", data={"text": "Yes, send it.", "speak": "false"}).json()
+            db.expire_all()
+            check("“Yes, send it” approves the change that's waiting",
+                  db.get(AgentAction, action.id).status == "done" and target.exists(), body)
+            calls = len(systems)
+            body = client.post("/api/voice/command", data={"text": "yes", "speak": "false"}).json()
+            check("“Yes” with nothing waiting is just speech", len(systems) == calls + 1, body)
+            action = actions.propose(db, "write_file", "files", "Create other.txt",
+                                     {"path": str(Path(_TEMP_DIR) / "other.txt"), "content": "x", "mode": "replace"})
+            client.post("/api/voice/command", data={"text": "Cancel that.", "speak": "false"})
+            db.expire_all()
+            check("“Cancel that” discards it", db.get(AgentAction, action.id).status == "discarded")
+            calls = len(systems)
+            body = client.post("/api/voice/command", data={"text": "stop", "speak": "false"}).json()
+            check("“Stop” just stops", body.get("stop") is True and len(systems) == calls)
+
+            response = client.post("/api/chat/stream", json={"message": "what's up", "voice": True})
+            check("The mic button's requests are spoken requests too",
+                  response.status_code == 200 and "This request was SPOKEN" in systems[-1])
+            response = client.post("/api/voice/speak", json={"text": "Hello there"})
+            check("Text can be spoken on request", response.content == b"MP3DATA"
+                  and response.headers["x-voice-provider"] == "edge")
+            client.post("/api/voice/state", json={"state": "listening", "caption": "Listening…"})
+            from app.core import activity_state
+
+            listening = lambda: any(i["state"] == "listening" for i in activity_state.snapshot()["active"])  # noqa: E731
+            check("Push-to-talk shows Cerebro as listening", listening())
+            client.post("/api/voice/state", json={"state": "idle"})
+            check("…until the keys are let go", not listening())
+
+        with mock.patch.object(settings, "VOICE_PROVIDER", "off"):
+            try:
+                tts.synthesize("hi")
+                check("With the voice off nothing is spoken", False)
+            except tts.SpeechFailed:
+                check("With the voice off nothing is spoken", True)
+        long_text = "This is a sentence that goes on. " * 30
+        check("Long answers are cut to a few sentences", len(tts.speakable(long_text)) < 480
+              and tts.speakable(long_text).endswith("The rest is in the chat."))
+        with mock.patch.object(settings, "BEDROCK_AUTH_MODE", "api_key"):
+            check("Polly isn't tried with a Bedrock API key", not tts.polly_ready())
+        try:
+            import av  # noqa: F401
+            import numpy as np
+
+            pcm = io.BytesIO()
+            with av.open(pcm, "w", format="mp3") as container:
+                stream = container.add_stream("mp3", rate=24000)
+                stream.layout = "mono"
+                frame = av.AudioFrame.from_ndarray(np.zeros((1, 24000), dtype=np.int16), format="s16", layout="mono")
+                frame.rate = 24000
+                for packet in stream.encode(frame):
+                    container.mux(packet)
+                for packet in stream.encode(None):
+                    container.mux(packet)
+            converted = tts.to_wav(pcm.getvalue())
+            with wave.open(io.BytesIO(converted)) as handle:
+                check("MP3 speech is converted to WAV for the desktop", handle.getnframes() > 20000)
+        except ImportError:
+            print("  - skipped MP3 conversion: PyAV is not installed")
+    finally:
+        speech.set_transcriber(None)
+        tts.use_provider("polly", None)
+        tts.use_provider("edge", None)
+
+    if os.environ.get("CEREBRO_TEST_WHISPER") and speech.installed():
+        with mock.patch.object(settings, "VOICE_MODEL", "tiny.en"):
+            silent = io.BytesIO()
+            with wave.open(silent, "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(16000)
+                handle.writeframes(b"\0\0" * 16000)
+            result = speech.transcribe(silent.getvalue())
+            check("faster-whisper runs on this PC (tiny.en, one second of silence)", result["text"] == "", result)
+
+
+def test_push_to_talk():
+    """The desktop's push-to-talk state machine, with a fake microphone and keys."""
+    print("\nVoice — push-to-talk")
+    import base64
+    import sys as _sys
+    import time as _time
+
+    _sys.path.insert(0, str(ROOT / "desktop"))
+    import voice as ptt_module
+
+    check("The hotkey setting is understood", ptt_module.parse_hotkey("Ctrl+Space") == {"ctrl", "space"}
+          and ptt_module.parse_hotkey("ctrl+shift+f9") == {"ctrl", "shift", "f9"})
+
+    class Key:
+        def __init__(self, name=None, char=None):
+            self.name, self.char = name, char
+
+    check("Keys from the listener are named the same way",
+          ptt_module.key_name(Key(name="ctrl_l")) == "ctrl" and ptt_module.key_name(Key(name="space")) == "space"
+          and ptt_module.key_name(Key(char="\x01")) == "a")
+
+    class Recorder:
+        def __init__(self):
+            self.started = 0
+
+        def start(self):
+            self.started += 1
+
+        def stop(self):
+            return b"\x01\x00" * int(ptt_module.SAMPLE_RATE * 1.2)
+
+    class Player:
+        def __init__(self):
+            self.playing, self.played, self.stopped = False, [], 0
+
+        def play(self, audio):
+            self.played.append(audio)
+
+        def stop(self):
+            self.stopped += 1
+            self.playing = False
+
+    posts = []
+    reply_audio = ptt_module.wav_bytes(b"\0\0" * 100)
+
+    def post(path, files=None, data=None, json=None, timeout=0):
+        posts.append((path, files, data, json))
+        if path == "/api/voice/command":
+            return {"transcript": "hi", "reply": "Hello",
+                    "speech": {"audio": base64.b64encode(reply_audio).decode(), "mime": "audio/wav"}}
+        return {}
+
+    recorder, player = Recorder(), Player()
+    ptt = ptt_module.PushToTalk("http://127.0.0.1:1", "ctrl+space", recorder=recorder, player=player, post=post)
+    ptt.key_down("ctrl")
+    check("One key alone doesn't start listening", not ptt.recording)
+    ptt.key_down("space")
+    check("Holding the hotkey starts recording and shows Cerebro listening",
+          ptt.recording and recorder.started == 1
+          and posts[-1][0] == "/api/voice/state" and posts[-1][3]["state"] == "listening")
+    ptt.started_at -= 2
+    ptt.key_up("space")
+    for _ in range(50):
+        if player.played:
+            break
+        _time.sleep(0.05)
+    command = next((p for p in posts if p[0] == "/api/voice/command"), None)
+    check("Letting go sends the recording as WAV", command is not None
+          and command[1]["audio"][1].startswith(b"RIFF") and command[2]["fmt"] == "wav")
+    check("…and the spoken answer is played", player.played == [reply_audio])
+    sent = len(posts)
+    ptt.key_up("ctrl")
+    ptt.key_down("ctrl")
+    ptt.key_down("space")
+    ptt.key_up("space")
+    check("A tap too short to be speech is ignored",
+          not any(p[0] == "/api/voice/command" for p in posts[sent:]))
+    player.playing = True
+    ptt.key_down("space")
+    check("Pressing the keys while Cerebro talks stops it", player.stopped == 1)
+    ptt.key_up("space")
+    ptt.enabled = False
+    ptt.key_down("space")
+    check("Switched off in Settings, the keys do nothing", not ptt.recording)
+
+
+def test_addons_page():
+    """The page: Add-ons on Connect, the mic, plan and sign-in cards."""
+    print("\nAdd-ons & voice — the page")
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    page = client.get("/app").text
+    script = (ROOT / "backend/app/web/static/ui/app.js").read_text(encoding="utf-8")
+    check("The composer has a mic button", 'id="mic-btn"' in page and "getUserMedia" in script)
+    check("Connect has an Add-ons section with Add, import and export",
+          "addon-list" in script and "/api/addons/export" in script and "/api/addons/skills/import" in script)
+    check("Plan and add-on sign-in cards are drawn", "planCard" in script and "addonSigninCard" in script)
+    check("The hidden browser can be taken over by hand", "/api/addons/browser/take-control" in script)
+    listing = client.get("/api/addons").json()
+    check("The add-ons list is served", isinstance(listing.get("addons"), list))
+    status = client.get("/api/voice/status").json()
+    check("Voice settings are served", status["hotkey"] == "ctrl+space" and "voice" in status)
+
+
 def main() -> int:
     print("Running Cerebro tests…")
     init_db()
@@ -5265,7 +6262,9 @@ def main() -> int:
                   test_settings_store, test_setup_and_package_contract,
                   test_power_automate_package,
                   test_screenpipe_current_api, test_chat_service,
-                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices):
+                  test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices,
+                  test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
+                  test_skills, test_voice, test_push_to_talk, test_addons_page):
         try:
             suite()
         except Exception as exc:  # a crashing suite is a failure, not a stack trace
