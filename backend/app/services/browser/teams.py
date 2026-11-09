@@ -173,7 +173,7 @@ class TeamsConnector(MessagingConnector):
         """A chat's recent messages, by its id or its name in the chat list."""
         def work(page):
             self.ensure_open(page)
-            self.drain()
+            self.drain(keep_unfinished=False)
             chat_id = self._open_chat(page, chat)
             page.wait_for_timeout(1500)
             messages = [m for m in self.drain() if not chat_id or m.get("conversationId") == chat_id] \
@@ -187,7 +187,7 @@ class TeamsConnector(MessagingConnector):
     def search(self, query: str, limit: int = 10) -> Dict[str, Any]:
         def work(page):
             self.ensure_open(page)
-            self.drain()
+            self.drain(keep_unfinished=False)
             box = self.require(page, "search_box", "the Teams search box")
             box.click()
             box.fill(query)

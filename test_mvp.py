@@ -6522,6 +6522,66 @@ def test_voice_expression():
         sonic.set_client_factory(None)
 
 
+def test_browser_worker_shutdown():
+    """The hidden browser has one worker thread, even when shutdown can't wait for a slow job."""
+    print("\nHidden browser — one worker, even across a slow shutdown")
+    import threading
+    import time as _time
+    from unittest import mock
+
+    from app.core.config import settings
+    import importlib
+
+    engine_module = importlib.import_module("app.services.browser.engine")
+
+    def workers():
+        return [t for t in threading.enumerate() if t.name == "cerebro-browser" and t.is_alive()]
+
+    eng = engine_module.BrowserEngine()
+    eng.SHUTDOWN_WAIT = 0.2
+    with mock.patch.object(settings, "BROWSER_AUTOMATION_ENABLED", True), \
+            mock.patch.object(engine_module, "playwright_installed", lambda: True):
+        release, ran = threading.Event(), []
+
+        def slow(e):
+            ran.append(("slow", threading.current_thread()))
+            release.wait(10)
+            return "slow done"
+
+        outcome = {}
+        caller = threading.Thread(target=lambda: outcome.update(slow=eng.submit(slow, quiet=True, timeout=15)))
+        caller.start()
+        for _ in range(100):
+            if ran:
+                break
+            _time.sleep(0.02)
+        first = ran[0][1]
+        eng.shutdown()                                   # gives up waiting: the job is still running
+        check("Shutdown doesn't hang on a slow job", first.is_alive())
+        threading.Timer(0.6, release.set).start()
+
+        def second(e):
+            return {"thread": threading.current_thread(), "workers": len(workers()),
+                    "first_alive": first.is_alive()}
+
+        result = eng.submit(second, quiet=True, timeout=15)
+        caller.join(5)
+        check("The next job waits for the old worker instead of starting a second one",
+              result["workers"] == 1 and not result["first_alive"] and result["thread"] is not first, result)
+        check("…and the slow job still finished", outcome.get("slow") == "slow done", outcome)
+        eng.shutdown()
+
+        # A worker that died without cleaning up leaves objects only it could use.
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        eng._thread, eng._playwright, eng._context = dead, object(), object()
+        fresh = eng.submit(lambda e: (e._playwright, e._context), quiet=True, timeout=15)
+        check("A new worker never inherits a dead one's browser", fresh == (None, None), fresh)
+        eng.shutdown()
+    check("…and no worker is left behind", not workers(), workers())
+
+
 def test_push_to_talk():
     """The desktop's push-to-talk state machine, with a fake microphone and keys."""
     print("\nVoice — push-to-talk")
@@ -8060,7 +8120,7 @@ def main() -> int:
                   test_screenpipe_current_api, test_chat_service,
                   test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices,
                   test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
-                  test_skills, test_voice, test_voice_expression, test_push_to_talk, test_addons_page,
+                  test_skills, test_voice, test_voice_expression, test_browser_worker_shutdown, test_push_to_talk, test_addons_page,
                   test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
                   test_faces, test_agents_page, test_desktop_apps,
                   test_desktop_apps_notepad, test_keep_it_updated, test_attached_files,

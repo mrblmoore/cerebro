@@ -7,6 +7,10 @@ sounddevice>=0.4,<1.0
 # Natural online voices when Amazon Polly isn't set up (no key needed).
 edge-tts>=6.1,<8.0
 # Amazon Nova Sonic (expressive replies and Talk live), through AWS's async
-# Python SDK. It needs Python 3.12+ and the CRT transport for its HTTP/2
-# bidirectional stream; the AWS keys are the ones set for Bedrock.
-aws-sdk-bedrock-runtime[awscrt]>=0.12,<0.13; python_version >= "3.12"
+# Python SDK. It needs Python 3.12+ and the CRT transport (awscrt) for its
+# HTTP/2 bidirectional stream; the AWS keys are the ones set for Bedrock.
+# awscrt comes from botocore[crt] in backend/requirements-ai.txt, which pins the
+# version Bedrock's request signing needs. The SDK's own [awscrt] extra pins an
+# older awscrt and would replace it, so it isn't used; the SDK's stream was
+# checked against botocore's awscrt.
+aws-sdk-bedrock-runtime>=0.12,<0.13; python_version >= "3.12"

@@ -204,7 +204,8 @@ the reply expressively, performing the cues as stage directions.
 
 **Needs:**
 - Cerebro's Python 3.12 build (the Windows installer is) with AWS's
-  `aws-sdk-bedrock-runtime[awscrt]` package (included in the installer);
+  `aws-sdk-bedrock-runtime` package and the AWS CRT (both included in the
+  installer);
 - AWS access keys, a profile or the default AWS identity under **Settings →
   AI Provider** (a Bedrock API key can't sign it);
 - access to the Nova Sonic model in the Bedrock console, in that region.
