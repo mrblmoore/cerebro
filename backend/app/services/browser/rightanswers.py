@@ -111,6 +111,7 @@ class RightAnswersConnector(BrowserConnector):
     keep_path = True
     enabled_setting = "RIGHTANSWERS_ENABLED"
     url_setting = "RIGHTANSWERS_URL"
+    auto_apply_setting = "RIGHTANSWERS_AUTO_APPLY"
     default_selectors = DEFAULT_SELECTORS
 
     def __init__(self):

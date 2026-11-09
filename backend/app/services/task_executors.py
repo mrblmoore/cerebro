@@ -252,6 +252,12 @@ def _agent(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
             f"- [{step['status']}] {step['title']}" for step in plan)
     if task.answer:
         prompt += f"\n\nYou asked: {task.question}\nThe user answered: {task.answer}\nCarry on."
+    trigger = task.state_dict().get("trigger")
+    if trigger:
+        prompt += f"\n\nWhy this run started: {trigger}"
+        jobs.set_state(task, trigger=None)
+        db.commit()
+    prompt += _skill_memory(task, spec)
     decisions = task.state_dict().get("decisions")
     if decisions:
         prompt += "\n\nWhat happened to the changes you prepared: " + "; ".join(decisions) \
@@ -325,8 +331,46 @@ def _agent(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": True, "status": "waiting_approval", "summary": "Waiting for approval",
                 "detail": result["reply"]}
     task.question = None
+    _link_skill(db, task, spec)
     db.commit()
     return {"ok": True, "status": None, "summary": "Posted to chat", "detail": result["reply"]}
+
+
+def skill_name(task: Task) -> str:
+    """The skill a job's procedure is saved under."""
+    from app.services import skills
+
+    return skills.slug(f"job-{task.id}-{task.title or 'job'}")[:48]
+
+
+def _skill_memory(task: Task, spec: Dict[str, Any]) -> str:
+    """Remembering how it did it: follow saved steps, or save them once it works."""
+    from app.services import skills
+
+    name = spec.get("skill") or skill_name(task)
+    saved = skills.exact(name)
+    if saved:
+        return ("\n\nYou saved how to do this job before — follow these steps (if the page, file "
+                "or app has changed, adapt, and save the corrected steps with save_skill under "
+                f"the same name “{name}”):\n{saved['instructions'][:4000]}")
+    if spec.get("keep") or spec.get("learn"):
+        return (f"\n\nWhen it has worked, save the steps that worked with save_skill, named "
+                f"“{name}” (where to go, what to read, what to change, how to save), so later "
+                "runs can follow them.")
+    return ""
+
+
+def _link_skill(db: Session, task: Task, spec: Dict[str, Any]) -> None:
+    import json as _json
+
+    from app.services import skills
+
+    if spec.get("skill"):
+        return
+    name = skill_name(task)
+    if skills.exact(name):
+        spec = {**spec, "skill": name}
+        task.spec = _json.dumps(spec)
 
 
 def _tell(db: Session, task: Task, agent, title: str, body: str) -> None:
@@ -369,10 +413,18 @@ def _touch_document(db: Session, path: Path) -> None:
         db.commit()
 
 
+def _briefing(db: Session, task: Task, spec: Dict[str, Any]) -> Dict[str, Any]:
+    """A morning briefing, end-of-day or weekly summary (see app.services.briefings)."""
+    from app.services import briefings
+
+    return briefings.run_job(db, task, spec)
+
+
 HANDLERS = {
     "reminder": _reminder,
     "document_update": _document_update,
     "draft_reply": _draft_reply,
     "summarise": _summarise,
     "agent": _agent,
+    "briefing": _briefing,
 }

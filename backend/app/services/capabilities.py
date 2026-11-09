@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 from app.core import logger
 from app.core.paths import CAPABILITIES_DIR
 
-KINDS = ("mcp", "site", "skill")
+KINDS = ("mcp", "site", "skill", "app")
 REGISTRY_URL = "https://registry.modelcontextprotocol.io"
 EXPORT_FORMAT = "cerebro-addons/1"
 
@@ -46,7 +46,7 @@ _started = False
 
 # ------------------------------------------------------------------ files
 def folder(kind: str):
-    return CAPABILITIES_DIR / {"mcp": "mcp", "site": "sites", "skill": "skills"}[kind]
+    return CAPABILITIES_DIR / {"mcp": "mcp", "site": "sites", "skill": "skills", "app": "apps"}[kind]
 
 
 def slug(text: str, limit: int = 32) -> str:
@@ -154,6 +154,18 @@ def list_all(db) -> List[dict]:
             item["source"] = config.get("source")
             item["sign_in"] = dict(_sign_in.get(row.name) or {})
             item["has_key"] = bool(get_secret(row.name).get("headers") or get_secret(row.name).get("env"))
+        elif row.kind == "app":
+            from app.services import desktop_apps
+
+            data = desktop_apps.definition(row.name) or {}
+            item["path"] = data.get("path") or None
+            item["window"] = data.get("window") or None
+            item["auto_apply"] = bool(data.get("auto_apply"))
+            item["available"] = desktop_apps.available()
+        elif row.kind == "site":
+            from app.services.browser import generic
+
+            item["auto_apply"] = bool((generic.definition(row.name) or {}).get("auto_apply"))
         out.append(item)
     return out
 
@@ -413,6 +425,8 @@ def remove(db, kind: str, name: str) -> Dict[str, Any]:
         (folder("site") / f"{name}.json").unlink(missing_ok=True)
     elif kind == "skill":
         shutil.rmtree(folder("skill") / name, ignore_errors=True)
+    elif kind == "app":
+        (folder("app") / f"{name}.json").unlink(missing_ok=True)
     else:
         return {"ok": False, "detail": f"Unknown kind {kind}"}
     if row is not None:
@@ -540,7 +554,7 @@ def record_added(db, kind: str, name: str, label: str, detail: str, added_by: st
     """An Activity entry and card for a new add-on, whose Undo removes it."""
     from app.services.agent import actions
 
-    kind_label = {"mcp": "MCP", "site": "website", "skill": "skill"}[kind]
+    kind_label = {"mcp": "MCP", "site": "website", "skill": "skill", "app": "desktop app"}[kind]
     action = actions.propose(db, "capability_added", "addons", f"Added {label} ({kind_label})",
                              {"kind": kind, "name": name, "detail": detail},
                              preview={"fields": [{"name": label, "before": "", "after": detail}]},

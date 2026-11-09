@@ -101,6 +101,10 @@ def tool(name: str, description: str, parameters: Dict[str, Any] = None,
     """
     if mode not in MODES:
         raise ValueError(f"Unknown tool mode: {mode}")
+    from app.core.activity_state import STATES
+
+    if activity not in STATES:
+        raise ValueError(f"Unknown activity state for {name}: {activity}")
 
     def register(handler: Callable[..., dict]) -> Callable[..., dict]:
         REGISTRY[name] = Tool(
@@ -134,6 +138,10 @@ def register_dynamic(item: Tool, owner: str) -> Tool:
     """
     if item.mode not in MODES:
         raise ValueError(f"Unknown tool mode: {item.mode}")
+    from app.core.activity_state import STATES
+
+    if item.activity not in STATES:
+        item.activity = "searching" if item.mode == "read" else "writing"
     item.owner = owner
     existing = REGISTRY.get(item.name)
     if existing is not None and existing.owner != owner:

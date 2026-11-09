@@ -28,9 +28,18 @@ GROUPS = {
     "web": "Browsing connected sites",
     "addons": "Add-ons (MCP servers and websites)",
     "self-extend": "Adding new connections",
+    "desktop": "Windows desktop apps",
+    "calendar": "Calendar and meetings",
+    "secretary": "Follow-ups, to-dos, briefings and documents",
 }
 
 _PREFIXES = (
+    ("draft_document", "secretary"), ("edit_document", "files"), ("app_", "desktop"), ("add_desktop_app", "desktop"),
+    ("calendar_", "calendar"), ("find_free_time", "calendar"), ("book_meeting", "calendar"),
+    ("reschedule_meeting", "calendar"), ("cancel_meeting", "calendar"),
+    ("followup", "secretary"), ("add_followup", "secretary"), ("todo", "secretary"),
+    ("add_todo", "secretary"), ("done_todo", "secretary"), ("briefing", "secretary"),
+    ("meeting_notes", "secretary"), ("list_followups", "secretary"), ("chase_followup", "secretary"),
     ("dynamics_", "cases"), ("rightanswers_", "kb"), ("sharepoint_", "sharepoint"),
     ("search_sharepoint", "sharepoint"), ("outlook_", "messaging"), ("teams_", "messaging"),
     ("send_", "messaging"), ("reply_", "messaging"), ("draft_", "messaging"),
@@ -48,7 +57,7 @@ _PREFIXES = (
 CORE = {"show_plan", "find_tools", "use_skill", "save_skill", "list_skills", "recall_memory",
         "remember", "ask_user", "update_plan", "delegate_to_agent", "list_agents",
         "create_task", "create_project", "tick_milestone", "create_watch",
-        "get_current_context"}
+        "get_current_context", "keep_updated", "list_updates"}
 
 TEMPLATES: Dict[str, Dict[str, Any]] = {
     "case-researcher": {

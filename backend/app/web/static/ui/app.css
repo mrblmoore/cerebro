@@ -888,3 +888,56 @@ body.maximized .app { max-width: none; }
 .work-tabs .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--violet); color: var(--text); }
 .field .scope-grid label { display: flex; flex-direction: row; gap: 8px; align-items: center; justify-content: flex-start; font-weight: 500; font-size: 12.5px; color: var(--text); }
 .field .scope-grid input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; flex: none; box-shadow: none; }
+
+/* ---------------------------------------------------------------- 0.8
+ * Attached files, "keeping updated" cards, before/after shots, Home → Today. */
+.file-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.composer-wrap .file-chips { margin: 0 4px 8px; }
+.file-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 5px 8px 5px 5px;
+  border-radius: 10px; background: var(--glass-strong); border: 1px solid var(--stroke); font-size: 12.5px; }
+.file-chip a, .file-chip > span:not(.file-ico):not(.meta) { color: var(--text); text-decoration: none; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.file-chip a:hover { text-decoration: underline; }
+.file-ico { flex: none; min-width: 24px; height: 22px; padding: 0 4px; border-radius: 6px; display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; color: #fff; background: #64748b; }
+.k-docx .file-ico, .k-doc .file-ico { background: #2b579a; }
+.k-xlsx .file-ico, .k-xls .file-ico, .k-csv .file-ico, .k-tsv .file-ico { background: #217346; }
+.k-pptx .file-ico { background: #c43e1c; }
+.k-pdf .file-ico { background: #b91c1c; }
+.chip-x { border: 0; background: none; color: var(--text-dim); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
+.chip-x:hover { color: var(--text); }
+
+.card-shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
+.card-shots figure { margin: 0; min-width: 0; }
+.card-shots figcaption { font-size: 11px; color: var(--text-faint); margin: -4px 0 6px; }
+
+.action-card.keep .keep-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; font-size: 12.5px; }
+.keep-path { overflow-wrap: anywhere; }
+.keep-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 12.5px; color: var(--text-dim); }
+.switch-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 12.5px; cursor: pointer; }
+.switch-row .meta { flex-basis: 100%; margin-left: 24px; }
+.updates-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+.updates-grid .action-card { margin: 0; }
+
+.today { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; margin-bottom: 6px; }
+.today-card { padding: 14px; border-radius: var(--r-lg); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.today-head { display: flex; align-items: center; gap: 8px; }
+.today-head h4 { margin: 0; font-size: 14px; }
+.today-head .grow { flex: 1; }
+.agenda-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  padding: 7px 8px; border-radius: 10px; border: 1px solid transparent; }
+.agenda-row.now { background: var(--accent-soft); border-color: var(--stroke-strong); }
+.agenda-row.past { opacity: .5; }
+.agenda-time { font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--text-dim); }
+.agenda-title, .todo-what { font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.todo-row { display: flex; align-items: flex-start; gap: 9px; padding: 7px 4px; border-bottom: 1px solid var(--stroke); }
+.todo-row:last-child { border-bottom: 0; }
+.todo-row input[type=checkbox] { margin-top: 3px; accent-color: var(--accent); }
+.todo-row.done .todo-what { text-decoration: line-through; color: var(--text-faint); }
+.todo-row .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.todo-row .late { color: var(--err); }
+.chase-draft { margin: 4px 0 8px 26px; }
+.md.brief { font-size: 12.5px; max-height: 340px; overflow: auto; }
+.md.brief ul { padding-left: 18px; margin: 4px 0; }
+.todo-row .badge { white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
+.logo.addon-app { background: linear-gradient(135deg, #475569, #0ea5e9); }

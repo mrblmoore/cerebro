@@ -110,6 +110,12 @@ hiddenimports = [
     "app.services.agents", "app.services.jobs", "app.services.watches", "app.services.ideas",
     "app.services.agent.agent_tools", "app.api.agents", "app.api.faces",
     "app.models.agent", "app.models.work",
+    # 0.8: keep it updated, desktop apps, attachments, the secretary.
+    "app.services.keeping", "app.services.targets", "app.services.desktop_apps",
+    "app.services.chat_files", "app.services.calendar", "app.services.followups",
+    "app.services.briefings", "app.services.secretary_docs",
+    "app.services.agent.app_tools", "app.services.agent.keep_tools",
+    "app.services.agent.secretary_tools", "app.api.secretary",
     "edge_tts", "faster_whisper", "ctranslate2", "av", "tokenizers", "numpy",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
@@ -124,6 +130,14 @@ except Exception:  # Playwright not installed: integrations are simply unavailab
 # and CTranslate2 and PyAV load native libraries at runtime. The Whisper model
 # itself is downloaded on first use, not bundled.
 binaries = []
+# Desktop apps: pywinauto drives Windows UI Automation through comtypes, which
+# generates and imports its COM wrappers at runtime. Windows only.
+for package in ("pywinauto", "comtypes"):
+    try:
+        hiddenimports += collect_submodules(package)
+        datas += collect_data_files(package)
+    except Exception:  # not installed at build time: desktop apps are simply unavailable
+        pass
 for package in ("faster_whisper", "ctranslate2", "av", "edge_tts"):
     try:
         hiddenimports += collect_submodules(package)

@@ -83,6 +83,78 @@ run them.
   automatically, it isn't re-run, because it may or may not have finished.
   It shows as failed with "check, then Retry".
 
+## Keep it updated
+
+Give Cerebro a link or a file and say how to keep it up to date. It sets
+everything up in one step.
+
+> *Keep https://contoso.sharepoint.com/sites/IT/SitePages/Status.aspx updated
+> from C:\Exports\cases.xlsx — add the number of open cases. Whenever the
+> export changes.*
+
+**What it can keep updated:**
+
+- a SharePoint page or document;
+- a page on an internal site or wiki;
+- a Word or Excel file, local or synced from OneDrive or SharePoint;
+- a Windows program's screen;
+- anything reached through an MCP add-on.
+
+**What `keep_updated` does:**
+
+1. **Connects it.** It adds the website, asks you to sign in once, turns on
+   SharePoint, or registers the program, whatever's needed. If it can't
+   reach it at all, it looks for a connector first.
+2. **Makes the job.** It runs hourly, daily, on weekdays or weekly, or **when
+   the source changes**. For the last, it watches the source page or file
+   and runs the job when it changes.
+3. **Starts the first update now.** Changes wait for your approval as
+   always.
+4. **Remembers how it did it.** Once a run works, the agent saves the steps
+   as a skill: where to go, what to read, what to change and how to save.
+   Later runs follow those steps first, and correct them if the page has
+   changed.
+5. **Offers to run by itself.** After it has worked, the card offers **Let
+   it update by itself from now on**. That turns on the target's own **Apply
+   changes automatically** switch.
+
+The switch belongs to the target:
+
+- the website's;
+- the desktop app's;
+- SharePoint's;
+- **Apply Word and Excel changes automatically**, for documents.
+
+Automatic changes are still logged with before and after screenshots, and
+one that can't be confirmed is never retried.
+
+**Where to see them:**
+
+- the **Keeping X updated** card in the chat;
+- **Work → Updates**;
+- **Home → Kept updated**.
+
+Each shows how often it runs, the last and next run, and **Run now**,
+**Pause** and **Stop**.
+
+## Attaching documents
+
+Click **📎** in the composer, drop files on the window, or paste them. You
+can attach:
+
+- Word, Excel, PowerPoint or PDF;
+- text, CSV, Markdown, logs or zip;
+- `.vtt` and `.srt` transcripts.
+
+The limit is 50 MB a file.
+
+**How the agent sees them:**
+
+- It's told where each file is, so it can read, review or edit it, or keep
+  it updated.
+- The files show as chips on your message.
+- They're added to the documents Cerebro tracks, so they're searchable later.
+
 ## Projects
 
 A project is a goal with milestones, for example "Migrate the imaging PCs":
@@ -93,7 +165,7 @@ inventory, test the driver, roll out.
 
 ## Watches
 
-A watch re-checks a page and tells you when:
+A watch re-checks a page, or a file, and tells you when:
 - it **changes**;
 - some text **appears** ("Resolved");
 - some text **is gone**;
@@ -104,6 +176,15 @@ A watch re-checks a page and tells you when:
 > *Let me know when CAS-01234 changes in Dynamics.*
 
 Or use **Work → Watches → + Watch**.
+
+**Files.** A watch can follow a local file, or one synced from OneDrive or
+SharePoint, given as `C:\…`, `\\server\share\…` or `file://…`.
+
+- **Cheap checks.** Its modified time and size are checked first, so an
+  untouched file costs nothing.
+- **When it changes,** its text is read (Word, Excel, PowerPoint, PDF or
+  text).
+- **How often.** Files can be checked as often as every minute.
 
 **How pages are read:**
 - A page on a system Cerebro is connected to (Dynamics, an added website…)

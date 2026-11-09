@@ -1,12 +1,13 @@
 # Add-ons: connecting Cerebro to anything new
 
 With add-ons, Cerebro can reach a system it doesn't know yet without
-waiting for a new release. There are three kinds:
+waiting for a new release. There are four kinds:
 
 | Add-on | What it is | Good for |
 |---|---|---|
 | **MCP server** | A connector written to the [Model Context Protocol](https://modelcontextprotocol.io) standard: a web address, or a small program that runs on your PC | Jira, GitHub, ServiceNow, Zendesk, databases and hundreds more |
 | **Website** | Any web app you sign in to, worked through Cerebro's hidden browser | An intranet, a vendor portal, a console with no MCP server |
+| **Desktop app** | A Windows program Cerebro opens and works in, like you would | Your in-house tools, a billing or scheduling program |
 | **Skill** | A procedure you taught Cerebro ("this is how I close a ticket") | Doing things your way, every time |
 
 They're listed under **Connect → Add-ons**.
@@ -165,9 +166,80 @@ step by step:
 - **Only connected sites.** The browse tools work only on sites Cerebro is
   connected to: the built-in systems and the websites you've added.
 
+**Apply changes automatically.** Each website's card has this switch, off by
+default:
+
+- **Off:** every save or submit waits for your approval.
+- **On:** the click is made straight away and recorded as an automatic change.
+  Its card in Activity shows what was typed and screenshots of the page before
+  and after.
+- **If it can't be confirmed.** When the page didn't change after an automatic
+  click, the change is marked **check it** and you get a notice. It's never
+  retried by itself.
+- **Built-in systems.** Dynamics 365 and RightAnswers have the same switch,
+  each its own, under **Settings → Integrations**. SharePoint already had one.
+
 **Take control.** **Connect → Hidden browser → Take control** shows the
 hidden browser at the page Cerebro has open, so you can finish something by
 hand. Click **Done** to hand it back.
+
+---
+
+## Desktop apps
+
+Cerebro can work in Windows programs through **Windows UI Automation**, the
+accessibility layer screen readers use.
+
+**What it does in a program:**
+
+- opens the program, or brings its window to the front;
+- reads the window: its text, and its buttons, fields, lists, tabs and menus,
+  each with a number;
+- types into fields;
+- clicks;
+- presses keys.
+
+**To add one:**
+
+- **Ask:** *"Open the Billing tool and add today's payment for Smile Dental."*
+- **Or add it yourself:** go to **Connect → Add-ons → + Add → Desktop app…** and
+  give the program's path or command (`notepad`, `C:\Program Files\…\billing.exe`)
+  or text from its window title.
+
+**Only programs you name.** Cerebro adds a program only when you name it.
+
+**The tools:**
+
+| Tool | What it does |
+|---|---|
+| `app_windows` | Lists the open windows |
+| `app_open` | Starts the app, or brings it to the front, and reads it |
+| `app_read` | Reads the window again |
+| `app_type` | Types into a field |
+| `app_click` | Clicks a button, tab, menu item or list item |
+| `app_keys` | Presses keys, e.g. `ctrl+n` |
+
+**What waits for approval:**
+
+- clicking Save, Send, Submit, Delete or OK;
+- pressing Ctrl+S, Ctrl+Enter or Alt+S.
+
+These become an approval card with a screenshot of the window and what was
+typed. When you approve, Cerebro puts the typed values back if they were
+changed, then makes the click. The card keeps a screenshot of the result.
+
+**Apply changes automatically.** Each app's card has this switch too. It
+works the same way as for websites.
+
+**Limits:**
+
+- **Windows only.** The tools aren't offered elsewhere.
+- **Standard controls.** The program must use standard Windows controls.
+  Most do. Some custom-drawn apps expose little, such as games and some Java
+  or Electron apps. Cerebro then says what it can't see.
+
+**Scope.** Desktop apps are a scope group of their own ("Windows desktop
+apps"), so you can keep an agent out of them.
 
 ---
 
@@ -198,7 +270,8 @@ through `run_command`, which needs your approval.
 ## Sharing a setup
 
 Use **⋯ → Export add-ons** to save a `.cerebro-addons.json` file. It holds
-every MCP server, website and skill, but **no keys or tokens**.
+every MCP server, website and skill, but **no keys or tokens**. Desktop apps
+are kept in their own files, listed below, and aren't exported.
 
 A teammate imports it with **⋯ → Import add-ons file…**. They then add their
 own keys and sign in.
@@ -212,7 +285,8 @@ Everything is under `%LOCALAPPDATA%\Cerebro\`:
 | Path | What |
 |---|---|
 | `capabilities\mcp\<name>.json` | An MCP server: its address or command, and the tools it last listed |
-| `capabilities\sites\<name>.json` | A website: label, start page, description |
+| `capabilities\sites\<name>.json` | A website: label, start page, description, `auto_apply` |
+| `capabilities\apps\<name>.json` | A desktop app: label, program path or window title, `auto_apply` |
 | `capabilities\skills\<name>\SKILL.md` | A skill (plus any files beside it) |
 | `capabilities\secrets.bin` | Keys and sign-in tokens, encrypted for your Windows account |
 | `connectors\<name>.json` | What Cerebro learned about a website's layout |

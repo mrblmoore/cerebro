@@ -10,3 +10,6 @@ sqlalchemy>=2.0,<3.0
 requests>=2.31,<3.0
 python-multipart>=0.0.9,<1.0
 msal>=1.28,<2.0
+# Windows desktop apps: Cerebro reads and works in installed programs through
+# Windows UI Automation (BSD-licensed). Windows only.
+pywinauto>=0.6.8,<0.7; sys_platform == "win32"

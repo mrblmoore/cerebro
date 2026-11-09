@@ -9,6 +9,12 @@ A watch re-checks a page on a schedule and tells the user when:
 * ``below`` / ``above`` — a number on it crossed a value (a price, a queue
   length, a count of open cases).
 
+A watch can also follow a **file** — a local one, or a OneDrive/SharePoint
+file synced to this PC (``C:\\…``, ``\\\\server\\share\\…`` or ``file://``). Its
+modified time and size are compared first, so an unchanged file costs
+nothing; when they move, its text is read with the document readers (Word,
+Excel, PowerPoint, PDF, text) and the same conditions apply.
+
 A page on a system Cerebro is connected to (Dynamics, a website added under
 Add-ons…) is read through that connector in the hidden browser, signed in;
 anything else is fetched like ``fetch_url``. The text is normalised first
@@ -30,6 +36,7 @@ from app.core import logger
 
 CONDITIONS = ("change", "contains", "absent", "below", "above")
 MIN_INTERVAL = 5
+MIN_FILE_INTERVAL = 1
 MAX_FAILURES = 5
 
 _VOLATILE = [
@@ -70,13 +77,38 @@ def describe(watch) -> str:
             "above": f"alerts when the number goes above {watch.value}"}.get(watch.condition, "")
 
 
-def create(db, url: str, title: str = "", condition: str = "change", value: str = "",
-           interval_minutes: Any = 60, follow_up: str = "", agent_id: int = None):
-    from app.models.work import Watch
+def file_path(target: str):
+    """The local path a file watch reads."""
+    from pathlib import Path
+    from urllib.parse import unquote, urlparse
 
-    url = (url or "").strip()
-    if not url.startswith(("http://", "https://")):
-        raise ValueError("Give the page's full address (https://…).")
+    text = (target or "").strip()
+    if text.lower().startswith("file:"):
+        parsed = urlparse(text)
+        path = unquote(parsed.path)
+        if parsed.netloc:                        # file://server/share/x → \\server\share\x
+            path = f"//{parsed.netloc}{path}"
+        elif re.match(r"^/[a-zA-Z]:", path):     # file:///C:/x → C:/x
+            path = path[1:]
+        return Path(path)
+    return Path(text)
+
+
+def create(db, url: str, title: str = "", condition: str = "change", value: str = "",
+           interval_minutes: Any = 60, follow_up: str = "", agent_id: int = None,
+           task_id: int = None):
+    from app.models.work import Watch, is_file_target
+
+    url = (url or "").strip().strip('"')
+    is_file = is_file_target(url)
+    if is_file:
+        path = file_path(url)
+        if not path.exists():
+            raise ValueError(f"There's no file at {path}.")
+        if path.is_dir():
+            raise ValueError("Watch a file, not a folder.")
+    elif not url.startswith(("http://", "https://")):
+        raise ValueError("Give the page's full address (https://…) or a file's path.")
     condition = (condition or "change").strip().lower()
     if condition not in CONDITIONS:
         raise ValueError(f"Condition must be one of: {', '.join(CONDITIONS)}.")
@@ -88,13 +120,14 @@ def create(db, url: str, title: str = "", condition: str = "change", value: str 
         except ValueError:
             raise ValueError("Give a number for below/above.") from None
     try:
-        minutes = max(MIN_INTERVAL, int(float(interval_minutes or 60)))
+        minutes = max(MIN_FILE_INTERVAL if is_file else MIN_INTERVAL,
+                      int(float(interval_minutes or 60)))
     except (TypeError, ValueError):
         minutes = 60
     watch = Watch(agent_id=agent_id, title=(title or url)[:120], target=url, condition=condition,
                   value=(value or "").strip() or None, interval_minutes=minutes, status="active",
                   next_check_at=datetime.now(), follow_up=(follow_up or "").strip() or None,
-                  checks=0, failures=0)
+                  checks=0, failures=0, task_id=task_id)
     db.add(watch)
     db.commit()
     db.refresh(watch)
@@ -102,9 +135,28 @@ def create(db, url: str, title: str = "", condition: str = "change", value: str 
 
 
 # --------------------------------------------------------------- reading
+def stamp(target: str) -> Optional[str]:
+    """A file's "modified time:size" (``None`` for pages)."""
+    from app.models.work import is_file_target
+
+    if not is_file_target(target):
+        return None
+    info = file_path(target).stat()
+    return f"{info.st_mtime_ns}:{info.st_size}"
+
+
 def read(url: str) -> str:
-    """The page's readable text, signed in when it's on a connected system."""
+    """The page's (or file's) readable text, signed in when it's on a connected system."""
+    from app.models.work import is_file_target
     from app.services.agent import web_tools
+
+    if is_file_target(url):
+        from app.services import document_readers
+
+        path = file_path(url)
+        if document_readers.is_supported(path):
+            return document_readers.read(path)["text"]
+        return path.read_text(encoding="utf-8", errors="replace")
 
     connector = None
     try:
@@ -163,6 +215,13 @@ def check(db, watch, text: str = None) -> Dict[str, Any]:
     watch.last_checked_at = now
     watch.checks = (watch.checks or 0) + 1
     try:
+        current = stamp(watch.target) if text is None else None
+        if current and current == watch.last_stamp and watch.last_value is not None:
+            # A file that hasn't been touched: nothing to read.
+            watch.failures, watch.last_error = 0, None
+            watch.next_check_at = now + timedelta(minutes=watch.interval_minutes)
+            db.commit()
+            return {"ok": True, "fired": False, "detail": "Unchanged.", "skipped": True}
         reading = read(watch.target) if text is None else text
     except Exception as exc:  # noqa: BLE001 - recorded on the watch, retried later
         watch.failures = (watch.failures or 0) + 1
@@ -183,6 +242,8 @@ def check(db, watch, text: str = None) -> Dict[str, Any]:
     if watch.condition == "change":
         watch.last_hash = digest
     watch.last_value = normalise(reading)[:2000]
+    if text is None:
+        watch.last_stamp = current
     watch.next_check_at = now + timedelta(minutes=watch.interval_minutes)
     alerted = False
     if fires and digest != previous_alert:
@@ -239,7 +300,15 @@ def _alert(db, watch, what: str) -> None:
         ideas.from_watch(db, watch, what)
     except Exception:  # noqa: BLE001 - an idea is a nicety
         pass
-    if watch.follow_up:
+    if watch.task_id:
+        job = db.get(Task, watch.task_id)
+        if job is not None and job.status not in ("cancelled", "paused"):
+            state = job.state_dict()
+            state["trigger"] = f"The source changed ({watch.title}): {what}"
+            job.state = json.dumps(state)
+            jobs.make_runnable(db, job)
+            jobs.event(db, job.id, "status", f"Started because “{watch.title}” changed", what)
+    elif watch.follow_up:
         task = Task(title=f"{watch.title}: follow-up"[:80], instruction=watch.follow_up,
                     kind="agent", spec=json.dumps({"prompt": f"{watch.follow_up}\n\n(The watch "
                                                             f"“{watch.title}” fired: {what} "

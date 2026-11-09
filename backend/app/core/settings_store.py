@@ -380,6 +380,10 @@ FIELDS: List[Field] = [
     Field("DOCUMENT_BACKUP_ON_EDIT", "Back up before editing", "documents",
           "Keeps a timestamped copy beside any file Cerebro changes.",
           type="bool", show_if=("DOCUMENTS_ENABLED", [True])),
+    Field("DOCUMENTS_AUTO_APPLY", "Apply Word and Excel changes automatically", "documents",
+          "Off: every change Cerebro prepares for a Word or Excel file waits for your approval. "
+          "On: it's made straight away (a backup is kept) and can be undone from its card.",
+          type="bool", show_if=("DOCUMENTS_ENABLED", [True])),
     Field("DOCUMENT_MAX_MB", "Largest document (MB)", "documents",
           "Documents larger than this are skipped, to keep Cerebro responsive.",
           type="number", advanced=True, show_if=("DOCUMENTS_ENABLED", [True])),
@@ -435,6 +439,16 @@ FIELDS: List[Field] = [
           "(-my) links work too.",
           type="url", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
                                     ("SHAREPOINT_BROWSER_ENABLED", [True])]),
+    Field("DYNAMICS_AUTO_APPLY", "Apply Dynamics 365 changes automatically", "integrations",
+          "Off: every note, update or resolution waits for your approval. On: they're made "
+          "straight away (including by jobs) and logged in Activity.",
+          type="bool", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("DYNAMICS_ENABLED", [True])]),
+    Field("RIGHTANSWERS_AUTO_APPLY", "Apply RightAnswers changes automatically", "integrations",
+          "Off: every article edit waits for your approval. On: edits are made straight away "
+          "and logged in Activity.",
+          type="bool", show_if_all=[("BROWSER_AUTOMATION_ENABLED", [True]),
+                                    ("RIGHTANSWERS_ENABLED", [True])]),
     Field("SHAREPOINT_AUTO_APPLY", "Apply SharePoint changes automatically", "integrations",
           "Off: every document or page change waits for your approval. On: changes are made "
           "straight away — including by chat tasks — and each one can be undone from its card.",
@@ -624,6 +638,25 @@ FIELDS: List[Field] = [
     Field("IDEAS_QUIET_DAYS", "Follow up quiet cases after (days)", "secretary",
           "A case with nothing happening for this many days gets a follow-up idea.",
           type="number", advanced=True),
+    Field("BRIEFING_ENABLED", "Morning briefing", "secretary",
+          "On weekdays: today's meetings, urgent mail, cases needing you, follow-ups due and "
+          "watches that fired — on Home, as a notice, and spoken when voice replies are on.",
+          type="bool"),
+    Field("BRIEFING_TIME", "Briefing time", "secretary",
+          "When the morning briefing is ready (HH:MM).", show_if=("BRIEFING_ENABLED", [True])),
+    Field("END_OF_DAY_SUMMARY", "End-of-day summary", "secretary",
+          "On weekdays at 17:00: what got done today and what's still open.", type="bool"),
+    Field("WEEKLY_SUMMARY", "Weekly summary", "secretary",
+          "On Fridays at 16:00: the week's work and what's carrying over.", type="bool"),
+    Field("MEETING_BRIEF_MINUTES", "Meeting brief (minutes before)", "secretary",
+          "Before each meeting: who's coming, recent mail and Teams with them, their open "
+          "cases. 0 turns it off.", type="number"),
+    Field("FOLLOWUP_CHASE_DAYS", "Chase unanswered requests after (days)", "secretary",
+          "A request you sent with no reply after this many days becomes a follow-up to chase.",
+          type="number"),
+    Field("TEMPLATES_FOLDER", "Templates folder", "secretary",
+          "Where your Word and Excel templates are, for drafting documents from them.",
+          advanced=True),
     Field("COPILOT_ACCEPT_COMMANDS", "Let the agent ask Cerebro to do things", "copilot",
           "Local actions only — search, read a document, add to your log. It can "
           "never send mail or messages through Cerebro.",

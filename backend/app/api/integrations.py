@@ -95,6 +95,9 @@ def set_auto_apply(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
     from app.core import settings_store
 
     connector = _connector(name)
+    if hasattr(connector, "set_auto_apply"):          # a website added at runtime
+        connector.set_auto_apply(bool(body.get("enabled")))
+        return {"ok": True, "integration": connector.status()}
     if not connector.auto_apply_setting:
         raise HTTPException(status_code=400,
                             detail=f"Changes in {connector.label} always need your approval.")

@@ -82,6 +82,26 @@ need to, and wait for your approval. Agents can watch pages for changes,
 suggest ideas, and work on projects with milestones. See
 [docs/AGENTS.md](docs/AGENTS.md).
 
+**Keep it updated — in one step**
+Give Cerebro a SharePoint page, an internal site, a Word or Excel file, or a
+Windows program, and say how to keep it up to date ("from the export, whenever
+it changes"). It connects it, makes the job, and runs the first update with
+your approval. It remembers how it did it, and once it works you can let it
+update by itself. Every automatic change is logged with screenshots. See
+[docs/AGENTS.md](docs/AGENTS.md#keep-it-updated).
+
+**Windows desktop apps**
+Cerebro can open and work in your Windows programs: read the window, type,
+click and press keys. Saving, sending and confirming wait for your approval.
+See [docs/ADDONS.md](docs/ADDONS.md#desktop-apps).
+
+**Secretary**
+Home → Today shows your agenda, to-dos and follow-ups, and a morning
+briefing. Cerebro books and moves meetings with your approval and briefs you
+before each one. It tracks what you're waiting on and what you promised, and
+drafts the chaser. It takes notes from calls and fills in your Word and Excel
+templates. See [docs/SECRETARY.md](docs/SECRETARY.md).
+
 **Faces**
 Pick the pixel brain, an original anime-style face that reacts and lip-syncs
 as it speaks, or load your own Live2D or VRM model. See
@@ -189,9 +209,10 @@ from that one state.
 | [docs/INSTALL.md](docs/INSTALL.md) | Full install guide, per platform, plus troubleshooting |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting and what it does |
 | [docs/WIDGET.md](docs/WIDGET.md) | The desktop widget in detail |
-| [docs/ADDONS.md](docs/ADDONS.md) | MCP servers, websites and skills added at runtime |
+| [docs/ADDONS.md](docs/ADDONS.md) | MCP servers, websites, desktop apps and skills added at runtime |
 | [docs/VOICE.md](docs/VOICE.md) | Push-to-talk, the mic button and spoken replies |
-| [docs/AGENTS.md](docs/AGENTS.md) | Agents, jobs, projects, watches and ideas |
+| [docs/AGENTS.md](docs/AGENTS.md) | Agents, jobs, keeping things updated, attachments, projects, watches and ideas |
+| [docs/SECRETARY.md](docs/SECRETARY.md) | Calendar, follow-ups and to-dos, briefings, meeting notes, templates |
 | [docs/FACES.md](docs/FACES.md) | The anime face, and loading Live2D or VRM models |
 | [docs/POWER_AUTOMATE.md](docs/POWER_AUTOMATE.md) | Outlook and Teams integration, flow by flow |
 | [docs/DOCUMENTS.md](docs/DOCUMENTS.md) | Reading and editing Word, Excel and PDF |

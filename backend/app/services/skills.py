@@ -77,6 +77,12 @@ def all_skills() -> List[Dict[str, Any]]:
     return found
 
 
+def exact(name: str) -> Optional[Dict[str, Any]]:
+    """The skill saved under exactly this name (no guessing)."""
+    wanted = slug(name)
+    return next((s for s in all_skills() if s["slug"] == wanted), None)
+
+
 def get(name: str) -> Optional[Dict[str, Any]]:
     wanted = slug(name)
     for skill in all_skills():

@@ -19,7 +19,7 @@ else local) fetch it back to render inline.
 """
 
 import threading
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -71,6 +71,8 @@ class MessageIn(BaseModel):
     conversation_id: Optional[int] = None
     #: Spoken (the mic button): Ask answers briefly and acts on it.
     voice: bool = False
+    #: Ids from prior ``/upload-file`` calls (documents attached in chat).
+    attachments: Optional[List[str]] = None
 
 
 def _message_context(db: Session, request: MessageIn) -> Dict[str, Any]:
@@ -82,13 +84,13 @@ def _message_context(db: Session, request: MessageIn) -> Dict[str, Any]:
 
 @router.post("/message", dependencies=[Depends(require_local_origin)])
 def send_message(request: MessageIn, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    if not request.message.strip() and not request.image:
+    if not request.message.strip() and not request.image and not request.attachments:
         raise HTTPException(status_code=400, detail="Say something first.")
     service = _service(db, request.conversation_id)
     _working(service.conversation_id, 1)
     try:
         result = service.handle_message(request.message, context=_message_context(db, request),
-                                        image=request.image)
+                                        image=request.image, attachments=request.attachments)
     finally:
         _working(service.conversation_id, -1)
     result["conversation"] = service.conversation.to_dict()
@@ -114,7 +116,7 @@ def stream_message(request: MessageIn):
 
     from app.core.database import SessionLocal
 
-    if not request.message.strip() and not request.image:
+    if not request.message.strip() and not request.image and not request.attachments:
         raise HTTPException(status_code=400, detail="Say something first.")
 
     events: "queue.Queue" = queue.Queue()
@@ -131,7 +133,7 @@ def stream_message(request: MessageIn):
             service = ChatService(db, conversation_id)
             result = service.handle_message(
                 request.message, context=_message_context(db, request), image=request.image,
-                emit=lambda card: events.put(("card", card)))
+                attachments=request.attachments, emit=lambda card: events.put(("card", card)))
             result["conversation"] = service.conversation.to_dict()
             events.put(("message", result))
         except Exception as exc:  # noqa: BLE001 - reported to the client
@@ -428,6 +430,29 @@ async def upload_image(file: UploadFile) -> Dict[str, Any]:
     except ImageError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"image": stored}
+
+
+@router.post("/upload-file", dependencies=[Depends(require_local_origin)])
+async def upload_file(file: UploadFile) -> Dict[str, Any]:
+    """Attach a document (Word, Excel, PowerPoint, PDF, text, CSV, logs, zip; 50 MB)."""
+    from app.services import chat_files
+
+    data = await file.read(chat_files.MAX_BYTES + 1)
+    try:
+        info = chat_files.save(data, file.filename or "file")
+    except chat_files.FileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"file": {k: info[k] for k in ("id", "name", "size", "kind")}}
+
+
+@router.get("/file/{file_id}", dependencies=[Depends(require_local_origin)])
+def get_file(file_id: str) -> FileResponse:
+    from app.services import chat_files
+
+    info = chat_files.resolve(file_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail="No such file")
+    return FileResponse(info["path"], filename=info["name"])
 
 
 @router.get("/image/{name}", dependencies=[Depends(require_local_origin)])

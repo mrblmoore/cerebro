@@ -202,6 +202,10 @@ class Settings(BaseSettings):
     #: task) makes them, instead of waiting for approval. Each one is still
     #: shown with its before/after and can be undone from its card.
     SHAREPOINT_AUTO_APPLY: bool = False
+    #: The same, for Dynamics 365 (notes, field updates, resolving) and
+    #: RightAnswers (article edits). Off by default; each change is still logged.
+    DYNAMICS_AUTO_APPLY: bool = False
+    RIGHTANSWERS_AUTO_APPLY: bool = False
     #: Outlook and Teams on the web, through the same hidden browser and
     #: Microsoft 365 sign-in: read, search and send mail and chats, watched
     #: for new messages. Sending always asks first unless the matching
@@ -242,6 +246,8 @@ class Settings(BaseSettings):
 
     #: Keep a timestamped copy beside any document before editing it.
     DOCUMENT_BACKUP_ON_EDIT: bool = True
+    #: Let Word/Excel changes Cerebro prepares (edit_document) apply without asking.
+    DOCUMENTS_AUTO_APPLY: bool = False
 
     # ------------------------------------------------------- activity capture
     #: The whole activity-capture subsystem is off unless this is true. It is the
@@ -330,6 +336,18 @@ class Settings(BaseSettings):
     IDEAS_AI: bool = False
     #: A case with nothing happening for this many days gets a follow-up idea.
     IDEAS_QUIET_DAYS: int = 5
+    #: A morning briefing on weekdays (a job you can edit), at this time.
+    BRIEFING_ENABLED: bool = True
+    BRIEFING_TIME: str = "08:30"
+    #: An end-of-day summary on weekdays (off by default) and a weekly one on Fridays.
+    END_OF_DAY_SUMMARY: bool = False
+    WEEKLY_SUMMARY: bool = True
+    #: Post a brief this many minutes before each meeting (0 = never).
+    MEETING_BRIEF_MINUTES: int = 10
+    #: Suggest chasing a request with no reply after this many days.
+    FOLLOWUP_CHASE_DAYS: int = 3
+    #: Where your Word/Excel templates live, for draft_document.
+    TEMPLATES_FOLDER: str = ""
 
     # ------------------------------------------------------------- browser
     #: Report every page visited, not just recognised CRM cases.
