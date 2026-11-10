@@ -6014,6 +6014,7 @@ def test_voice():
     # The offline voices are covered in test_voice_expression; here they're unavailable,
     # so an online voice is tried after them.
     tts.use_provider("kokoro", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no model")))
+    tts.use_provider("windows", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no Windows voice")))
     tts.use_provider("polly", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no AWS")))
     tts.use_provider("edge", lambda text, voice, rate: spoken_calls.append(text) or (b"MP3DATA", "audio/mpeg"))
     systems = []
@@ -6118,6 +6119,7 @@ def test_voice():
     finally:
         speech.set_transcriber(None)
         tts.use_provider("kokoro", None)
+        tts.use_provider("windows", None)
         tts.use_provider("polly", None)
         tts.use_provider("edge", None)
 
@@ -7408,6 +7410,7 @@ def test_faces():
 
     from app.api import faces as faces_api
     from app.main import app
+    from app.core.config import settings
     from app.services import agents, tts
 
     palettes = ("pink", "black", "silver", "blue", "brown", "green")
@@ -7526,7 +7529,9 @@ def test_faces():
     heard = []
     tts.use_provider("edge", lambda text, voice, rate: heard.append((voice, rate)) or (b"MP3", "audio/mpeg"))
     try:
-        with mock.patch.object(tts, "polly_ready", return_value=False):
+        # With Edge chosen (in auto, the offline voices answer first).
+        with mock.patch.object(tts, "polly_ready", return_value=False), \
+                mock.patch.object(settings, "VOICE_PROVIDER", "edge"), mock.patch.object(settings, "VOICE_NAME", ""):
             tts.synthesize("Hello", voice="en-GB-SoniaNeural", rate=1.2)
             tts.synthesize("Hello", voice="Matthew")
         check("Each agent speaks in its own voice", heard[0] == ("en-GB-SoniaNeural", 1.2)

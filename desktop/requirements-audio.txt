@@ -3,3 +3,6 @@
 sounddevice>=0.4,<1.0
 soundfile>=0.12,<1.0
 faster-whisper>=1.0,<2.0
+# PyAV 19 removed av.open(metadata_errors=), which faster-whisper 1.2 still passes
+# when it decodes a recording, so every transcription would fail.
+av>=11,<19
