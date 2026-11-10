@@ -47,3 +47,8 @@ logs/
 uploads/
 screenshots/
 exports/
+
+# Bundled models fetched by packaging/fetch_models.py (not committed)
+models/
+assets/faces/vrm/*/model.vrm
+assets/faces/vrm/*/gestures/

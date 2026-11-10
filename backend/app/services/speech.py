@@ -2,9 +2,11 @@
 Speech to text, on this PC.
 
 faster-whisper turns a recording into text locally — nothing is uploaded to
-be transcribed. The model (``VOICE_MODEL``, ``base.en`` by default) is
-downloaded once, on first use, to ``…\\Cerebro\\models``; silence is trimmed
-with the Silero voice-activity filter built into faster-whisper.
+be transcribed. The model (``VOICE_MODEL``, ``base.en`` by default) ships
+inside Cerebro, and others can be imported from a zip
+(:func:`import_model`); it is loaded from its folder and never downloaded, so
+speech works on networks that block model sites. Silence is trimmed with the
+Silero voice-activity filter built into faster-whisper.
 
 Words Cerebro already knows — the open case, recent case numbers, people it
 has messaged, the systems and add-ons it is connected to — are given to the
@@ -13,13 +15,16 @@ spelled the way Cerebro needs it.
 """
 
 import io
+import os
 import re
 import threading
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional
 
 from app.core import logger
 from app.core.config import settings
-from app.core.paths import MODELS_DIR
+from app.core.paths import BUNDLED_MODELS_DIR, MODELS_DIR
 
 _model = None
 _model_name = ""
@@ -50,8 +55,45 @@ def set_transcriber(fn: Optional[Callable[[bytes, str], str]]) -> None:
     _transcriber = fn
 
 
+MODEL_LABELS = {"tiny.en": "Fastest (tiny)", "base.en": "Balanced (base)", "small.en": "Most accurate (small)"}
+_NEEDED = ("model.bin", "config.json")
+
+
+def model_folders() -> List[Path]:
+    """Where speech models are looked for: shipped with Cerebro, then imported."""
+    return [BUNDLED_MODELS_DIR / "whisper", MODELS_DIR / "whisper"]
+
+
+def model_folder(name: str) -> Optional[Path]:
+    """The folder holding speech model ``name``, or None if it isn't installed."""
+    for root in model_folders():
+        folder = root / name
+        if all((folder / f).is_file() for f in _NEEDED):
+            return folder
+        # A model an older Cerebro downloaded, in the Hugging Face cache layout.
+        snapshots = root / f"models--Systran--faster-whisper-{name}" / "snapshots"
+        if snapshots.is_dir():
+            for snap in sorted(snapshots.iterdir()):
+                if all((snap / f).is_file() for f in _NEEDED):
+                    return snap
+    return None
+
+
+def installed_models() -> List[str]:
+    names = set()
+    for root in model_folders():
+        if root.is_dir():
+            for folder in root.iterdir():
+                if all((folder / f).is_file() for f in _NEEDED):
+                    names.add(folder.name)
+                elif folder.name.startswith("models--Systran--faster-whisper-"):
+                    if model_folder(folder.name.replace("models--Systran--faster-whisper-", "")):
+                        names.add(folder.name.replace("models--Systran--faster-whisper-", ""))
+    return sorted(names)
+
+
 def model():
-    """The Whisper model, loaded (and downloaded the first time) once."""
+    """The Whisper model, loaded once from its folder — never downloaded."""
     global _model, _model_name
     wanted = (settings.VOICE_MODEL or "base.en").strip()
     with _lock:
@@ -60,14 +102,70 @@ def model():
         if not installed():
             raise SpeechUnavailable("Speech recognition isn't installed in this copy of Cerebro "
                                     "(pip install -r desktop/requirements-voice.txt).")
+        folder = model_folder(wanted)
+        if folder is None and not os.environ.get("CEREBRO_ALLOW_MODEL_DOWNLOAD"):
+            label = MODEL_LABELS.get(wanted, wanted)
+            built_in = model_folder("base.en") is not None
+            raise SpeechUnavailable(
+                f"The {label} speech model isn't installed. "
+                + ("Choose Balanced (base) in Settings → Voice — it's built in — or import "
+                   f"{wanted} there from a zip." if built_in and wanted != "base.en" else
+                   "Import it in Settings → Voice → Import speech model (a zip of the model folder), "
+                   "or run python packaging/fetch_models.py if you're running Cerebro from source."))
+        # Never let the library try the network: model sites are often blocked at work.
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
         from faster_whisper import WhisperModel
 
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        logger.info("voice", "Loading the speech model", {"model": wanted})
-        _model = WhisperModel(wanted, device="cpu", compute_type="int8",
-                              download_root=str(MODELS_DIR / "whisper"))
+        logger.info("voice", "Loading the speech model", {"model": wanted, "from": str(folder or "download")})
+        if folder is not None:
+            _model = WhisperModel(str(folder), device="cpu", compute_type="int8")
+        else:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            MODELS_DIR.mkdir(parents=True, exist_ok=True)
+            _model = WhisperModel(wanted, device="cpu", compute_type="int8",
+                                  download_root=str(MODELS_DIR / "whisper"))
         _model_name = wanted
         return _model
+
+
+_MODEL_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,40}$")
+MAX_IMPORT = 3 * 1024 ** 3
+
+
+def import_model(data: bytes, name: str = "") -> Dict[str, Any]:
+    """Install a speech model from a zip of its folder (model.bin, config.json,
+    tokenizer.json, vocabulary…). Returns ``{"name", "folder"}``."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise SpeechUnavailable("That isn't a zip file.") from exc
+    with archive:
+        entries = [i for i in archive.infolist() if not i.is_dir()]
+        model_bins = [i for i in entries if PurePosixPath(i.filename).name == "model.bin"]
+        if len(model_bins) != 1:
+            raise SpeechUnavailable("The zip should hold one speech model folder (with model.bin and config.json).")
+        base = PurePosixPath(model_bins[0].filename).parent
+        if not any(PurePosixPath(i.filename) == base / "config.json" for i in entries):
+            raise SpeechUnavailable("The model folder in the zip has no config.json.")
+        name = (name or base.name or "").strip().lower().replace("faster-whisper-", "")
+        if not _MODEL_NAME.match(name):
+            raise SpeechUnavailable("Give the model a simple name, like small.en.")
+        if sum(i.file_size for i in entries) > MAX_IMPORT:
+            raise SpeechUnavailable("That model is too large.")
+        target = MODELS_DIR / "whisper" / name
+        target.mkdir(parents=True, exist_ok=True)
+        for info in entries:
+            path = PurePosixPath(info.filename)
+            if base not in path.parents:
+                continue
+            relative = path.relative_to(base)
+            if ".." in relative.parts or relative.is_absolute():
+                raise SpeechUnavailable("The zip tries to write outside its folder.")
+            out = target.joinpath(*relative.parts)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(archive.read(info))
+    logger.info("voice", "Speech model imported", {"model": name})
+    return {"name": name, "folder": str(target)}
 
 
 def warm_up() -> None:

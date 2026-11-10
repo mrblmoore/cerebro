@@ -1,0 +1,66 @@
+/* Settings view (static/ui/settings-view.js), in the app window and on /settings. */
+.settings-view { display: flex; flex-direction: column; gap: 10px; padding: 18px 22px 0; max-width: 1080px;
+  margin: 0 auto; width: 100%; box-sizing: border-box; color: var(--text, inherit); }
+.settings-view .st-head { display: flex; align-items: center; gap: 12px; }
+.settings-view .st-head h2 { margin: 0; flex: 1; font-size: 20px; letter-spacing: -.01em; }
+.settings-view .st-path { margin: -4px 0 4px; font-size: 12px; color: var(--text-faint, #8a8fa3); }
+.settings-view code { font-size: 11.5px; padding: 1px 5px; border-radius: 6px; background: rgba(127, 127, 127, .14); }
+.settings-view .st-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 16px; min-height: 0; }
+.settings-view .st-groups { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; align-self: start; }
+.settings-view .st-groups button { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 10px;
+  border: 0; background: transparent; color: var(--text-dim, inherit); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.settings-view .st-groups button:hover { background: rgba(127, 127, 127, .1); }
+.settings-view .st-groups button[aria-selected="true"] { background: rgba(139, 124, 246, .16); color: var(--text, inherit); font-weight: 600; }
+.settings-view .st-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.settings-view .st-card { border: 1px solid var(--stroke, var(--border, rgba(127, 127, 127, .25))); border-radius: 14px;
+  padding: 14px 16px; background: var(--panel, var(--bg-2, transparent)); }
+.settings-view .st-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.settings-view .st-card h3 { margin: 0 0 4px; font-size: 15px; }
+.settings-view .st-desc { margin: 0 0 12px; color: var(--text-dim, inherit); font-size: 13px; }
+.settings-view .st-field { display: grid; gap: 5px; margin-bottom: 14px; }
+.settings-view .st-name { font-size: 12.5px; font-weight: 650; }
+.settings-view .st-help { font-size: 12px; color: var(--text-faint, #8a8fa3); font-weight: 400; }
+.settings-view input[type="text"], .settings-view input[type="password"], .settings-view input[type="number"],
+.settings-view input[type="url"], .settings-view select { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--stroke, var(--border, rgba(127, 127, 127, .3))); background: var(--bg-2, rgba(127, 127, 127, .06));
+  color: inherit; font: inherit; font-size: 13px; }
+.settings-view select option { background: var(--bg-2, #fff); }
+.settings-view input:focus, .settings-view select:focus { outline: none; border-color: rgba(139, 124, 246, .6); box-shadow: 0 0 0 3px rgba(139, 124, 246, .14); }
+.settings-view .st-row { display: flex; gap: 8px; align-items: center; }
+.settings-view .st-row select { flex: 1; }
+.settings-view .st-switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.settings-view .st-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.settings-view .st-switch span { position: relative; width: 34px; height: 20px; flex: none; border-radius: 999px;
+  background: rgba(127, 127, 127, .3); transition: background .15s; }
+.settings-view .st-switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px;
+  border-radius: 50%; background: #fff; transition: transform .15s; }
+.settings-view .st-switch input:checked + span { background: var(--accent-grad, #7c6cf0); }
+.settings-view .st-switch input:checked + span::after { transform: translateX(14px); }
+.settings-view .st-switch input:focus-visible + span { box-shadow: 0 0 0 3px rgba(139, 124, 246, .35); }
+.settings-view .st-btn { padding: 8px 14px; border-radius: 10px; border: 1px solid var(--stroke, rgba(127, 127, 127, .3));
+  background: transparent; color: inherit; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.settings-view .st-btn.sm { padding: 5px 10px; font-size: 12px; }
+.settings-view .st-btn.primary { background: var(--accent-grad, #7c6cf0); border-color: transparent; color: #fff; }
+.settings-view .st-btn.ghost { border-color: transparent; }
+.settings-view .st-btn:disabled { opacity: .55; cursor: default; }
+.settings-view .st-bar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 12px 0 16px;
+  background: linear-gradient(to top, var(--bg, #fff) 70%, transparent); }
+.settings-view .st-grow { flex: 1; }
+.settings-view .st-dirty { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: rgba(245, 158, 11, .16); color: #b45309; }
+.settings-view .st-pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; margin-left: 6px; }
+.settings-view .st-pill.ok { background: rgba(16, 185, 129, .16); color: #059669; }
+.settings-view .st-empty { padding: 16px; color: var(--text-faint, #8a8fa3); font-size: 13px; }
+.settings-view .st-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.settings-view .st-status { display: grid; grid-template-columns: 12px 170px 1fr; gap: 8px; align-items: baseline; font-size: 13px; padding: 4px 0; }
+.settings-view .st-status span:last-child { color: var(--text-dim, inherit); }
+.settings-view .st-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.settings-view .st-dot.ok { background: var(--ok, #10b981); }
+.settings-view .st-dot.off { background: rgba(127, 127, 127, .45); }
+@media (max-width: 760px) {
+  .settings-view { padding: 12px 14px 0; }
+  .settings-view .st-layout { grid-template-columns: 1fr; }
+  .settings-view .st-groups { position: static; flex-direction: row; overflow-x: auto; }
+  .settings-view .st-groups button span { white-space: nowrap; }
+  .settings-view .st-status { grid-template-columns: 12px 1fr; }
+  .settings-view .st-status span:last-child { grid-column: 2; }
+}

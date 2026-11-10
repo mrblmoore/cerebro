@@ -112,9 +112,9 @@ class Buddy(threading.Thread):
     def set_enabled(self, enabled: bool) -> None:
         self.logic.enabled = bool(enabled)
 
-    def set_face(self, face: str, palette: str = None, hair: str = None) -> None:
-        """Show the brain or the anime face (Live2D/VRM show as the anime face)."""
-        self._face_request = (face, palette, hair)
+    def set_face(self, face: str, palette: str = None, hair: str = None, strips: str = None) -> None:
+        """Show the brain, the anime face, or a VRM model's rendered strips."""
+        self._face_request = (face, palette, hair, strips)
 
     def say(self, levels, step: float) -> None:
         """Move the mouth in time with speech: ``levels`` (0..1) every ``step`` seconds."""
@@ -195,7 +195,7 @@ class Buddy(threading.Thread):
             key = tuple(int(KEY_COLOUR[i:i + 2], 16) for i in (1, 3, 5)) \
                 if sys.platform == "win32" else (21, 23, 38)
             photos = []
-            smooth = brain_frames.FACE["face"] == "anime"
+            smooth = brain_frames.FACE["face"] in ("anime", "strips")
             for frame in brain_frames.raw_frames(sprite):
                 small = frame.resize((SPRITE_WIDTH, height), Image.LANCZOS if smooth else Image.BOX)
                 # A colour key is all-or-nothing, so edges are made hard first.
@@ -216,10 +216,11 @@ class Buddy(threading.Thread):
             except queue.Empty:
                 break
         if self._face_request is not None:
-            face, palette, hair = self._face_request
+            face, palette, hair, strips = self._face_request
             self._face_request = None
-            brain_frames.use_face(face, palette, hair)
-            current = (brain_frames.FACE["face"], brain_frames.FACE["palette"], brain_frames.FACE["hair"])
+            brain_frames.use_face(face, palette, hair, strips)
+            current = (brain_frames.FACE["face"], brain_frames.FACE["palette"], brain_frames.FACE["hair"],
+                       brain_frames.FACE["strips"])
             if current != getattr(self, "_face", None):
                 self._face = current
                 self._frames.clear()

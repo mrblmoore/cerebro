@@ -1,0 +1,16 @@
+{
+  "name": "Kuro",
+  "order": 3,
+  "model": "three-vrm-girl",
+  "author": "pixiv Inc.",
+  "credit": "Kuro is three-vrm-girl by pixiv Inc.",
+  "license": "VRoid Hub licence: redistribution, modification and corporate commercial use allowed, credit not required",
+  "source_url": "https://github.com/pixiv/three-vrm/tree/48019ebcbbf021ef011ea26bc87d195834e02e03/packages/three-vrm/examples/models",
+  "gestures": {
+    "loop": "gestures/idle_loop.vrma"
+  },
+  "framing": {
+    "zoom": 0.88,
+    "y": 0.06
+  }
+}

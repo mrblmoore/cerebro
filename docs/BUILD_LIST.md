@@ -301,3 +301,32 @@ template replies.
   with cues, Nova Sonic reading a reply, and a Talk live session; a real
   VRM with a `.vrma` gesture and a real Live2D model.
 
+## Phase 14 — Works on a locked-down network; nicer avatars; Settings in the app (0.10.0)
+
+- [x] **B14.1 Offline speech-to-text.** faster-whisper `base.en` ships inside the installer and is loaded
+  from its folder (never from the model site); other sizes import from a zip.
+- [x] **B14.2 Kokoro offline voice.** Kokoro-82M (Apache-2.0) via onnxruntime, with Cerebro's own
+  text-to-phoneme converter on misaki's dictionaries (no eSpeak/GPL); cues as speed/loudness;
+  Best available = offline first; blocked hosts named in errors.
+- [x] **B14.3 Built-in 3D characters.** VRM models (licences allowing redistribution) in `assets/faces/vrm/`, gallery, tuned defaults,
+  pre-rendered buddy strips (`make_face.py --vrm`), read-only.
+- [x] **B14.4 Desktop buddy.** Follows the agent you're talking to; shows VRM faces from strips the app
+  renders (`face.js capture()`).
+- [x] **B14.5 Settings in the app.** One module for the app view and `/settings`; tray, widget and links
+  open it in the window.
+- [x] **B14.6 Installer.** Everything bundled (models, voice, uv); setup pages applied and tested by the
+  headless wizard; clean upgrades; clearing parts of the old memory after a backup; new artwork.
+- [x] **B14.7 Fixes.** The hidden browser no longer hangs on an aborted response or runs two workers;
+  Nova Sonic keeps botocore's awscrt.
+- [x] **B14.8 Built-in models.**
+  - Stella (AvatarSample_B), Kaori, Kuro and Seed-san, each with pixiv's idle loop as a resting motion.
+  - Every model's own licence allows redistribution, changes and company use.
+  - Fetched at pinned commits with SHA-256 checks.
+- [x] **B14.10 Live2D in one click.**
+  - Live2D's runtime and six free sample models are downloaded from Live2D after you agree.
+  - Available in the editor and from an installer checkbox; never bundled, because Live2D's licence treats an
+    app that loads any model as an "Expandable Application".
+- [x] **B14.11 Fixes.** PyAV is pinned below 19, which broke faster-whisper's decoding.
+- [ ] **B14.9 Real-world check** on the work network: install over 0.9, push-to-talk, Kokoro, Talk live,
+  and the buddy following the active agent.
+

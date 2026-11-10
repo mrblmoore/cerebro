@@ -1,0 +1,21 @@
+Seed-san — built-in 3D character for Cerebro
+
+Model:      Seed-san
+Author:     VirtualCast, Inc.
+Credit:     Seed-san model by VirtualCast, Inc.
+Source:     https://github.com/vrm-c/vrm-specification/tree/94e82dd346fa6cf0337c4421728640e5252dd38e/samples/Seed-san
+Licence:    VRM Public License 1.0 (https://vrm.dev/licenses/1.0/)
+
+The licence below is the one written inside the model file itself:
+  avatarPermission: everyone
+  commercialUsage: corporation
+  allowRedistribution: True
+  modification: allowModificationRedistribution
+  creditNotation: required
+
+Cerebro ships the file unchanged (fetched at a pinned commit and checked by
+SHA-256 in packaging/fetch_models.py) and renders it for the desktop buddy.
+The author asks to be credited; the credit above is shown in the app and docs.
+
+Resting motion: gestures/idle_loop.vrma from pixiv/ChatVRM (MIT License,
+Copyright (c) 2023 pixiv Inc.), unchanged.

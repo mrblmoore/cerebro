@@ -10,11 +10,55 @@ Download `CerebroSetup.exe` from the matching GitHub release and run it. No
 separate Python installation is needed — the runtime and every dependency are
 inside the installer.
 
-**Setup happens inside the installer.** Its last step opens a short wizard that
-checks what is installed, prepares the database, connects an AI model and, if
-you want it, the Microsoft 365 folders. Each of those is *tested* before you
-move on, so when the wizard closes Cerebro is configured and working — there is
-no browser page to visit afterwards and nothing else to fill in.
+**Everything is inside the installer.** The speech-recognition model, the
+offline voice (Kokoro), the built-in 3D characters and uv (for add-ons) all
+ship with it, so nothing is downloaded during install or on first use. That
+matters on work networks that block model and download sites.
+
+The one exception is Live2D: its licence doesn't let Cerebro include
+Live2D's runtime or its models. Tick **Also get Live2D models** on the
+"Your assistant" page to download them from Live2D during setup, or do it
+later from the face editor. If Live2D's sites are blocked, the setup summary
+says so, and a Live2D model and `live2dcubismcore.min.js` can be imported
+from files instead.
+
+**Setup happens inside the installer.** After choosing shortcuts, a few pages
+ask:
+
+1. **AI provider:** Amazon Bedrock (region, model, access keys or an AWS
+   profile, or the AWS sign-in already on the PC), an OpenAI-compatible
+   service, Ollama, **Keep my current settings** (upgrades), or **Set it up
+   later**.
+2. **Your assistant:** a built-in 3D character, the drawn anime face, or the
+   brain.
+3. **Personality:** Sweetheart, Warm, Calm or Professional.
+4. **Voice:** talk to Cerebro, speak replies, and whether to use Amazon Nova
+   Sonic.
+
+When the files are copied, the installer saves those choices and **tests
+them**: the database, the AI provider (one real question), the speech model
+and the offline voice. The last page lists each result. Anything that needs
+attention can be fixed later in **Settings**, which is inside the app window.
+Choose **Set it up later** to get the full step-by-step wizard instead. You
+can reopen it any time from **Start → Cerebro Setup**.
+
+**Upgrading.** Installing over an earlier version closes Cerebro first,
+replaces the old program files cleanly, and keeps your data in
+`%LOCALAPPDATA%\Cerebro`. A page also offers to **clear parts of the old
+memory**. Nothing is ticked unless you choose:
+
+- chats;
+- learned memory and writing style;
+- indexed documents;
+- activity recordings;
+- mail and Teams messages Cerebro read;
+- agents and jobs;
+- settings;
+- the hidden browser's sign-ins.
+
+Whatever you tick is backed up first to
+`%LOCALAPPDATA%\Cerebro\backups\before-reset-<date>.zip`, then cleared when
+Cerebro next starts.
 
 Anything missing that Cerebro can install itself, it offers to install on the
 spot, into its own environment. You can reopen the wizard any time from

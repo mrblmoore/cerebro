@@ -974,3 +974,11 @@ body.maximized .app { max-width: none; }
 .live-strip .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .icon-btn[hidden] { display: none !important; }
 .palette-row .face-avatar.hair-thumb { width: 44px; height: 44px; margin: 0; display: block; }
+
+/* 0.10: built-in model gallery in the agent editor */
+.model-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin: 4px 0 10px; }
+.model-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 12px;
+  border: 1px solid var(--line, rgba(127,127,127,.25)); background: var(--panel, transparent); color: inherit; cursor: pointer; font: inherit; font-size: 12px; }
+.model-card img, .model-card-blank { width: 76px; height: 76px; border-radius: 10px; object-fit: cover; background: rgba(127,127,127,.12); }
+.model-card-blank { display: grid; place-items: center; font-weight: 600; opacity: .6; }
+.model-card[aria-pressed="true"] { border-color: var(--accent, #8b5cf6); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #8b5cf6) 35%, transparent); }

@@ -111,7 +111,9 @@ framing and `.vrma` gestures. See [docs/FACES.md](docs/FACES.md).
 **Talk to it**
 Hold **Ctrl+Space** anywhere (or click the mic), say what you want, let go.
 Speech is turned into text on your PC; Cerebro acts and answers aloud.
-"Yes, send it" approves. Each agent has a personality (cute, cheerful and
+"Yes, send it" approves. Speech recognition and a natural voice (Kokoro) run
+on your PC and ship inside the installer, so voice works even on networks that
+block downloads. Each agent has a personality (cute, cheerful and
 teasing by default) and an expressive voice: Amazon Polly with per-engine
 effects, or Amazon Nova Sonic, which also powers **Talk live**, a hands-free
 conversation you can interrupt. See [docs/VOICE.md](docs/VOICE.md).

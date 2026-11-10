@@ -38,7 +38,22 @@ def status() -> Dict[str, Any]:
     return {"enabled": bool(settings.VOICE_ENABLED), "hotkey": settings.VOICE_HOTKEY,
             "speech_to_text": speech.available(), "model": settings.VOICE_MODEL,
             "speak_replies": bool(settings.VOICE_SPEAK_REPLIES),
-            "mic_mode": settings.VOICE_MIC_MODE, "voice": tts.status()}
+            "mic_mode": settings.VOICE_MIC_MODE, "voice": tts.status(),
+            "models": speech.installed_models(),
+            "model_ready": speech.model_folder((settings.VOICE_MODEL or "base.en").strip()) is not None}
+
+
+@router.post("/models")
+async def import_speech_model(file: UploadFile = File(...), name: str = Form("")) -> Dict[str, Any]:
+    """Settings → Voice → Import speech model: a zip of a faster-whisper model folder."""
+    data = await file.read(speech.MAX_IMPORT + 1)
+    if len(data) > speech.MAX_IMPORT:
+        raise HTTPException(status_code=400, detail="That model is too large.")
+    try:
+        result = speech.import_model(data, name or (file.filename or "").rsplit(".", 1)[0])
+    except speech.SpeechUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, **result, "models": speech.installed_models()}
 
 
 def _transcribe(db, data: bytes, context: Dict[str, Any] = None) -> str:

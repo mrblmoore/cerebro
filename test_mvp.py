@@ -562,7 +562,8 @@ def test_everything_is_explained():
     # A "Test connection" button wired to a target the backend does not handle
     # returns a 404 that reads as a broken integration.
     import re
-    html = (ROOT / "backend" / "app" / "web" / "settings.html").read_text(encoding="utf-8")
+    # The settings view (in the app window and on /settings) lives in one module.
+    html = (ROOT / "backend" / "app" / "web" / "static" / "ui" / "settings-view.js").read_text(encoding="utf-8")
     block = html.split("TEST_TARGETS = {")[1].split("}")[0]
     ui_targets = dict(re.findall(r"(\w+):\s*'(\w+)'", block))
     api = (ROOT / "backend" / "app" / "api" / "system.py").read_text(encoding="utf-8")
@@ -6010,6 +6011,10 @@ def test_voice():
     heard = []
     speech.set_transcriber(lambda audio, prompt: heard.append((len(audio), prompt)) or "summarise case CAS-1")
     spoken_calls = []
+    # The offline voices are covered in test_voice_expression; here they're unavailable,
+    # so an online voice is tried after them.
+    tts.use_provider("kokoro", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no model")))
+    tts.use_provider("windows", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no Windows voice")))
     tts.use_provider("polly", lambda text, voice, rate: (_ for _ in ()).throw(RuntimeError("no AWS")))
     tts.use_provider("edge", lambda text, voice, rate: spoken_calls.append(text) or (b"MP3DATA", "audio/mpeg"))
     systems = []
@@ -6033,7 +6038,7 @@ def test_voice():
             check("A spoken request is acted on", body["transcript"] == "summarise case CAS-1"
                   and "waiting on the customer" in body["reply"], body)
             check("…as a spoken request, answered briefly", "This request was SPOKEN" in systems[-1])
-            check("…with a spoken summary from the next voice when Polly isn't available",
+            check("…with a spoken summary from the next voice when the others aren't available",
                   body["speech"]["provider"] == "edge" and base64.b64decode(body["speech"]["audio"]) == b"MP3DATA")
             check("Only plain words are spoken — no Markdown, citations or links",
                   spoken_calls[-1] == "Case CAS-1 is waiting on the customer . See the link for more.",
@@ -6113,6 +6118,8 @@ def test_voice():
             print("  - skipped MP3 conversion: PyAV is not installed")
     finally:
         speech.set_transcriber(None)
+        tts.use_provider("kokoro", None)
+        tts.use_provider("windows", None)
         tts.use_provider("polly", None)
         tts.use_provider("edge", None)
 
@@ -6411,11 +6418,11 @@ def test_voice_expression():
                 spoken = tts.synthesize("Yay! [giggle]", style={"provider": "sonic", "voice": "matthew"})
             check("Nova Sonic voices replies when chosen, with the cues as directions",
                   spoken["provider"] == "sonic" and sonic_calls == [("Yay! (giggles)", "matthew")], sonic_calls)
-            tts.use_provider("edge", lambda text, voice, rate: (b"MP3", "audio/mpeg"))
+            tts.use_provider("kokoro", lambda text, voice, rate, style: (b"RIFF", "audio/wav"))
             with mock.patch.object(sonic, "speak", lambda *a, **k: (_ for _ in ()).throw(sonic.SonicUnavailable("x"))):
                 spoken = tts.synthesize("Hello [giggle]", style={"provider": "sonic"})
-            tts.use_provider("edge", None)
-            check("…and the next voice speaks if Nova Sonic fails", spoken["provider"] == "edge")
+            tts.use_provider("kokoro", None)
+            check("…and the offline voice speaks if Nova Sonic fails", spoken["provider"] == "kokoro")
 
         # ---- Talk live
         asked, events = [], []
@@ -6520,6 +6527,392 @@ def test_voice_expression():
                 check("Other websites can't open a live session", True)
     finally:
         sonic.set_client_factory(None)
+
+
+def test_offline_voice():
+    """0.10: speech that works on a locked-down network — Kokoro and a bundled speech model."""
+    print("\nVoice — offline (Kokoro, bundled speech model)")
+    import io
+    import sys as _sys
+    import wave
+    import zipfile
+    from unittest import mock
+
+    from app.core.config import settings
+    from app.services import g2p, kokoro_tts, speech, tts
+
+    # ---- text → phonemes, without eSpeak or spaCy
+    check("Words come from the pronunciation dictionary", g2p.phonemize("Hello there") == "həlˈO ðɛɹ",
+          g2p.phonemize("Hello there"))
+    check("…with English endings worked out", g2p.word_phonemes("printers") == "pɹˈɪntəɹz"
+          and g2p.word_phonemes("checked") == "ʧˈɛkt", (g2p.word_phonemes("printers"), g2p.word_phonemes("checked")))
+    check("Cerebro's own words are said right", g2p.word_phonemes("Cerebro") == "səɹˈɛbɹO")
+    check("Numbers, times, money and case numbers are said as words",
+          g2p.normalise("CAS-01234 at 9:30 costs $5 (25%) in 2026")
+          == "CAS zero one two three four at nine thirty costs five dollars (twenty five percent) in twenty twenty six",
+          g2p.normalise("CAS-01234 at 9:30 costs $5 (25%) in 2026"))
+    check("Acronyms are spelled out", g2p.word_phonemes("VPN") == "vˌipˌiˈɛn" and "ˈɛs" in g2p.word_phonemes("CAS"))
+    unknown = g2p.phonemize("Zorbulax")
+    check("An unknown word still gets a pronunciation", unknown and unknown[0] == "z" and "ˈ" in unknown, unknown)
+    check("Only Kokoro's own symbols come out",
+          all(c in g2p.VOCAB for c in g2p.phonemize("Hehe — it's done! Ünïcödé & “quotes”, 100%…")))
+
+    # ---- the offline voice comes first, and a blocked online voice is explained
+    with mock.patch.object(settings, "VOICE_PROVIDER", "auto"):
+        check("Best available tries the offline voices first", tts.order()[:2] == ["kokoro", "windows"])
+    check("A chosen online voice falls back to the offline ones, not to another online one",
+          tts.order("polly") == ["polly", "kokoro", "windows"] and tts.order("edge") == ["edge", "kokoro", "windows"])
+    message = tts.explain("edge", RuntimeError("Cannot connect to host speech.platform.bing.com:443 ssl:default"))
+    check("A blocked online voice says which address was blocked and what works instead",
+          "speech.platform.bing.com" in message and "blocks" in message and "Kokoro" in message, message)
+    check("Kokoro voice names are recognised (blends too)", tts._fits("kokoro", "af_heart+af_bella")
+          and not tts._fits("kokoro", "tiffany") and not tts._fits("sonic", "af_heart"))
+
+    # ---- the Kokoro engine itself (needs the model; in CI the real voices too)
+    ok, why = kokoro_tts.available()
+    if not ok:
+        print(f"  - skipped Kokoro synthesis: {why}")
+    else:
+        names = [v["id"] for v in kokoro_tts.voices()]
+        voice = "af_heart" if "af_heart" in names else names[0]
+
+        def seconds(wav):
+            with wave.open(io.BytesIO(wav)) as handle:
+                return handle.getnframes() / handle.getframerate(), handle.getframerate()
+
+        def loudness(wav):
+            import numpy as np
+
+            with wave.open(io.BytesIO(wav)) as handle:
+                samples = np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2").astype("float32")
+            return float(np.sqrt(np.mean(samples ** 2)))
+
+        line = "The printer on the second floor is working again."
+        plain = kokoro_tts.speak(line, voice=voice)
+        length, rate = seconds(plain)
+        check("Kokoro speaks offline, as 24 kHz audio", rate == 24000 and 1.0 < length < 12, (rate, length))
+        fast, _ = seconds(kokoro_tts.speak(f"[excited]{line}[/excited]", voice=voice))
+        slow, _ = seconds(kokoro_tts.speak(f"[slow]{line}[/slow]", voice=voice))
+        check("Excited is quicker and slow is slower", fast < length < slow, (fast, length, slow))
+        check("A whisper is quieter", loudness(kokoro_tts.speak(f"[whisper]{line}[/whisper]", voice=voice))
+              < loudness(plain) * 0.7)
+        if len(names) > 1:
+            mixed = kokoro_tts.blend(f"{names[0]}+{names[1]}")
+            check("Voices can be blended", mixed.shape == kokoro_tts.blend(names[0]).shape)
+        spoken = tts.synthesize("Yay, all done! [giggle]", style={"provider": "kokoro", "voice": voice})
+        check("Kokoro is a voice like any other", spoken["provider"] == "kokoro" and spoken["mime"] == "audio/wav")
+
+        # In CI both real models are bundled: what Kokoro says, Whisper must hear.
+        if "af_heart" in names and speech.installed() and speech.model_folder("base.en"):
+            with mock.patch.object(settings, "VOICE_MODEL", "base.en"):
+                heard = speech.transcribe(kokoro_tts.speak(
+                    "Hello! Your case is closed and the printer is fixed.", voice="af_heart"))["text"].lower()
+            words = {"hello", "your", "case", "is", "closed", "and", "the", "printer", "fixed"}
+            got = {w.strip(".,!?") for w in heard.split()}
+            check("Kokoro is understandable: Whisper hears what it said", len(words & got) >= 7, heard)
+        else:
+            print("  - skipped the Kokoro → Whisper round trip: needs the real models (CI has them)")
+
+    # ---- speech-to-text loads its model from a folder, never from the internet
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(dir=_TEMP_DIR))
+    (root / "whisper" / "base.en").mkdir(parents=True)
+    for name in ("model.bin", "config.json"):
+        (root / "whisper" / "base.en" / name).write_bytes(b"x")
+    loaded = []
+
+    class FakeWhisper:
+        def __init__(self, path, **kwargs):
+            loaded.append((path, kwargs, dict(__import__("os").environ)))
+
+    fake_module = type(_sys)("faster_whisper")
+    fake_module.WhisperModel = FakeWhisper
+    with mock.patch.object(speech, "model_folders", lambda: [root / "whisper"]), \
+            mock.patch.dict(_sys.modules, {"faster_whisper": fake_module}), \
+            mock.patch.object(speech, "installed", lambda: True), \
+            mock.patch.object(settings, "VOICE_MODEL", "base.en"):
+        speech._model, speech._model_name = None, ""
+        speech.model()
+        check("The speech model is loaded from its folder, by path",
+              loaded and loaded[-1][0] == str(root / "whisper" / "base.en") and "download_root" not in loaded[-1][1],
+              loaded[-1:])
+        check("…with the model site switched off", loaded[-1][2].get("HF_HUB_OFFLINE") == "1")
+        check("The installed models are listed", speech.installed_models() == ["base.en"])
+        with mock.patch.object(settings, "VOICE_MODEL", "small.en"):
+            speech._model, speech._model_name = None, ""
+            calls = len(loaded)
+            try:
+                speech.model()
+                check("A model that isn't installed says how to get it, without going online", False)
+            except speech.SpeechUnavailable as exc:
+                check("A model that isn't installed says how to get it, without going online",
+                      "import" in str(exc).lower() and len(loaded) == calls, str(exc))
+            bundle = io.BytesIO()
+            with zipfile.ZipFile(bundle, "w") as archive:
+                for name in ("model.bin", "config.json", "tokenizer.json"):
+                    archive.writestr(f"faster-whisper-small.en/{name}", "x")
+            with mock.patch.object(speech, "MODELS_DIR", root):
+                result = speech.import_model(bundle.getvalue())
+            check("A speech model can be imported from a zip", result["name"] == "small.en"
+                  and (root / "whisper" / "small.en" / "tokenizer.json").is_file(), result)
+            speech.model()
+            check("…and is then used", loaded[-1][0] == str(root / "whisper" / "small.en"))
+            evil = io.BytesIO()
+            with zipfile.ZipFile(evil, "w") as archive:
+                archive.writestr("m/model.bin", "x")
+                archive.writestr("m/config.json", "x")
+                archive.writestr("m/../../escape.txt", "x")
+            try:
+                with mock.patch.object(speech, "MODELS_DIR", root):
+                    speech.import_model(evil.getvalue(), "evil")
+                check("A zip that tries to write outside its folder is refused", False)
+            except speech.SpeechUnavailable:
+                check("A zip that tries to write outside its folder is refused", not (root.parent / "escape.txt").exists())
+        speech._model, speech._model_name = None, ""
+
+
+def test_install_and_avatars():
+    """0.10: built-in 3D models, the buddy following the agent you talk to, clearing memory, setup from the installer."""
+    print("\nInstall — built-in models, desktop buddy, clearing memory, installer setup")
+    import io
+    import json as _json
+    import sys as _sys
+    import tempfile
+    import zipfile
+    from unittest import mock
+
+    from fastapi.testclient import TestClient
+
+    from app.api import faces as faces_api
+    from app.core.config import settings
+    from app.main import app
+    from app.services import agents, install_setup, reset
+
+    _sys.path.insert(0, str(ROOT))
+    _sys.path.insert(0, str(ROOT / "desktop"))
+    from tests_support import make_vrm
+    import brain_frames
+
+    # The characters that ship: each has its credit, its licence and its renders committed,
+    # and the model itself is fetched at a pinned commit and checked by SHA-256.
+    import importlib.util as _ilu
+
+    _spec = _ilu.spec_from_file_location("fetch_models", ROOT / "packaging" / "fetch_models.py")
+    fetch_models = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(fetch_models)
+    shipped = ROOT / "assets" / "faces" / "vrm"
+    metas = {slug: _json.loads((shipped / slug / "meta.json").read_text(encoding="utf-8"))
+             for slug in fetch_models.VRM_MODELS if (shipped / slug / "meta.json").is_file()}
+    check("Every built-in 3D character has its credit, licence, renders and a pinned source",
+          len(metas) == len(fetch_models.VRM_MODELS) >= 3
+          and all(m.get("credit") and m.get("license") and m.get("source_url") for m in metas.values())
+          and all((shipped / slug / "LICENSE.txt").is_file() and (shipped / slug / "preview.png").is_file()
+                  and (shipped / slug / "strips" / "face.json").is_file() for slug in metas)
+          and all(len(spec["sha256"]) == 64 and len(spec["rev"]) == 40 for spec in fetch_models.VRM_MODELS.values()),
+          sorted(metas))
+    if all((shipped / slug / "model.vrm").is_file() for slug in fetch_models.VRM_MODELS):
+        real = faces_api.builtin_faces()
+        check("…and with the models fetched, Stella comes first, with her resting motion",
+              real and real[0]["name"] == "Stella" and real[0].get("default_gestures", {}).get("loop"),
+              [f["name"] for f in real])
+    else:
+        print("  - skipped the fetched-models check: run packaging/fetch_models.py (CI does)")
+
+    client = TestClient(app)
+    root = Path(tempfile.mkdtemp(dir=_TEMP_DIR))
+    builtin = root / "builtin"
+    (builtin / "miko").mkdir(parents=True)
+    (builtin / "miko" / "model.vrm").write_bytes(make_vrm.build())
+    (builtin / "miko" / "meta.json").write_text(_json.dumps({
+        "name": "Miko", "author": "pixiv (VRoid)", "license": "CC0-1.0", "framing": {"zoom": 1.2, "y": 0.1},
+        "order": 2, "credit": "Miko by pixiv",
+        "expressions_map": {"happy": {"name": "happy", "weight": 0.9}},
+        "gestures": {"loop": "gestures/idle_loop.vrma", "done": "gestures/missing.vrma"}}))
+    (builtin / "miko" / "gestures").mkdir()
+    (builtin / "miko" / "gestures" / "idle_loop.vrma").write_bytes(b"glTF")
+    (builtin / "aoi").mkdir()
+    (builtin / "aoi" / "model.vrm").write_bytes(make_vrm.build())
+    (builtin / "aoi" / "meta.json").write_text(_json.dumps({"name": "Aoi", "order": 9, "license": "VRM Public License 1.0"}))
+    faces_dir = root / "faces"
+
+    with mock.patch.object(faces_api, "builtin_dir", lambda: builtin), mock.patch.object(faces_api, "FACES_DIR", faces_dir):
+        listed = client.get("/api/faces").json()["faces"]
+        miko = next((f for f in listed if f["id"] == "builtin-miko"), {})
+        check("Built-in 3D models are listed, with their credit and licence",
+              miko.get("builtin") and miko.get("license") == "CC0-1.0" and miko.get("kind") == "vrm"
+              and miko.get("framing") == {"zoom": 1.2, "y": 0.1}, miko)
+        check("…first in their own order, with the credit their licence asks for",
+              [f["id"] for f in listed if f.get("builtin")][:2] == ["builtin-miko", "builtin-aoi"]
+              and miko.get("credit") == "Miko by pixiv", [f["id"] for f in listed if f.get("builtin")])
+        check("…and their resting motion, if its file is there",
+              miko.get("default_gestures") == {"loop": "gestures/idle_loop.vrma"}, miko.get("default_gestures"))
+        served = client.get("/faces/builtin-miko/model.vrm")
+        check("…and served to the page", served.status_code == 200 and served.content[:4] == b"glTF")
+        check("…but can't be removed", client.delete("/api/faces/builtin-miko").status_code == 400
+              and (builtin / "miko" / "model.vrm").is_file())
+        check("…nor reached outside their folder", client.get("/faces/builtin-miko/../../secret").status_code == 404)
+
+        db = session()
+        fresh = agents.create(db, list(agents.TEMPLATES)[0], name="Mei")  # the first template gets the first model
+        check("A new agent starts with a built-in 3D model, with its tuned framing and expressions",
+              fresh.face == "vrm" and fresh.style().get("model") == "builtin-miko"
+              and fresh.style().get("expressions", {}).get("happy", {}).get("name") == "happy"
+              and fresh.style().get("gestures") == {"loop": "gestures/idle_loop.vrma"}, (fresh.face, fresh.style()))
+
+        # The desktop buddy follows the agent you're talking to.
+        client.post("/api/faces/active", json={"agent_id": fresh.id})
+        desktop = client.get("/api/faces/desktop").json()
+        check("The desktop buddy shows the agent you're talking to, not only the default one",
+              desktop["agent_id"] == fresh.id and desktop["agent"] == "Mei", desktop)
+        check("…as its anime stand-in until the model's strips exist", desktop["face"] == "anime" and not desktop["strips"])
+
+        def png(width=64, height=64, frames=2):
+            from PIL import Image
+
+            out = io.BytesIO()
+            Image.new("RGBA", (width * frames, height), (255, 128, 160, 255)).save(out, "PNG")
+            return out.getvalue()
+
+        manifest = {"frame": {"width": 64, "height": 64},
+                    "states": {"calm": {"frames": 2, "ms": 150}, "happy": {"frames": 2, "ms": 120},
+                               "talk": {"frames": 2, "ms": 80, "levels": [0, 1]}}}
+        files = {name: (f"{name}.png", png(), "image/png") for name in manifest["states"]}
+        saved = client.post("/api/faces/builtin-miko/strips", data={"manifest": _json.dumps(manifest)}, files=files)
+        check("The app can save a 3D model's strips for the buddy", saved.status_code == 200, saved.text)
+        bad = client.post("/api/faces/builtin-miko/strips", data={"manifest": _json.dumps({"states": {"evil": {}}})},
+                          files={"evil": ("evil.png", png(), "image/png")})
+        check("…only known states, as PNGs", bad.status_code == 400)
+        desktop = client.get("/api/faces/desktop").json()
+        check("Then the buddy shows the 3D model itself", desktop["face"] == "strips"
+              and Path(desktop["strips"]).joinpath("face.json").is_file(), desktop)
+        try:
+            check("The buddy draws the model's strips",
+                  brain_frames.use_face(desktop["face"], strips=desktop["strips"])
+                  and brain_frames.sprite_for("idle") == "calm" and len(brain_frames.frames("idle", 32)) == 2
+                  and brain_frames.talk_frame(1.0, 32) is not None)
+            check("…and its passing reactions", brain_frames.react("happy") and brain_frames.sprite_for("idle") == "happy")
+        finally:
+            brain_frames._REACTION.update(sprite=None, until=0.0)
+            brain_frames.use_face("brain")
+        client.post("/api/faces/active", json={"agent_id": None})
+        check("With no agent chosen, the buddy shows the default agent",
+              client.get("/api/faces/desktop").json()["agent_id"] == agents.default_agent(db).id)
+        check("Built-in models can't take gestures (they're read-only)",
+              client.post("/api/faces/builtin-miko/gestures",
+                          files={"file": ("x.vrma", b"glTF" + b"\0" * 16, "model/gltf-binary")}).status_code == 400)
+
+        # ---- the installer's setup, applied without a window
+        tests = []
+
+        def fake_test(self):
+            tests.append(settings.LLM_PROVIDER)
+            return {"ok": True, "detail": "The model answered."}
+
+        choices = {"settings": {"LLM_PROVIDER": "ollama", "OLLAMA_URL": "http://127.0.0.1:11434",
+                                "VOICE_PERSONALITY": "professional", "VOICE_SPEAK_REPLIES": "false",
+                                "NOT_ALLOWED": "x"},
+                   "agent": {"face": "builtin", "personality": "professional"}}
+        choice_file = root / "choices.json"
+        choice_file.write_text(_json.dumps(choices))
+        import app.services.llm_service as llm_module
+
+        before = dict(LLM_PROVIDER=settings.LLM_PROVIDER, OLLAMA_URL=settings.OLLAMA_URL,
+                      VOICE_PERSONALITY=settings.VOICE_PERSONALITY, VOICE_SPEAK_REPLIES=settings.VOICE_SPEAK_REPLIES)
+        try:
+            with mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None), \
+                    mock.patch("app.core.settings_store.update",
+                               lambda changes: (settings.__dict__.update({k: v for k, v in changes.items()})
+                                                or {"ok": True, "applied": list(changes)})):
+                code = install_setup.run_files(str(choice_file), str(root / "result.json"))
+            result = _json.loads((root / "result.json").read_text(encoding="utf-8"))
+            steps = {s["step"]: s for s in result["steps"]}
+            check("The installer's choices are saved (only the allowed ones)",
+                  steps["settings"]["ok"] and settings.LLM_PROVIDER == "ollama" and not hasattr(settings, "NOT_ALLOWED"),
+                  steps.get("settings"))
+            check("…the database, agent and AI provider are checked", steps["database"]["ok"]
+                  and steps["agent"]["ok"] and steps["ai"]["ok"] and tests == ["ollama"], result)
+            default = agents.default_agent(session())
+            check("…the default agent gets the chosen look and personality",
+                  default.face == "vrm" and default.style().get("model") == "builtin-miko"
+                  and default.persona().get("preset") == "professional", (default.face, default.style()))
+            with mock.patch.object(faces_api, "builtin_faces", lambda: []), \
+                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None):
+                install_setup.run({"agent": {"face": "builtin"}})
+            check("…and without built-in 3D models, \"3D character\" falls back to the anime face",
+                  agents.default_agent(session()).face == "anime")
+            def blocked():
+                raise RuntimeError("couldn't reach cubism.live2d.com")
+
+            # (Never let these runs mark setup complete: that saves the settings to disk.)
+            with mock.patch.object(faces_api, "install_live2d_samples", blocked), \
+                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None):
+                ticked = install_setup.run({"live2d": True})
+            live2d_step = next((s for s in ticked["steps"] if s["step"] == "live2d"), {})
+            check("Ticking Live2D in the installer downloads it; if Live2D is blocked it says so, without failing setup",
+                  live2d_step.get("optional") and not live2d_step["ok"] and "cubism.live2d.com" in live2d_step["detail"]
+                  and ticked["ok"] == all(s["ok"] for s in ticked["steps"] if s["step"] != "live2d"), ticked)
+            with mock.patch.object(faces_api, "install_live2d_samples", lambda: {"added": [{}], "skipped": []}), \
+                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None):
+                ticked = install_setup.run({"live2d": True})
+            check("…and when it works, Live2D is ready", any(s["step"] == "live2d" and s["ok"] for s in ticked["steps"]))
+            check("…the choices file (it can hold keys) is removed, and a readable summary is written",
+                  not choice_file.exists() and "OK" in (root / "result.txt").read_text(encoding="utf-8") and code in (0, 2))
+        finally:
+            settings.__dict__.update(before)
+            cleanup = session()
+            agents.update(cleanup, agents.default_agent(cleanup), face="brain", face_style={},
+                          personality={"preset": "sweetheart"})
+
+    # ---- clearing parts of the old memory (from the installer), after a backup
+    from app.models.memory import Memory
+    from app.models.conversation import Conversation
+
+    db = session()
+    keep_chat = Conversation(title="Keep me")
+    db.add(keep_chat)
+    db.add(Memory(title="Printer", content="The printer on floor 2 is HP", memory_type="fact"))
+    db.commit()
+    chat_count = db.query(Conversation).count()
+    images = root / "chat_images"
+    images.mkdir()
+    (images / "a.png").write_bytes(b"x")
+    request = root / "reset.json"
+    request.write_text(_json.dumps({"parts": ["memory", "bogus"]}))
+    # Only the memories table here: the test database is shared with the rest of the suite.
+    parts = {**reset.PARTS, "memory": {**reset.PARTS["memory"], "tables": ["memories"], "folders": [images]}}
+    with mock.patch.object(reset, "REQUEST_FILE", request), mock.patch.object(reset, "BACKUP_DIR", root / "backups"), \
+            mock.patch.dict(reset.PARTS, parts):
+        done = reset.apply_pending()
+    db.expire_all()
+    check("Clearing memory removes exactly what was ticked", done.get("parts") == ["memory"]
+          and db.query(Memory).count() == 0 and not images.exists(), done)
+    check("…and nothing else", db.query(Conversation).count() == chat_count)
+    with zipfile.ZipFile(done["backup"]) as archive:
+        names = archive.namelist()
+        saved_rows = _json.loads(archive.read("tables/memories.json"))
+    check("…after a backup of the rows and folders", "folders/chat_images/a.png" in names
+          and any("floor 2" in (r.get("content") or "") for r in saved_rows), names)
+    check("…and the request is used once", not request.exists())
+    with mock.patch.object(reset, "REQUEST_FILE", request):
+        check("No request, nothing cleared", reset.apply_pending() == {})
+
+    # Ideas from nudges are keyed on what the nudge is about, not its row id
+    # (row ids are reused after nudges are cleared, which used to hide new ideas).
+    from app.models.nudge import Nudge
+    from app.models.work import Idea
+    from app.services import ideas as ideas_service
+
+    db.add(Nudge(kind="unanswered_email", title="Unanswered: Pat", body="We never replied to Pat.",
+                 priority="high", dedupe_key="unanswered:424242", status="open"))
+    db.commit()
+    ideas_service.from_nudges(db)
+    check("An idea from a nudge is keyed on what it's about",
+          db.query(Idea).filter(Idea.dedupe_key == "nudge:unanswered:424242").count() == 1)
 
 
 def test_browser_worker_shutdown():
@@ -6706,8 +7099,11 @@ def test_agents_and_scope():
     check("There is always a default agent", default.is_default and default.name == "Cerebro")
     inbox = agents.create(db, "inbox")
     writer = agents.create(db, "kb-writer", name="Article writer")
-    check("Agents are made from templates", inbox.name == "Inbox assistant"
-          and "messaging" in inbox.scope() and inbox.face == "anime" and writer.name == "Article writer")
+    from app.api.faces import builtin_faces
+
+    check("Agents are made from templates (a built-in 3D character when there are any, else the anime face)",
+          inbox.name == "Inbox assistant" and "messaging" in inbox.scope()
+          and inbox.face == ("vrm" if builtin_faces() else "anime") and writer.name == "Article writer")
 
     ctx = ToolContext(db=db, context=agents.context_for(inbox))
     names = {t.name for t in available_tools(ctx)}
@@ -7074,6 +7470,7 @@ def test_faces():
 
     from app.api import faces as faces_api
     from app.main import app
+    from app.core.config import settings
     from app.services import agents, tts
 
     palettes = ("pink", "black", "silver", "blue", "brown", "green")
@@ -7116,7 +7513,7 @@ def test_faces():
                   and brain_frames.talk_frame(0.0, 32).tobytes() != brain_frames.talk_frame(1.0, 32).tobytes())
             brain_frames.use_face("vrm", "green")
             check("A VRM or Live2D face shows as the anime face on the desktop",
-                  brain_frames.FACE == {"face": "anime", "palette": "green", "hair": "long"})
+                  brain_frames.FACE == {"face": "anime", "palette": "green", "hair": "long", "strips": None})
         finally:
             brain_frames.use_face("brain")
         check("…and the brain is back when chosen", brain_frames.sprite_for("browsing") == "working")
@@ -7176,12 +7573,54 @@ def test_faces():
               client.get("/api/faces/live2d/runtime").json()["installed"] is False
               and client.post("/api/faces/live2d/runtime", json={}).status_code == 400)
 
+        # Live2D's free sample models: from Live2D, only when asked, each file checked.
+        import hashlib as _hashlib
+
+        files = {"Hiyori.model3.json": b'{"Version": 3}', "Hiyori.moc3": b"MOC3 data"}
+        sample_spec = {"repo": "Live2D/CubismWebSamples", "rev": "a" * 40, "folder": "Samples/Resources",
+                       "license": "Live2D Free Material License Agreement", "license_url": "https://x.test/l",
+                       "models": {"Hiyori": [{"path": p, "bytes": len(d), "sha256": _hashlib.sha256(d).hexdigest()}
+                                             for p, d in files.items()]}}
+        spec_file = Path(_TEMP_DIR) / "live2d_samples.json"
+        spec_file.write_text(_json.dumps(sample_spec), encoding="utf-8")
+        vendor = Path(_TEMP_DIR) / "vendor-l2d"
+        fetched = []
+
+        def fake_fetch(url):
+            fetched.append(url)
+            if url == faces_api.CUBISM_CORE_URL:
+                return b"/* Live2DCubismCore */"
+            return files[url.rsplit("/", 1)[1]]
+
+        with mock.patch.object(faces_api, "SAMPLES_MANIFEST", spec_file), \
+                mock.patch.object(faces_api, "VENDOR_DIR", vendor), mock.patch.object(faces_api, "_fetch", fake_fetch):
+            refused = client.post("/api/faces/live2d/samples", json={})
+            check("Live2D's free models aren't downloaded without the user's agreement",
+                  refused.status_code == 400 and not fetched)
+            got = client.post("/api/faces/live2d/samples", json={"agree": True}).json()
+            sample = (got.get("added") or [{}])[0]
+            check("With it, the runtime and the sample models come from Live2D, pinned and checked",
+                  sample.get("kind") == "live2d" and sample.get("entry") == "Hiyori.model3.json"
+                  and (vendor / faces_api.CUBISM_FILE).is_file()
+                  and (folder / sample["id"] / "Hiyori.moc3").read_bytes() == b"MOC3 data"
+                  and all(("/" + "a" * 40 + "/") in u for u in fetched if u != faces_api.CUBISM_CORE_URL), got)
+            check("…listed as faces you can pick, and not fetched twice",
+                  any(f.get("sample") == "Hiyori" for f in client.get("/api/faces").json()["faces"])
+                  and client.post("/api/faces/live2d/samples", json={"agree": True}).json()["skipped"] == ["Hiyori"])
+            files["Hiyori.moc3"] = b"tampered"
+            client.delete(f"/api/faces/{sample['id']}")
+            bad = client.post("/api/faces/live2d/samples", json={"agree": True})
+            check("…and a file that doesn't match its checksum is refused, leaving nothing behind",
+                  bad.status_code == 502 and "checksum" in bad.json()["detail"]
+                  and not any(f.get("sample") for f in client.get("/api/faces").json()["faces"]), bad.text)
+
     db = session()
     default = agents.default_agent(db)
     agents.update(db, default, face="vrm", face_style={"palette": "blue", "model": "x", "hair": "bob"})
     desktop = client.get("/api/faces/desktop").json()
     check("The desktop shows the default agent's face (VRM → its anime stand-in)",
-          desktop == {"face": "anime", "palette": "blue", "hair": "bob", "agent": default.name, "react": None},
+          desktop == {"face": "anime", "palette": "blue", "hair": "bob", "agent": default.name,
+                      "agent_id": default.id, "react": None, "strips": None},
           desktop)
     client.post("/api/faces/react", json={"emotion": "happy"})
     check("…and the app's passing reaction", client.get("/api/faces/desktop").json()["react"] == "happy")
@@ -7191,7 +7630,9 @@ def test_faces():
     heard = []
     tts.use_provider("edge", lambda text, voice, rate: heard.append((voice, rate)) or (b"MP3", "audio/mpeg"))
     try:
-        with mock.patch.object(tts, "polly_ready", return_value=False):
+        # With Edge chosen (in auto, the offline voices answer first).
+        with mock.patch.object(tts, "polly_ready", return_value=False), \
+                mock.patch.object(settings, "VOICE_PROVIDER", "edge"), mock.patch.object(settings, "VOICE_NAME", ""):
             tts.synthesize("Hello", voice="en-GB-SoniaNeural", rate=1.2)
             tts.synthesize("Hello", voice="Matthew")
         check("Each agent speaks in its own voice", heard[0] == ("en-GB-SoniaNeural", 1.2)
@@ -7345,6 +7786,44 @@ def test_agents_page():
                   all(v == 0 for v in faces["silent"].values()) and faces["unclear"]["aa"] == 0.8
                   and max(faces["ooh"], key=faces["ooh"].get) == "ou"
                   and max(faces["eee"], key=faces["eee"].get) == "ee", (faces["ooh"], faces["eee"]))
+            # Settings, inside the window.
+            tab.click("[data-tab=settings]")
+            tab.wait_for_selector("#settings-body [data-group=voice]", timeout=8000)
+            tab.click("#settings-body [data-group=voice]")
+            tab.wait_for_selector("#settings-body .st-status", timeout=8000)
+            check("Settings opens inside the app window, with what works on this PC",
+                  "Speech recognition" in tab.inner_text("#settings-body")
+                  and "Offline voice" in tab.inner_text("#settings-body") and not errors, errors)
+            tab.evaluate("location.hash = 'settings:ai'")
+            tab.wait_for_timeout(400)
+            check("…and a link can open a particular group", "AI Provider" in tab.inner_text("#settings-body .st-card h3"))
+            # A 3D model's expressions, rendered into the desktop buddy's strips.
+            import sys as _sys2
+
+            _sys2.path.insert(0, str(ROOT))
+            from tests_support import make_vrm
+
+            from fastapi.testclient import TestClient as _Client
+
+            uploaded = _Client(app).post("/api/faces", files={"file": ("test.vrm", make_vrm.build(), "model/gltf-binary")}).json()
+            made = tab.evaluate("""async (id) => {
+              const f = await import('/static/ui/face.js');
+              const host = document.createElement('div'); host.style.width = host.style.height = '160px';
+              document.body.append(host);
+              const face = f.createFace(host, { face: 'vrm', face_style: { model: id, entry: 'model.vrm' } });
+              await face.ready;
+              const out = await face.capture({ size: 48 });
+              const form = new FormData();
+              form.append('manifest', JSON.stringify(out.manifest));
+              for (const [name, blob] of Object.entries(out.strips)) form.append(name, blob, name + '.png');
+              const saved = await fetch(`/api/faces/${id}/strips`, { method: 'POST', body: form });
+              face.destroy();
+              return { names: face.listExpressions(), states: Object.keys(out.manifest.states), saved: saved.status };
+            }""", uploaded["id"])
+            check("A 3D model's expressions are found and rendered into the buddy's strips",
+                  "happy" in made["names"] and set(made["states"]) >= {"calm", "happy", "sorry", "talk"}
+                  and made["saved"] == 200, made)
+            _Client(app).delete(f"/api/faces/{uploaded['id']}")
             tab.click("[data-tab=home]")
             tab.wait_for_selector(".agent-card", timeout=8000)
             check("Home shows a card per agent", tab.locator(".agent-card").count() >= 1,
@@ -7987,6 +8466,11 @@ def test_secretary():
               "promised" in kinds and kinds["promised"].due_at and kinds["promised"].due_at.weekday() == 4,
               kinds.get("promised") and kinds["promised"].to_dict())
         check("Something you were asked becomes a to-do", "asked" in kinds and kinds["asked"].who == "Ana")
+        friday_morning, friday_evening = datetime(2026, 11, 6, 9, 0), datetime(2026, 11, 6, 18, 30)
+        check("'By Friday' said on a Friday morning is today; said that evening, next Friday",
+              followups.due_from("by Friday", friday_morning).date() == friday_morning.date()
+              and (followups.due_from("by Friday", friday_evening) - friday_evening).days == 6
+              and followups.due_from("by Friday", datetime(2026, 11, 2, 9, 0)).day == 6)
         followups.detect(db)
         check("…found once, not again on the next pass",
               db.query(FollowUp).filter(FollowUp.kind == "waiting_on").count() == 1)
@@ -8120,7 +8604,7 @@ def main() -> int:
                   test_screenpipe_current_api, test_chat_service,
                   test_chat_reference_images, test_ask_tools_and_action_cards, test_activity_state, test_llm_chat_protocol, test_ask_relevance, test_ask_agent_loop, test_chat_stream, test_browser_disabled_by_default, test_browser_integrations, test_dynamics_case_prefetch, test_tray_brain, test_desktop_shell, test_app_page, test_rightanswers_teach, test_sharepoint_links, test_bedrock_tool_fallbacks, test_desktop_buddy, test_chats, test_sharepoint_auto_apply, test_window_sizing, test_rightanswers_workspace, test_outlook_and_teams, test_ask_reliability_and_scoping, test_system_tools_and_robustness, test_beyondtrust_and_genesys, test_tray_notices,
                   test_mcp_servers, test_mcp_sign_in_and_self_adding, test_websites_and_browsing,
-                  test_skills, test_voice, test_voice_expression, test_browser_worker_shutdown, test_push_to_talk, test_addons_page,
+                  test_skills, test_voice, test_voice_expression, test_offline_voice, test_install_and_avatars, test_browser_worker_shutdown, test_push_to_talk, test_addons_page,
                   test_agents_and_scope, test_durable_jobs, test_projects_watches_ideas,
                   test_faces, test_agents_page, test_desktop_apps,
                   test_desktop_apps_notepad, test_keep_it_updated, test_attached_files,

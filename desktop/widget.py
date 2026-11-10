@@ -1526,7 +1526,26 @@ class CerebroWidget:
             self.toggle_compact()
 
     def open_url(self, path: str):
+        if path.startswith("/settings") and self._open_in_app("settings"):
+            return
         webbrowser.open(f"{self.api.base_url}{path}")
+
+    def _open_in_app(self, tab: str) -> bool:
+        """Ask the Cerebro window to show ``tab``; False when no window answered."""
+        import time
+
+        request = widget_config.config_dir() / "show.request"
+        try:
+            request.parent.mkdir(parents=True, exist_ok=True)
+            request.write_text(tab, encoding="utf-8")
+            for _ in range(15):
+                time.sleep(0.1)
+                if not request.exists():
+                    return True
+            request.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
     def _search_for(self, query: str):
         self.search_query = query

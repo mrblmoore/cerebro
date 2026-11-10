@@ -2,6 +2,7 @@
 import { mascot, setBrainState, setPose, stateLabel } from './brain.js';
 import { escapeHTML as esc, renderMarkdown } from './markdown.js';
 import { animeSVG, createFace, faceAvatar, lipSync, PALETTE_NAMES, HAIR_NAMES, HAIRSTYLES, EXPRESSIONS, MODEL_SLOTS } from './face.js';
+import { mountSettings } from './settings-view.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -22,6 +23,7 @@ const api = {
   get: path => api.request('GET', path),
   post: (path, body) => api.request('POST', path, body || {}),
   patch: (path, body) => api.request('PATCH', path, body || {}),
+  put: (path, body) => api.request('PUT', path, body || {}),
   del: path => api.request('DELETE', path),
 };
 
@@ -109,7 +111,18 @@ const currentAgent = () => state.agents.find(a => a.id === state.agentId) || sta
 $('#brand-brain').innerHTML = mascot(46);
 
 // --------------------------------------------------------------------- tabs
+/** Settings, inside the window (``group``: e.g. 'voice', 'ai', 'integrations'). */
+let settingsView = null;
+function openSettings(group = null) {
+  selectTab('settings');
+  if (group) settingsView?.show(group);
+}
+
 function selectTab(name) {
+  let group = null;
+  if (String(name).startsWith('settings:')) [name, group] = name.split(':');
+  if (state.tab === 'settings' && name !== 'settings' && settingsView?.isDirty()
+      && !confirm('You have unsaved settings. Leave them unsaved?')) return;
   state.tab = name;
   $$('.tab').forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.tab === name)));
   $$('.panel').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${name}`));
@@ -120,6 +133,12 @@ function selectTab(name) {
   if (name === 'home') loadHome();
   if (name === 'work') loadWork();
   if (name === 'ask') $('#input').focus();
+  if (name === 'settings') {
+    if (!settingsView) {
+      settingsView = mountSettings($('#settings-body'), { api, toast, esc, initialGroup: group, pickFile });
+    } else if (group) settingsView.show(group);
+    else settingsView.reload();
+  }
   openSidebar(false);
 }
 
@@ -144,7 +163,7 @@ $('#theme-btn').addEventListener('click', () => {
 $('#menu-btn').addEventListener('click', event => {
   const items = [
     ['Open dashboard', () => openExternal(`${location.origin}/`)],
-    ['Settings', () => openExternal(`${location.origin}/settings`)],
+    ['Settings', () => openSettings()],
     ['New chat', () => { selectTab('ask'); newChat(); }],
   ];
   if (shell()) {
@@ -363,7 +382,7 @@ async function loadInfo() {
     state.aiEnabled = info.ai_enabled;
     $('#ai-hint').innerHTML = info.ai_enabled ? '' :
       `<a href="#" id="ai-setup">Connect an AI provider</a>`;
-    $('#ai-setup')?.addEventListener('click', e => { e.preventDefault(); openExternal(`${location.origin}/settings#ai`); });
+    $('#ai-setup')?.addEventListener('click', e => { e.preventDefault(); openSettings('ai'); });
   } catch { /* offline: the activity stream reports it */ }
 }
 
@@ -1730,7 +1749,7 @@ async function loadConnect() {
       <button class="icon-btn" id="addon-menu" title="Import or export add-ons" aria-label="More">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>'}</button></div>
     <p class="section-note">Anything Cerebro should reach: an MCP server, any website you sign in to, a Windows program, or a skill you teach it. Just ask in chat (“connect to Jira”, “keep this page updated”) and Cerebro adds what it needs itself.</p>
     <div id="addon-list"></div>`;
-  $('[data-settings]', body).addEventListener('click', () => openExternal(`${location.origin}/settings#integrations`));
+  $('[data-settings]', body).addEventListener('click', () => openSettings('integrations'));
   $('[data-control]', body)?.addEventListener('click', toggleControl);
   $('#addon-add').addEventListener('click', e => showMenu(e.currentTarget, [
     ['MCP server…', addMcpServer],
@@ -2033,7 +2052,7 @@ function integrationCard(item) {
     toast(result.detail, result.ok ? 'ok' : 'err');
     loadConnect();
   });
-  $('[data-settings]', card)?.addEventListener('click', () => openExternal(`${location.origin}/settings#integrations`));
+  $('[data-settings]', card)?.addEventListener('click', () => openSettings('integrations'));
   return card;
 }
 
@@ -2088,6 +2107,7 @@ loadAgents().then(() => loadHistory()).then(() => {
     paintStage(true);
     if (!state.history.length) renderEmpty();
   }
+  reportActiveAgent();
   loadChats();
 });
 setInterval(() => { if (!document.hidden) loadAgents(); }, 15000);
@@ -2159,9 +2179,37 @@ function agentMenu(anchor, agent) {
   showMenu(anchor, items);
 }
 
+/** Tell the desktop buddy which agent you're talking to, so it shows that agent's face. */
+function reportActiveAgent() {
+  if (state.agentId) api.post('/api/faces/active', { agent_id: state.agentId }).catch(() => {});
+}
+window.addEventListener('focus', reportActiveAgent);
+
+/** Render a VRM face's expression strips (the desktop buddy draws images, not 3D) and save them. */
+async function renderBuddyStrips(style) {
+  if (!style?.model) return;
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:-10000px;top:0;width:160px;height:160px;pointer-events:none';
+  document.body.append(host);
+  const face = createFace(host, { face: 'vrm', face_style: style }, 160);
+  try {
+    const { manifest, strips } = await face.capture({ size: 128 });
+    const form = new FormData();
+    form.append('manifest', JSON.stringify(manifest));
+    Object.entries(strips).forEach(([name, blob]) => form.append(name, blob, `${name}.png`));
+    await api.post(`/api/faces/${encodeURIComponent(style.model)}/strips`, form);
+  } catch (error) {
+    console.warn('Buddy strips:', error);
+  } finally {
+    face.destroy();
+    host.parentNode?.removeChild(host);
+  }
+}
+
 async function selectAgent(id) {
   if (id === state.agentId && state.chat?.agent_id === id) return;
   state.agentId = id;
+  reportActiveAgent();
   try { localStorage.setItem('cerebro.agent', String(id)); } catch { /* ignore */ }
   paintAgents();
   paintStage(true);
@@ -2235,8 +2283,8 @@ const PERSONALITIES = {
 const SLOT_LABEL = { calm: 'Ready', happy: 'Done (happy)', wink: 'Done (wink)', love: 'Thanked', thinking: 'Thinking',
   focused: 'Working', listening: 'Listening', surprised: 'Needs approval', sorry: 'Failed', pout: 'Kept waiting',
   smug: 'Approved', dizzy: 'Error', asleep: 'Offline' };
-const GESTURE_LABEL = { greeting: 'When it appears', done: 'Task done', approved: 'You approve',
-  thinking: 'Starts thinking', attention: 'Needs you', idle: 'Every few minutes' };
+const GESTURE_LABEL = { loop: 'All the time (resting motion)', greeting: 'When it appears', done: 'Task done',
+  approved: 'You approve', thinking: 'Starts thinking', attention: 'Needs you', idle: 'Every few minutes' };
 const PREVIEW_LINE = 'Hehe, found it! [giggle] The fix was a typo — [tease]you owe me a coffee~[/tease] [whisper]I won\'t tell anyone.[/whisper]';
 
 async function editAgent(agent, template = 'blank') {
@@ -2342,23 +2390,45 @@ async function editAgent(agent, template = 'blank') {
       const paintModels = () => {
         const host = $('[data-models]', form);
         if (face !== 'live2d' && face !== 'vrm') { host.innerHTML = ''; return; }
-        const mine = faces.filter(f => f.kind === face);
+        const mine = faces.filter(f => f.kind === face && !f.builtin);
+        const builtins = faces.filter(f => f.kind === face && f.builtin);
         const fr = { zoom: 1, y: 0, mirror: false, ...(style.framing || {}) };
         host.innerHTML = `<div class="meta" style="margin:6px 0">${face === 'live2d'
           ? 'A .zip of a Cubism 3/4 model (with its .model3.json). Live2D needs Live2D\'s own runtime, which Cerebro downloads with your agreement.'
-          : 'A .vrm file — make one free in VRoid Studio.'} Until it loads, the anime face stands in.</div>
+          : 'Pick a built-in model, or load a .vrm file (make one free in VRoid Studio).'} Until it loads, the anime face stands in.</div>
+          ${builtins.length ? `<div class="mini-label">Built in</div><div class="model-gallery">${builtins.map(f => `
+            <button type="button" class="model-card" data-model="${f.id}" data-entry="${esc(f.entry)}" aria-pressed="${style.model === f.id}"
+              title="${esc(f.credit || f.name + (f.author ? ' — by ' + f.author : ''))}${f.license ? ' (' + esc(f.license) + ')' : ''}">
+              ${f.preview ? `<img src="/faces/${encodeURIComponent(f.id)}/${esc(f.preview)}" alt="">` : '<span class="model-card-blank">3D</span>'}
+              <span>${esc(f.name)}</span></button>`).join('')}</div>
+            <div class="mini-label">Your models</div>` : ''}
           <div class="work-tabs">${mine.map(f => `<button type="button" class="btn sm" data-model="${f.id}" data-entry="${esc(f.entry)}" aria-pressed="${style.model === f.id}">${esc(f.name)}</button>`).join('')}
-          <button type="button" class="btn sm primary" data-upload>Load a model…</button></div>
+          <button type="button" class="btn sm primary" data-upload>Load a model…</button>
+          ${face === 'live2d' && !mine.some(f => f.sample) ? '<button type="button" class="btn sm" data-samples>Get Live2D\'s free models…</button>' : ''}</div>
           ${style.model ? `<div class="slider-grid" style="margin-top:8px">
             <label>Zoom<input type="range" data-frame="zoom" min="0.5" max="2.5" step="0.05" value="${fr.zoom}"></label>
-            <label>Height<input type="range" data-frame="y" min="-0.6" max="0.6" step="0.02" value="${fr.y}"></label>
+            <label>Height<input type="range" data-frame="y" min="-1" max="1" step="0.02" value="${fr.y}"></label>
             ${face === 'live2d' ? `<label class="check"><input type="checkbox" data-frame="mirror" ${fr.mirror ? 'checked' : ''}> Mirror</label>` : ''}
           </div><div data-mapping class="mapping"><div class="meta">Loading the model's expressions…</div></div>
           ${face === 'vrm' ? '<div data-gestures class="mapping"></div>' : ''}` : ''}`;
         $$('[data-model]', host).forEach(b => b.addEventListener('click', () => {
-          style = { ...style, model: b.dataset.model, entry: b.dataset.entry, expressions: {}, gestures: {} };
+          const meta = faces.find(f => f.id === b.dataset.model) || {};
+          // A built-in model comes with its own hand-tuned framing, expressions and resting
+          // motion; Live2D's samples with their framing.
+          style = { ...style, model: b.dataset.model, entry: b.dataset.entry,
+                    framing: (meta.builtin || meta.sample) && meta.framing ? meta.framing : style.framing,
+                    expressions: meta.builtin && meta.expressions ? meta.expressions : {},
+                    gestures: meta.builtin && meta.default_gestures ? { ...meta.default_gestures } : {} };
           paintModels(); rebuildPreview();
         }));
+        $('[data-samples]', host)?.addEventListener('click', async () => {
+          const added = await getLive2DSamples();
+          if (!added.length) return;
+          faces.push(...added);
+          style = { ...style, model: added[0].id, entry: added[0].entry, framing: added[0].framing || style.framing,
+                    expressions: {}, gestures: {} };
+          paintModels(); rebuildPreview();
+        });
         $('[data-upload]', host).addEventListener('click', () => pickFile(face === 'vrm' ? '.vrm' : '.zip', async file => {
           const form2 = new FormData();
           form2.append('file', file, file.name);
@@ -2506,8 +2576,27 @@ async function editAgent(agent, template = 'blank') {
     toast(agent ? 'Saved' : `${saved.name} is ready`, 'ok');
     await loadAgents();
     if (!agent) selectAgent(saved.id);
-    else paintStage(true);
+    else { paintStage(true); reportActiveAgent(); }
+    // The desktop buddy shows a VRM face from strips rendered here, in the background.
+    if (face === 'vrm' && style.model) renderBuddyStrips(style);
   } catch (error) { toast(error.message, 'err'); }
+}
+
+// Live2D's runtime and its free sample models, from Live2D, once the user agrees.
+async function getLive2DSamples() {
+  const info = await api.get('/api/faces/live2d/samples').catch(() => ({}));
+  const runtime = await api.get('/api/faces/live2d/runtime').catch(() => ({}));
+  const terms = [runtime.installed ? '' : (runtime.terms || ''), info.terms || ''].filter(Boolean).join('\n\n');
+  if (!confirm(`${terms}\n\nDownload them now (about 20 MB)?`)) return [];
+  toast('Downloading Live2D\'s models…');
+  try {
+    const out = await api.post('/api/faces/live2d/samples', { agree: true });
+    toast(`Added ${out.added.length} Live2D model${out.added.length === 1 ? '' : 's'}`, 'ok');
+    return out.added;
+  } catch (error) {
+    toast(error.message, 'err');
+    return [];
+  }
 }
 
 async function ensureLive2D() {
@@ -2518,7 +2607,17 @@ async function ensureLive2D() {
     await api.post('/api/faces/live2d/runtime', { agree: true });
     toast('Live2D runtime installed', 'ok');
     return true;
-  } catch (error) { toast(error.message, 'err'); return false; }
+  } catch (error) {
+    // Live2D's site may be blocked: the file can be added by hand instead.
+    if (!confirm(`Couldn't download it (${error.message}).\n\nIf your network blocks Live2D's site, download live2dcubismcore.min.js (Cubism SDK for Web) on another network and pick it now. Pick the file?`)) return false;
+    return new Promise(resolve => pickFile('.js', async file => {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      form.append('agree', 'true');
+      try { await api.post('/api/faces/live2d/runtime/file', form); toast('Live2D runtime installed', 'ok'); resolve(true); }
+      catch (err) { toast(err.message, 'err'); resolve(false); }
+    }));
+  }
 }
 
 async function removeAgent(agent) {
@@ -2906,3 +3005,11 @@ async function newWatch(agent) {
   workView = 'watches';
   loadWork();
 }
+
+// /app#settings or /app#settings:voice opens Settings in the window.
+function settingsFromHash() {
+  const hash = (location.hash || '').replace('#', '');
+  if (hash === 'settings' || hash.startsWith('settings:')) selectTab(hash);
+}
+window.addEventListener('hashchange', settingsFromHash);
+settingsFromHash();

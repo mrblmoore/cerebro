@@ -1,8 +1,11 @@
 # Talking to Cerebro: push-to-talk, the mic button, and spoken replies.
 # Installed in the Windows build. Speech is turned into text on this PC with
-# faster-whisper (the model is downloaded once, on first use, not bundled).
+# faster-whisper (the base.en model ships in the installer; see packaging/fetch_models.py).
 #   pip install -r desktop/requirements-voice.txt
 faster-whisper>=1.0,<2.0
+# PyAV 19 removed av.open(metadata_errors=), which faster-whisper 1.2 still passes
+# when it decodes a recording, so every transcription would fail.
+av>=11,<19
 sounddevice>=0.4,<1.0
 # Natural online voices when Amazon Polly isn't set up (no key needed).
 edge-tts>=6.1,<8.0

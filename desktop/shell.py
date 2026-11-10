@@ -304,7 +304,7 @@ class Shell:
             "open": lambda tab=None: self.show(tab),
             "open_link": self.open_link,
             "dashboard": lambda: webbrowser.open(f"{self.api_url}/"),
-            "settings": lambda: webbrowser.open(f"{self.api_url}/settings"),
+            "settings": lambda: self.show("settings"),
             "quit": self.quit,
             "tick": self._check_show_request,
         }
@@ -350,7 +350,7 @@ class Shell:
         return self.voice
 
     def _follow_face(self):
-        """Show the default agent's face on the desktop, and its passing reactions (checked every 2 s)."""
+        """Show the face of the agent you're talking to on the desktop, and its passing reactions (every 2 s)."""
         import time
 
         import requests
@@ -363,9 +363,9 @@ class Shell:
                 face = requests.get(f"{self.api_url}/api/faces/desktop", timeout=5).json()
                 # The tray reads brain_frames.FACE on its next frame; the buddy
                 # also redraws its cached frames.
-                brain_frames.use_face(face.get("face"), face.get("palette"), face.get("hair"))
+                brain_frames.use_face(face.get("face"), face.get("palette"), face.get("hair"), face.get("strips"))
                 if self.buddy:
-                    self.buddy.set_face(face.get("face"), face.get("palette"), face.get("hair"))
+                    self.buddy.set_face(face.get("face"), face.get("palette"), face.get("hair"), face.get("strips"))
                 # A passing reaction from the app (happy, sorry…) shows on the buddy too.
                 if face.get("react") and face.get("react") != last_reaction:
                     brain_frames.react(face["react"])

@@ -600,11 +600,26 @@ export function vowelsFrom(level, bands) {
   return out;
 }
 
+/** The buddy's strips: name → which expression slot, how many frames, how fast. */
+export const STRIP_PLAN = {
+  calm: { slot: 'calm', frames: 12, ms: 150, start: 3600 },
+  thinking: { slot: 'thinking', frames: 8, ms: 150, start: 0 },
+  reading: { slot: 'focused', frames: 8, ms: 160, start: 3600 },
+  focused: { slot: 'focused', frames: 8, ms: 140, start: 3600 },
+  listening: { slot: 'listening', frames: 8, ms: 150, start: 3600 },
+  surprised: { slot: 'surprised', frames: 8, ms: 95, start: 0 },
+  dizzy: { slot: 'dizzy', frames: 8, ms: 90, start: 0 },
+  asleep: { slot: 'asleep', frames: 12, ms: 220, start: 0 },
+  happy: { slot: 'happy', frames: 8, ms: 120, start: 0 },
+  sorry: { slot: 'sorry', frames: 8, ms: 140, start: 0 },
+  talk: { slot: 'calm', frames: 5, ms: 80, start: 1200, levels: [0, 0.25, 0.5, 0.75, 1] },
+};
+
 function vrmFace(host, style = {}) {
   const stand = animeFace(host, { palette: style.palette || 'silver', hair: style.hair });
   const framing = { zoom: 1, y: 0, ...(style.framing || {}) };
   let alive = true, mouth = 0, bands = null, state = 'idle', renderer = null, frame = 0, names = [], map = {};
-  let playGesture = () => {}, previewName = null;
+  let playGesture = () => {}, previewName = null, paused = false, captureImpl = null;
   const look = cursorTracker(host);
   const reaction = reactor();
   const ready = (async () => {
@@ -662,19 +677,36 @@ function vrmFace(host, style = {}) {
           }
         } catch (error) { console.warn('VRM gestures:', error); }
       }
+      // A resting motion ('loop') plays all the time under everything else. Its
+      // head and neck are left to the face, so it still looks at you, and it
+      // doesn't move the model about (only bends it), so the framing holds.
+      let resting = null;
+      if (clips.loop) {
+        const own = new Set(['head', 'neck'].map(b => vrm.humanoid?.getNormalizedBoneNode(b)?.name).filter(Boolean));
+        clips.loop.tracks = clips.loop.tracks.filter(track => !own.has(track.name.split('.')[0])
+                                                          && !track.name.endsWith('.position'));
+        resting = mixer.clipAction(clips.loop);
+        resting.setLoop(THREE.LoopRepeat, Infinity).play();
+      }
       let current = null;
       playGesture = event => {
-        const clip = clips[event];
+        const clip = event !== 'loop' && clips[event];
         if (!clip) return false;
         const action = mixer.clipAction(clip);
         action.reset().setLoop(THREE.LoopOnce, 1);
         action.clampWhenFinished = false;
         if (current && current !== action) action.crossFadeFrom(current, 0.3, false);
+        else if (resting) resting.fadeOut(0.3);
         action.fadeIn(0.25).play();
         current = action;
         return true;
       };
-      mixer.addEventListener('finished', e => { e.action.fadeOut(0.4); current = null; });
+      mixer.addEventListener('finished', e => {
+        if (e.action === resting) return;
+        e.action.fadeOut(0.4);
+        if (resting) resting.reset().fadeIn(0.4).play();
+        current = null;
+      });
       if (clips.greeting) setTimeout(() => playGesture('greeting'), 600);
       stand.destroy();
       host.innerHTML = '';
@@ -688,8 +720,63 @@ function vrmFace(host, style = {}) {
         weights[name] = now + (value - now) * 0.18;                 // ~200 ms to settle
         expressions.setValue(name, weights[name]);
       };
+      // Strips for the desktop buddy: the same model, expressions and poses,
+      // drawn frame by frame at fixed moments so the result is reproducible.
+      captureImpl = async ({ size = 128, strips = STRIP_PLAN } = {}) => {
+        paused = true;
+        const oldSize = new THREE.Vector2();
+        renderer.getSize(oldSize);
+        const oldRatio = renderer.getPixelRatio();
+        renderer.setPixelRatio(1);
+        renderer.setSize(size, size);
+        const out = { manifest: { frame: { width: size, height: size }, states: {} }, strips: {} };
+        try {
+          for (const [name, plan] of Object.entries(strips)) {
+            const sheet = document.createElement('canvas');
+            sheet.width = size * plan.frames; sheet.height = size;
+            const ctx = sheet.getContext('2d');
+            for (let i = 0; i < plan.frames; i++) {
+              const t = (plan.start + i * plan.ms) / 1000;
+              const level = plan.levels ? plan.levels[i] : 0;
+              const active = map[plan.slot];
+              const mapped = new Set(Object.values(map).filter(Boolean).map(m => m.name));
+              mapped.forEach(n => { weights[n] = active && active.name === n ? active.weight : 0; expressions?.setValue(n, weights[n]); });
+              const open = plan.slot === 'asleep' ? 0 : blinkAt(t * 1000);
+              if (!mapped.has('blink')) expressions?.setValue('blink', 1 - open);
+              const vowels = vowelsFrom(level, null);
+              VOWELS.forEach(v => expressions?.setValue(v, vowels[v]));
+              if (resting) mixer.setTime(t);   // the resting pose, at the same moment every time
+              else {
+                if (spine) spine.rotation.x = Math.sin(t * 1.1) * 0.015;
+                if (chest) chest.rotation.x = Math.sin(t * 1.1 + 0.6) * 0.02;
+              }
+              if (neck) neck.rotation.y = 0;
+              if (head) {
+                head.rotation.y = Math.sin(t * 0.6) * 0.05;
+                head.rotation.x = (plan.slot === 'thinking' ? -0.12 : plan.slot === 'asleep' ? 0.18 : 0)
+                  + (plan.slot === 'happy' ? Math.sin(t * 9) * 0.05 : 0) + Math.sin(t * 0.7) * 0.02;
+                head.rotation.z = plan.slot === 'thinking' ? 0.12 : plan.slot === 'listening' ? -0.1
+                  : plan.slot === 'dizzy' ? Math.sin(t * 6) * 0.12 : Math.sin(t * 0.5) * 0.02;
+              }
+              target.position.set(Math.sin(t * 0.4) * 0.05, eyeY, 2);
+              vrm.update(1 / 30);
+              renderer.render(scene, camera);
+              ctx.drawImage(renderer.domElement, i * size, 0, size, size);
+            }
+            out.strips[name] = await new Promise(resolve => sheet.toBlob(resolve, 'image/png'));
+            out.manifest.states[name] = { frames: plan.frames, ms: plan.ms, file: `${name}.png`,
+                                          ...(plan.levels ? { levels: plan.levels } : {}) };
+          }
+        } finally {
+          renderer.setPixelRatio(oldRatio);
+          renderer.setSize(oldSize.x, oldSize.y);
+          paused = false;
+        }
+        return out;
+      };
       const tick = () => {
         if (!alive) return;
+        if (paused) { frame = requestAnimationFrame(tick); return; }
         const dt = clock.getDelta(), t = clock.elapsedTime;
         look.step();
         const slot = reaction.current() || STATE_SLOT[state] || 'calm';
@@ -703,9 +790,12 @@ function vrmFace(host, style = {}) {
         if (slot === 'wink' && !(active?.name || '').toLowerCase().includes('blink')) expressions?.setValue('blinkLeft', 1);
         const vowels = vowelsFrom(mouth, bands);
         VOWELS.forEach(v => expressions?.setValue(v, vowels[v]));
-        // Life: breathing, gaze and head following the cursor, a nod when happy, a tilt while thinking.
-        if (spine) spine.rotation.x = Math.sin(t * 1.1) * 0.015;
-        if (chest) chest.rotation.x = Math.sin(t * 1.1 + 0.6) * 0.02;
+        // Life: breathing (unless the resting motion does it), gaze and head
+        // following the cursor, a nod when happy, a tilt while thinking.
+        if (!resting) {
+          if (spine) spine.rotation.x = Math.sin(t * 1.1) * 0.015;
+          if (chest) chest.rotation.x = Math.sin(t * 1.1 + 0.6) * 0.02;
+        }
         const nod = slot === 'happy' && reaction.current() ? Math.sin(t * 9) * 0.06 : 0;
         if (neck) neck.rotation.y = look.x * 0.25;
         if (head) {
@@ -741,6 +831,8 @@ function vrmFace(host, style = {}) {
     guesses() { return matchExpressions(names); },
     preview(name, ms = 1800) { previewName = name; setTimeout(() => { if (previewName === name) previewName = null; }, ms); },
     gesture(event) { return playGesture(event); },
+    /** Expression strips for the desktop buddy: {manifest, strips: {state: Blob}}. */
+    async capture(options) { await ready; if (!captureImpl) throw new Error('The model didn\'t load.'); return captureImpl(options); },
     destroy() { alive = false; look.stop(); cancelAnimationFrame(frame); stand.destroy(); renderer?.dispose(); },
   };
 }

@@ -10,6 +10,11 @@ expression, quantized to keep the installer small) and ``face.json`` in the same
 ``assets/mascot/mascot.json``. ``talk`` holds mouth shapes from closed to wide
 open, picked by speech level rather than by time. Run it after changing the
 face; the output is committed, so building Cerebro doesn't need a browser.
+
+    python packaging/make_face.py --vrm
+
+renders the built-in 3D models (``assets/faces/vrm/<slug>/``) the same way,
+into ``strips/`` and a ``preview.png`` for the agent editor's gallery.
 """
 
 import http.server
@@ -129,6 +134,85 @@ def _strip(frames, path: Path) -> None:
     strip.quantize(colors=128, method=Image.Quantize.FASTOCTREE).save(path, optimize=True)
 
 
+VRM_DIR = ROOT / "assets" / "faces" / "vrm"
+
+
+def build_vrm() -> dict:
+    """Render each built-in VRM model (``assets/faces/vrm/<slug>/model.vrm``) into
+    the desktop buddy's strips and a gallery preview, with the app's own
+    renderer (face.js ``capture()``), so they match what the app shows."""
+    import base64
+    import os
+    import sys
+    import tempfile
+    import time
+
+    import uvicorn
+    from playwright.sync_api import sync_playwright
+
+    os.environ.setdefault("DATABASE_URL", "sqlite:///" + tempfile.mktemp(suffix=".db"))
+    sys.path.insert(0, str(ROOT / "backend"))
+    from app.main import app
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"))
+    threading.Thread(target=server.run, daemon=True).start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    summary = {}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(args=["--use-gl=swiftshader", "--enable-unsafe-swiftshader"])
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/app")
+            page.wait_for_timeout(1500)
+            for folder in sorted(f for f in VRM_DIR.iterdir() if (f / "model.vrm").is_file()) if VRM_DIR.is_dir() else []:
+                meta = json.loads((folder / "meta.json").read_text(encoding="utf-8")) if (folder / "meta.json").is_file() else {}
+                result = page.evaluate("""async ([id, framing, expressions, gestures]) => {
+                  const f = await import('/static/ui/face.js');
+                  const host = document.createElement('div'); host.style.width = host.style.height = '256px';
+                  document.body.append(host);
+                  const style = { model: id, entry: 'model.vrm', framing: framing || {}, expressions: expressions || {},
+                                  gestures: gestures || {} };
+                  const face = f.createFace(host, { face: 'vrm', face_style: style });
+                  const toB64 = b => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(',')[1]); fr.readAsDataURL(b); });
+                  const strips = await face.capture({ size: %d });
+                  const preview = await face.capture({ size: 256, strips: { preview: { ...f.STRIP_PLAN.calm, frames: 1 } } });
+                  const out = { manifest: strips.manifest, files: {}, preview: await toB64(preview.strips.preview) };
+                  for (const [name, blob] of Object.entries(strips.strips)) out.files[name] = await toB64(blob);
+                  face.destroy();
+                  return out;
+                }""" % SIZE, [f"builtin-{folder.name}", meta.get("framing"), meta.get("expressions_map"),
+                                 {k: v for k, v in (meta.get("gestures") or {}).items() if (folder / v).is_file()}])
+                target = folder / "strips"
+                target.mkdir(exist_ok=True)
+                for name, data in result["files"].items():
+                    (target / f"{name}.png").write_bytes(base64.b64decode(data))
+                    _quantize(target / f"{name}.png")
+                (target / "face.json").write_text(json.dumps(result["manifest"], indent=2), encoding="utf-8")
+                (folder / "preview.png").write_bytes(base64.b64decode(result["preview"]))
+                summary[folder.name] = len(result["files"])
+            browser.close()
+    finally:
+        server.should_exit = True
+    return summary
+
+
+def _quantize(path: Path) -> None:
+    from PIL import Image
+
+    image = Image.open(path).convert("RGBA")
+    image.quantize(colors=128, method=Image.Quantize.FASTOCTREE).save(path, optimize=True)
+
+
 if __name__ == "__main__":
-    for palette, count in build().items():
-        print(f"{palette:7} {count} strips")
+    import sys as _sys
+
+    if "--vrm" in _sys.argv:
+        for name, count in build_vrm().items():
+            print(f"{name}: {count} strips")
+    else:
+        for palette, count in build().items():
+            print(f"{palette:7} {count} strips")
