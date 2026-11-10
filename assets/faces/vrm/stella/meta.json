@@ -1,0 +1,16 @@
+{
+  "name": "Stella",
+  "order": 1,
+  "model": "AvatarSample_B",
+  "author": "VRoid Project (pixiv Inc.)",
+  "credit": "Stella is AvatarSample_B by VRoid Project, © pixiv Inc.",
+  "license": "VRM Public License 1.0 (https://vrm.dev/licenses/1.0/)",
+  "source_url": "https://github.com/pixiv/ChatVRM/blob/b542aa00e19dccf9fc48ba340cf7eee011d2329a/public/AvatarSample_B.vrm",
+  "gestures": {
+    "loop": "gestures/idle_loop.vrma"
+  },
+  "framing": {
+    "zoom": 0.8,
+    "y": 0.12
+  }
+}

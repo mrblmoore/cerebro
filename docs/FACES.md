@@ -67,19 +67,41 @@ into the image strips the buddy and tray use, in
 
 ## Built-in 3D characters
 
-Cerebro can ship polished anime-style 3D characters (VRM), ready to use with
-nothing to download. They're in `assets/faces/vrm/<name>/`, each with its
-licence and credit (`LICENSE.txt`, `meta.json`). Only models released under
-CC0, free to ship and change, are included. The editor shows them as a
-gallery (**⚙ → Face → VRM 3D model → Built in**), and picking one applies its
-tuned framing and expressions. New agents start with one of them when any are
-installed. Built-in models are read-only: load your own `.vrm` to add
-gestures.
+Four anime-style 3D characters (VRM) ship with Cerebro, ready to use with
+nothing to download:
 
-**Adding one:** put `model.vrm` and `meta.json` (name, author, licence,
-`source_url`, optional `framing` and `expressions_map`) in a new folder there,
-then run `python packaging/make_face.py --vrm`. That renders the desktop
-buddy's strips and the gallery preview with the app's own renderer.
+| Character | Model | By | Licence (written in the model file) |
+|---|---|---|---|
+| **Stella** (the default) | AvatarSample_B | VRoid Project, © pixiv Inc. | VRM Public License 1.0: redistribution, changes and company use allowed; no credit needed |
+| **Kaori** | VRM1_Constraint_Twist_Sample | © 2022 pixiv Inc. | VRM Public License 1.0, the same terms |
+| **Kuro** | three-vrm-girl | pixiv Inc. | VRoid Hub licence: redistribution, changes and company use allowed; no credit needed |
+| **Seed-san** | Seed-san | VirtualCast, Inc. | VRM Public License 1.0, all uses allowed; **credit: "Seed-san model by VirtualCast, Inc."** |
+
+Each one rests with pixiv's idle animation (`idle_loop.vrma`, from ChatVRM,
+MIT): a gentle sway and breathing that never takes over the head, so it still
+looks at you and reacts.
+
+They're in `assets/faces/vrm/<name>/`, each with its credit and licence
+(`meta.json`, `LICENSE.txt`). Only models whose own licence allows
+redistribution, changes and use by companies are included. The model files
+themselves are fetched at build time from pixiv's and the VRM Consortium's
+GitHub repositories, at a pinned commit, and checked by SHA-256
+(`packaging/fetch_models.py`).
+
+The editor shows them as a gallery (**⚙ → Face → VRM 3D model → Built in**).
+Picking one applies its tuned framing, expressions and resting motion. New
+agents start with one of them. Built-in models are read-only: load your own
+`.vrm` to add gestures.
+
+**Adding one:**
+1. Add its source, pinned commit and SHA-256 to `VRM_MODELS` in
+   `packaging/fetch_models.py`.
+2. Put `meta.json` (name, order, author, credit, licence, `source_url`,
+   optional `framing`, `expressions_map` and `gestures`) and a `LICENSE.txt`
+   in a new folder there.
+3. Run `python packaging/fetch_models.py` and then
+   `python packaging/make_face.py --vrm`. That renders the desktop buddy's
+   strips and the gallery preview with the app's own renderer.
 
 ## The desktop buddy
 
@@ -139,13 +161,32 @@ Gestures use [three-vrm-animation](https://github.com/pixiv/three-vrm)
 
 ## Loading a Live2D model
 
+**Live2D's free models, in one click.** Go to **⚙ → Face → Live2D model → Get
+Live2D's free models…**, or tick **Also get Live2D models** in the installer.
+After you accept Live2D's terms, Cerebro downloads Live2D's runtime and six
+of its free sample models: Hiyori, Haru, Mao, Natori, Mark and Wanko (about
+20 MB).
+- The files come from Live2D's own servers (`cubism.live2d.com` and Live2D's
+  GitHub on `raw.githubusercontent.com`), at a pinned version, and each is
+  checked by SHA-256.
+- Each model comes framed head-and-shoulders.
+- If either site is blocked, use **Load a model…** with a zip instead, and
+  import `live2dcubismcore.min.js` from a file.
+
+**Why they aren't simply inside the installer.** Live2D's licence calls an
+app that can load any number of models an *Expandable Application*. Shipping
+Live2D's runtime inside one needs Live2D's prior approval and a publication
+licence, even for free, non-commercial or internal use (Live2D Proprietary
+Software License §1.5, §1.6 and §2.2). Downloading it onto your own PC, after
+you agree to Live2D's terms, is the route those terms allow.
+
+**Your own model:**
 1. Get a Cubism 3 or 4 model: a folder with a `*.model3.json`, the `.moc3`
    and its textures. Zip the folder.
 2. Go to **⚙ → Face → Live2D model → Load a model…** and pick the zip.
 3. **The first time only:** Cerebro explains Live2D's licence and asks
    before downloading **Live2D Cubism Core** from Live2D's own website, into
-   `%LOCALAPPDATA%\Cerebro\vendor`. Live2D's runtime is proprietary, so
-   Cerebro is not allowed to include it.
+   `%LOCALAPPDATA%\Cerebro\vendor`.
 
 **Licence warning.** Live2D's terms require a paid publication licence for
 commercial use by organisations above Live2D's revenue threshold. Check with

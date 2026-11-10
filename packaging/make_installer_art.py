@@ -45,7 +45,16 @@ def _font(size: int):
 
 
 def _assistant() -> Image.Image:
-    previews = sorted((ROOT / "assets" / "faces" / "vrm").glob("*/preview.png"))
+    import json
+
+    def order(preview):
+        try:
+            return json.loads((preview.parent / "meta.json").read_text(encoding="utf-8")).get("order", 99)
+        except (OSError, ValueError):
+            return 99
+
+    # The first built-in model (the one new agents start with).
+    previews = sorted((ROOT / "assets" / "faces" / "vrm").glob("*/preview.png"), key=lambda p: (order(p), p.name))
     if previews:
         return Image.open(previews[0]).convert("RGBA")
     strip = ROOT / "assets" / "faces" / "anime" / "pink" / "twintails" / "happy.png"

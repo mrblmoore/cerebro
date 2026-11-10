@@ -24,8 +24,11 @@ ALLOWED = {
 }
 
 
-def _step(name: str, ok: bool, detail: str) -> Dict[str, Any]:
-    return {"step": name, "ok": bool(ok), "detail": str(detail)[:300]}
+def _step(name: str, ok: bool, detail: str, optional: bool = False) -> Dict[str, Any]:
+    step = {"step": name, "ok": bool(ok), "detail": str(detail)[:300]}
+    if optional:
+        step["optional"] = True        # reported, but never holds setup back
+    return step
 
 
 def run(choices: Dict[str, Any], verify: bool = True) -> Dict[str, Any]:
@@ -86,7 +89,9 @@ def run(choices: Dict[str, Any], verify: bool = True) -> Dict[str, Any]:
                         fields["face"] = "vrm"
                         fields["face_style"] = {"model": meta["id"], "entry": meta["entry"],
                                                 **({"framing": meta["framing"]} if meta.get("framing") else {}),
-                                                **({"expressions": meta["expressions"]} if meta.get("expressions") else {})}
+                                                **({"expressions": meta["expressions"]} if meta.get("expressions") else {}),
+                                                **({"gestures": dict(meta["default_gestures"])}
+                                                   if meta.get("default_gestures") else {})}
                 elif face in ("anime", "brain"):
                     fields["face"] = face
                 if look.get("personality"):
@@ -124,14 +129,27 @@ def run(choices: Dict[str, Any], verify: bool = True) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         steps.append(_step("voice", False, str(exc)))
 
-    if all(s["ok"] for s in steps):
+    # Live2D's runtime and free models, downloaded from Live2D only when ticked
+    # (its licence doesn't let them ship inside Cerebro). Optional: it never
+    # holds setup back, it just says what to do if Live2D's sites are blocked.
+    if choices.get("live2d"):
+        try:
+            from app.api.faces import install_live2d_samples
+
+            got = install_live2d_samples()
+            count = len(got["added"]) + len(got["skipped"])
+            steps.append(_step("live2d", True, f"Live2D is ready, with {count} of Live2D's free models.", optional=True))
+        except Exception as exc:  # noqa: BLE001 - reported, not fatal
+            steps.append(_step("live2d", False, f"Live2D wasn't added: {exc}", optional=True))
+
+    if all(s["ok"] for s in steps if not s.get("optional")):
         try:
             from app.core import settings_store
 
             settings_store.mark_setup_complete()
         except Exception:  # noqa: BLE001 - the first start will offer setup again
             pass
-    return {"ok": all(s["ok"] for s in steps), "steps": steps}
+    return {"ok": all(s["ok"] for s in steps if not s.get("optional")), "steps": steps}
 
 
 def run_files(choices_path: str, result_path: str, verify: bool = True) -> int:

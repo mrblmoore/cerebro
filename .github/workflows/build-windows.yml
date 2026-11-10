@@ -94,11 +94,15 @@ jobs:
 
       # Everything the app needs ships inside the installer, so it works on a
       # network that blocks model sites: the speech-to-text model, the offline
-      # voice (Kokoro) and uv. Fetched once and cached; checked by hash/size.
+      # voice (Kokoro), uv and the built-in 3D characters. Fetched once and
+      # cached; checked by hash/size.
       - name: Cache the bundled models
         uses: actions/cache@v4
         with:
-          path: models
+          path: |
+            models
+            assets/faces/vrm/*/model.vrm
+            assets/faces/vrm/*/gestures
           key: bundled-models-${{ hashFiles('packaging/fetch_models.py') }}
 
       - name: Fetch the bundled models

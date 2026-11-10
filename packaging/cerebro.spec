@@ -34,6 +34,8 @@ datas = [
     # Cerebro's own text-to-phoneme data for the offline voice (misaki's
     # dictionaries, Apache-2.0) and Kokoro's token table.
     (str(BACKEND / "app" / "services" / "g2p_data"), "app/services/g2p_data"),
+    # Where Live2D's free sample models are (downloaded only when the user asks).
+    (str(BACKEND / "app" / "api" / "live2d_samples.json"), "app/api"),
 ]
 # The bundled models (packaging/fetch_models.py): the speech-to-text model,
 # the offline voice and uv. A build without them would need downloads that

@@ -126,6 +126,7 @@ var
   OpenAIPage: TInputQueryWizardPage;
   OllamaPage: TInputQueryWizardPage;
   LookPage: TInputOptionWizardPage;
+  Live2DBox: TNewCheckBox;
   PersonaPage: TInputOptionWizardPage;
   VoicePage: TInputOptionWizardPage;
   SetupSummary: String;
@@ -223,6 +224,18 @@ begin
   LookPage.Add('A drawn anime face');
   LookPage.Add('Cerebro''s brain');
   LookPage.SelectedValueIndex := 0;
+  { Live2D's runtime can't ship with Cerebro (its licence), but it and Live2D's
+    free sample models can be downloaded from Live2D now, if you agree. }
+  LookPage.CheckListBox.Height := ScaleY(84);
+  Live2DBox := TNewCheckBox.Create(LookPage);
+  Live2DBox.Parent := LookPage.Surface;
+  Live2DBox.Top := LookPage.CheckListBox.Top + LookPage.CheckListBox.Height + ScaleY(14);
+  Live2DBox.Left := LookPage.CheckListBox.Left;
+  Live2DBox.Width := LookPage.SurfaceWidth;
+  Live2DBox.Height := ScaleY(36);
+  Live2DBox.Caption := 'Also get Live2D models: download Live2D''s runtime and 6 free sample models' + #13#10 +
+    'from Live2D (about 20 MB). You accept Live2D''s licences.';
+  Live2DBox.Checked := False;
 
   PersonaPage := CreateInputOptionPage(LookPage.ID,
     'Personality', 'How should your assistant come across?',
@@ -360,7 +373,8 @@ begin
   Agent := '';
   AddPair(Agent, 'face', Face);
   AddPair(Agent, 'personality', Persona);
-  Result := '{"settings": {' + Settings + '}, "agent": {' + Agent + '}}';
+  Result := '{"settings": {' + Settings + '}, "agent": {' + Agent + '}, "live2d": ' +
+    BoolText(Live2DBox.Checked) + '}';
 end;
 
 { The parts of the old memory to clear, for Cerebro to apply (after a backup) on its next start. }

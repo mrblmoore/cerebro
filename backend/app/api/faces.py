@@ -4,6 +4,8 @@ API for agents' faces: Live2D and VRM models the user loads.
 * ``POST /api/faces`` — upload a ``.vrm`` file or a ``.zip`` of a Live2D
   model (it must contain a ``*.model3.json``). Stored under ``FACES_DIR/<id>``
   and served from ``/faces/<id>/…``.
+* ``GET /api/faces/live2d/samples`` and ``POST …/samples`` — Live2D's free sample
+  models, downloaded from Live2D (with the runtime) only when the user agrees.
 * ``GET /api/faces/live2d/runtime`` and ``POST …/runtime`` — Live2D's Cubism
   Core is proprietary and can't ship with Cerebro. With the user's consent it
   is downloaded once from Live2D's own address into ``VENDOR_DIR``.
@@ -52,6 +54,12 @@ LIVE2D_TERMS = ("Live2D models need Live2D's Cubism Core, which Cerebro is not a
                 "include. Cerebro can download it from Live2D's own website for you. By doing so "
                 "you accept Live2D's Proprietary Software License; companies above Live2D's "
                 "revenue threshold need a paid Live2D publication licence for commercial use.")
+SAMPLES_TERMS = ("Live2D's free sample models (Hiyori, Haru, Mao, Natori, Mark and Wanko) "
+                 "are downloaded from Live2D's own GitHub (raw.githubusercontent.com) onto this PC. "
+                 "They're under Live2D's Free Material License: free for individuals and small "
+                 "businesses; larger organisations should check Live2D's terms for their use.")
+SAMPLES_MANIFEST = Path(__file__).with_name("live2d_samples.json")
+RAW_URL = "https://raw.githubusercontent.com/{repo}/{rev}/{folder}/{name}/{path}"
 
 
 MAX_GESTURE_BYTES = 20 * 1024 * 1024
@@ -75,18 +83,26 @@ def _builtin_meta(folder: Path) -> Dict[str, Any]:
         return {}
     if not (folder / "model.vrm").is_file():
         return {}
+    gestures = folder / "gestures"
+    # The gestures it plays by default (e.g. a resting motion), if the files are there.
+    defaults = {event: path for event, path in (meta.get("gestures") or {}).items()
+                if isinstance(path, str) and path.startswith("gestures/") and (folder / path).is_file()}
     return {"id": BUILTIN + folder.name, "kind": "vrm", "entry": "model.vrm", "builtin": True,
             "name": meta.get("name") or folder.name, "author": meta.get("author"),
+            "credit": meta.get("credit"), "order": meta.get("order", 99),
             "license": meta.get("license"), "source_url": meta.get("source_url"),
             "preview": "preview.png" if (folder / "preview.png").is_file() else None,
-            "framing": meta.get("framing"), "expressions": meta.get("expressions_map")}
+            "framing": meta.get("framing"), "expressions": meta.get("expressions_map"),
+            "gestures": sorted(f"gestures/{p.name}" for p in gestures.glob("*.vrma")) if gestures.is_dir() else [],
+            "default_gestures": defaults or None}
 
 
 def builtin_faces() -> List[Dict[str, Any]]:
     root = builtin_dir()
     if not root.is_dir():
         return []
-    return [m for m in (_builtin_meta(f) for f in sorted(root.iterdir()) if f.is_dir()) if m]
+    found = [m for m in (_builtin_meta(f) for f in root.iterdir() if f.is_dir()) if m]
+    return sorted(found, key=lambda m: (m["order"], m["name"].lower()))
 
 
 def strips_dir(face_id: str) -> Optional[Path]:
@@ -339,6 +355,101 @@ async def import_live2d_runtime(file: UploadFile = File(...), agree: bool = Form
     (VENDOR_DIR / CUBISM_FILE).write_bytes(data)
     logger.info("faces", "Live2D Cubism Core imported from a file with the user's consent", {})
     return {"installed": True}
+
+
+def _fetch(url: str) -> bytes:
+    import requests
+
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    return response.content
+
+
+def live2d_samples() -> Dict[str, Any]:
+    """Which of Live2D's sample models are here, and which aren't yet."""
+    spec = json.loads(SAMPLES_MANIFEST.read_text(encoding="utf-8"))
+    have = {}
+    if FACES_DIR.is_dir():
+        for folder in FACES_DIR.iterdir():
+            meta = _meta(folder)
+            if meta.get("sample"):
+                have[meta["sample"]] = meta["id"]
+    return {"models": list(spec["models"]), "installed": have, "terms": SAMPLES_TERMS,
+            "runtime": (VENDOR_DIR / CUBISM_FILE).is_file(), "license_url": spec["license_url"]}
+
+
+def install_live2d_samples(names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Download Live2D's runtime (if missing) and its free sample models from
+    Live2D's own servers, at a pinned version, each file checked by SHA-256.
+    Only call this after the user agreed to Live2D's terms."""
+    import hashlib
+
+    if not (VENDOR_DIR / CUBISM_FILE).is_file():
+        try:
+            core = _fetch(CUBISM_CORE_URL)
+        except Exception as exc:  # noqa: BLE001 - reported with the host
+            raise RuntimeError(f"couldn't reach cubism.live2d.com for Live2D's runtime ({exc}). "
+                               "Import live2dcubismcore.min.js from a file instead.") from exc
+        if b"Live2DCubismCore" not in core[:200000]:
+            raise RuntimeError("Live2D's site didn't send the expected runtime file.")
+        VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+        (VENDOR_DIR / CUBISM_FILE).write_bytes(core)
+        logger.info("faces", "Live2D Cubism Core downloaded with the user's consent", {})
+    spec = json.loads(SAMPLES_MANIFEST.read_text(encoding="utf-8"))
+    already = live2d_samples()["installed"]
+    added, skipped = [], []
+    for name in names or list(spec["models"]):
+        files = spec["models"].get(name)
+        if files is None:
+            continue
+        if name in already:
+            skipped.append(name)
+            continue
+        face_id = uuid.uuid4().hex[:10]
+        folder = FACES_DIR / face_id
+        try:
+            for item in files:
+                rel = PurePosixPath(item["path"])
+                if rel.is_absolute() or ".." in rel.parts:
+                    raise RuntimeError(f"bad path in the sample list: {item['path']}")
+                data = _fetch(RAW_URL.format(repo=spec["repo"], rev=spec["rev"], folder=spec["folder"],
+                                             name=name, path=item["path"]))
+                if hashlib.sha256(data).hexdigest() != item["sha256"]:
+                    raise RuntimeError(f"{name}/{item['path']} didn't match its checksum")
+                target = folder / Path(*rel.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+        except RuntimeError:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        except Exception as exc:  # noqa: BLE001 - reported with the host
+            shutil.rmtree(folder, ignore_errors=True)
+            raise RuntimeError(f"couldn't reach raw.githubusercontent.com for Live2D's sample models ({exc}). "
+                               "Load a model from a .zip instead.") from exc
+        meta = {"id": face_id, "kind": "live2d", "entry": f"{name}.model3.json", "name": name,
+                "sample": name, "author": "Live2D Inc.", "license": spec["license"],
+                "license_url": spec["license_url"], "framing": (spec.get("framing") or {}).get(name)}
+        (folder / "face.json").write_text(json.dumps(meta), encoding="utf-8")
+        added.append(meta)
+    logger.info("faces", "Live2D sample models downloaded with the user's consent",
+                {"added": [m["name"] for m in added], "skipped": skipped})
+    return {"added": added, "skipped": skipped, "runtime": True}
+
+
+@router.get("/api/faces/live2d/samples")
+def get_live2d_samples() -> Dict[str, Any]:
+    return live2d_samples()
+
+
+@router.post("/api/faces/live2d/samples")
+def post_live2d_samples(body: Dict[str, Any]) -> Dict[str, Any]:
+    if not body.get("agree"):
+        raise HTTPException(status_code=400, detail="Agree to Live2D's terms first.")
+    names = body.get("names")
+    try:
+        return install_live2d_samples(names if isinstance(names, list) else None)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @router.get("/api/faces/live2d/runtime.js")

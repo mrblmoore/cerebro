@@ -677,19 +677,36 @@ function vrmFace(host, style = {}) {
           }
         } catch (error) { console.warn('VRM gestures:', error); }
       }
+      // A resting motion ('loop') plays all the time under everything else. Its
+      // head and neck are left to the face, so it still looks at you, and it
+      // doesn't move the model about (only bends it), so the framing holds.
+      let resting = null;
+      if (clips.loop) {
+        const own = new Set(['head', 'neck'].map(b => vrm.humanoid?.getNormalizedBoneNode(b)?.name).filter(Boolean));
+        clips.loop.tracks = clips.loop.tracks.filter(track => !own.has(track.name.split('.')[0])
+                                                          && !track.name.endsWith('.position'));
+        resting = mixer.clipAction(clips.loop);
+        resting.setLoop(THREE.LoopRepeat, Infinity).play();
+      }
       let current = null;
       playGesture = event => {
-        const clip = clips[event];
+        const clip = event !== 'loop' && clips[event];
         if (!clip) return false;
         const action = mixer.clipAction(clip);
         action.reset().setLoop(THREE.LoopOnce, 1);
         action.clampWhenFinished = false;
         if (current && current !== action) action.crossFadeFrom(current, 0.3, false);
+        else if (resting) resting.fadeOut(0.3);
         action.fadeIn(0.25).play();
         current = action;
         return true;
       };
-      mixer.addEventListener('finished', e => { e.action.fadeOut(0.4); current = null; });
+      mixer.addEventListener('finished', e => {
+        if (e.action === resting) return;
+        e.action.fadeOut(0.4);
+        if (resting) resting.reset().fadeIn(0.4).play();
+        current = null;
+      });
       if (clips.greeting) setTimeout(() => playGesture('greeting'), 600);
       stand.destroy();
       host.innerHTML = '';
@@ -728,8 +745,11 @@ function vrmFace(host, style = {}) {
               if (!mapped.has('blink')) expressions?.setValue('blink', 1 - open);
               const vowels = vowelsFrom(level, null);
               VOWELS.forEach(v => expressions?.setValue(v, vowels[v]));
-              if (spine) spine.rotation.x = Math.sin(t * 1.1) * 0.015;
-              if (chest) chest.rotation.x = Math.sin(t * 1.1 + 0.6) * 0.02;
+              if (resting) mixer.setTime(t);   // the resting pose, at the same moment every time
+              else {
+                if (spine) spine.rotation.x = Math.sin(t * 1.1) * 0.015;
+                if (chest) chest.rotation.x = Math.sin(t * 1.1 + 0.6) * 0.02;
+              }
               if (neck) neck.rotation.y = 0;
               if (head) {
                 head.rotation.y = Math.sin(t * 0.6) * 0.05;
@@ -770,9 +790,12 @@ function vrmFace(host, style = {}) {
         if (slot === 'wink' && !(active?.name || '').toLowerCase().includes('blink')) expressions?.setValue('blinkLeft', 1);
         const vowels = vowelsFrom(mouth, bands);
         VOWELS.forEach(v => expressions?.setValue(v, vowels[v]));
-        // Life: breathing, gaze and head following the cursor, a nod when happy, a tilt while thinking.
-        if (spine) spine.rotation.x = Math.sin(t * 1.1) * 0.015;
-        if (chest) chest.rotation.x = Math.sin(t * 1.1 + 0.6) * 0.02;
+        // Life: breathing (unless the resting motion does it), gaze and head
+        // following the cursor, a nod when happy, a tilt while thinking.
+        if (!resting) {
+          if (spine) spine.rotation.x = Math.sin(t * 1.1) * 0.015;
+          if (chest) chest.rotation.x = Math.sin(t * 1.1 + 0.6) * 0.02;
+        }
         const nod = slot === 'happy' && reaction.current() ? Math.sin(t * 9) * 0.06 : 0;
         if (neck) neck.rotation.y = look.x * 0.25;
         if (head) {

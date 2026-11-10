@@ -13,10 +13,14 @@ inside the installer.
 **Everything is inside the installer.** The speech-recognition model, the
 offline voice (Kokoro), the built-in 3D characters and uv (for add-ons) all
 ship with it, so nothing is downloaded during install or on first use. That
-matters on work networks that block model and download sites. The one
-exception is Live2D's runtime, which its licence doesn't let Cerebro include.
-If Live2D's site is blocked, add `live2dcubismcore.min.js` from a file when
-you pick a Live2D face.
+matters on work networks that block model and download sites.
+
+The one exception is Live2D: its licence doesn't let Cerebro include
+Live2D's runtime or its models. Tick **Also get Live2D models** on the
+"Your assistant" page to download them from Live2D during setup, or do it
+later from the face editor. If Live2D's sites are blocked, the setup summary
+says so, and a Live2D model and `live2dcubismcore.min.js` can be imported
+from files instead.
 
 **Setup happens inside the installer.** After choosing shortcuts, a few pages
 ask:

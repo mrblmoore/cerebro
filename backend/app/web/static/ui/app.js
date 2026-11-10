@@ -2283,8 +2283,8 @@ const PERSONALITIES = {
 const SLOT_LABEL = { calm: 'Ready', happy: 'Done (happy)', wink: 'Done (wink)', love: 'Thanked', thinking: 'Thinking',
   focused: 'Working', listening: 'Listening', surprised: 'Needs approval', sorry: 'Failed', pout: 'Kept waiting',
   smug: 'Approved', dizzy: 'Error', asleep: 'Offline' };
-const GESTURE_LABEL = { greeting: 'When it appears', done: 'Task done', approved: 'You approve',
-  thinking: 'Starts thinking', attention: 'Needs you', idle: 'Every few minutes' };
+const GESTURE_LABEL = { loop: 'All the time (resting motion)', greeting: 'When it appears', done: 'Task done',
+  approved: 'You approve', thinking: 'Starts thinking', attention: 'Needs you', idle: 'Every few minutes' };
 const PREVIEW_LINE = 'Hehe, found it! [giggle] The fix was a typo — [tease]you owe me a coffee~[/tease] [whisper]I won\'t tell anyone.[/whisper]';
 
 async function editAgent(agent, template = 'blank') {
@@ -2398,26 +2398,37 @@ async function editAgent(agent, template = 'blank') {
           : 'Pick a built-in model, or load a .vrm file (make one free in VRoid Studio).'} Until it loads, the anime face stands in.</div>
           ${builtins.length ? `<div class="mini-label">Built in</div><div class="model-gallery">${builtins.map(f => `
             <button type="button" class="model-card" data-model="${f.id}" data-entry="${esc(f.entry)}" aria-pressed="${style.model === f.id}"
-              title="${esc(f.name)}${f.author ? ' — by ' + esc(f.author) : ''}${f.license ? ' (' + esc(f.license) + ')' : ''}">
+              title="${esc(f.credit || f.name + (f.author ? ' — by ' + f.author : ''))}${f.license ? ' (' + esc(f.license) + ')' : ''}">
               ${f.preview ? `<img src="/faces/${encodeURIComponent(f.id)}/${esc(f.preview)}" alt="">` : '<span class="model-card-blank">3D</span>'}
               <span>${esc(f.name)}</span></button>`).join('')}</div>
             <div class="mini-label">Your models</div>` : ''}
           <div class="work-tabs">${mine.map(f => `<button type="button" class="btn sm" data-model="${f.id}" data-entry="${esc(f.entry)}" aria-pressed="${style.model === f.id}">${esc(f.name)}</button>`).join('')}
-          <button type="button" class="btn sm primary" data-upload>Load a model…</button></div>
+          <button type="button" class="btn sm primary" data-upload>Load a model…</button>
+          ${face === 'live2d' && !mine.some(f => f.sample) ? '<button type="button" class="btn sm" data-samples>Get Live2D\'s free models…</button>' : ''}</div>
           ${style.model ? `<div class="slider-grid" style="margin-top:8px">
             <label>Zoom<input type="range" data-frame="zoom" min="0.5" max="2.5" step="0.05" value="${fr.zoom}"></label>
-            <label>Height<input type="range" data-frame="y" min="-0.6" max="0.6" step="0.02" value="${fr.y}"></label>
+            <label>Height<input type="range" data-frame="y" min="-1" max="1" step="0.02" value="${fr.y}"></label>
             ${face === 'live2d' ? `<label class="check"><input type="checkbox" data-frame="mirror" ${fr.mirror ? 'checked' : ''}> Mirror</label>` : ''}
           </div><div data-mapping class="mapping"><div class="meta">Loading the model's expressions…</div></div>
           ${face === 'vrm' ? '<div data-gestures class="mapping"></div>' : ''}` : ''}`;
         $$('[data-model]', host).forEach(b => b.addEventListener('click', () => {
           const meta = faces.find(f => f.id === b.dataset.model) || {};
-          // A built-in model comes with its own hand-tuned framing and expressions.
+          // A built-in model comes with its own hand-tuned framing, expressions and resting
+          // motion; Live2D's samples with their framing.
           style = { ...style, model: b.dataset.model, entry: b.dataset.entry,
-                    framing: meta.builtin && meta.framing ? meta.framing : style.framing,
-                    expressions: meta.builtin && meta.expressions ? meta.expressions : {}, gestures: {} };
+                    framing: (meta.builtin || meta.sample) && meta.framing ? meta.framing : style.framing,
+                    expressions: meta.builtin && meta.expressions ? meta.expressions : {},
+                    gestures: meta.builtin && meta.default_gestures ? { ...meta.default_gestures } : {} };
           paintModels(); rebuildPreview();
         }));
+        $('[data-samples]', host)?.addEventListener('click', async () => {
+          const added = await getLive2DSamples();
+          if (!added.length) return;
+          faces.push(...added);
+          style = { ...style, model: added[0].id, entry: added[0].entry, framing: added[0].framing || style.framing,
+                    expressions: {}, gestures: {} };
+          paintModels(); rebuildPreview();
+        });
         $('[data-upload]', host).addEventListener('click', () => pickFile(face === 'vrm' ? '.vrm' : '.zip', async file => {
           const form2 = new FormData();
           form2.append('file', file, file.name);
@@ -2569,6 +2580,23 @@ async function editAgent(agent, template = 'blank') {
     // The desktop buddy shows a VRM face from strips rendered here, in the background.
     if (face === 'vrm' && style.model) renderBuddyStrips(style);
   } catch (error) { toast(error.message, 'err'); }
+}
+
+// Live2D's runtime and its free sample models, from Live2D, once the user agrees.
+async function getLive2DSamples() {
+  const info = await api.get('/api/faces/live2d/samples').catch(() => ({}));
+  const runtime = await api.get('/api/faces/live2d/runtime').catch(() => ({}));
+  const terms = [runtime.installed ? '' : (runtime.terms || ''), info.terms || ''].filter(Boolean).join('\n\n');
+  if (!confirm(`${terms}\n\nDownload them now (about 20 MB)?`)) return [];
+  toast('Downloading Live2D\'s models…');
+  try {
+    const out = await api.post('/api/faces/live2d/samples', { agree: true });
+    toast(`Added ${out.added.length} Live2D model${out.added.length === 1 ? '' : 's'}`, 'ok');
+    return out.added;
+  } catch (error) {
+    toast(error.message, 'err');
+    return [];
+  }
 }
 
 async function ensureLive2D() {

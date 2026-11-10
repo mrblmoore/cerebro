@@ -48,7 +48,8 @@ def due_from(text: str, base: datetime = None) -> Optional[datetime]:
         return eod + timedelta(days=1)
     for index, name in enumerate(_DAYS):
         if re.search(rf"\b{name}\b", lowered):
-            ahead = (index - base.weekday()) % 7 or 7
+            # "by Friday" said on a Friday means today, unless the day is over.
+            ahead = (index - base.weekday()) % 7 or (0 if base < eod else 7)
             return eod + timedelta(days=ahead)
     if "next week" in lowered:
         return eod + timedelta(days=7 - base.weekday())

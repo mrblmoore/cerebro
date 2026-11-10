@@ -1,0 +1,16 @@
+{
+  "name": "Seed-san",
+  "order": 4,
+  "model": "Seed-san",
+  "author": "VirtualCast, Inc.",
+  "credit": "Seed-san model by VirtualCast, Inc.",
+  "license": "VRM Public License 1.0 (https://vrm.dev/licenses/1.0/)",
+  "source_url": "https://github.com/vrm-c/vrm-specification/tree/94e82dd346fa6cf0337c4421728640e5252dd38e/samples/Seed-san",
+  "gestures": {
+    "loop": "gestures/idle_loop.vrma"
+  },
+  "framing": {
+    "zoom": 0.88,
+    "y": 0.04
+  }
+}

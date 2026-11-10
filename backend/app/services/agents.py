@@ -209,7 +209,9 @@ def create(db, template: str = "blank", **fields):
             base["face_style"] = {**(base.get("face_style") or {}), "model": builtin["id"],
                                   "entry": builtin["entry"],
                                   **({"framing": builtin["framing"]} if builtin.get("framing") else {}),
-                                  **({"expressions": builtin["expressions"]} if builtin.get("expressions") else {})}
+                                  **({"expressions": builtin["expressions"]} if builtin.get("expressions") else {}),
+                                  **({"gestures": dict(builtin["default_gestures"])}
+                                     if builtin.get("default_gestures") else {})}
     base.update({k: v for k, v in fields.items() if v is not None})
     agent = Agent(template=template if template in TEMPLATES else "blank")
     _apply(agent, base)

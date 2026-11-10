@@ -1,0 +1,23 @@
+Stella — built-in 3D character for Cerebro
+
+Model:      AvatarSample_B
+Author:     VRoid Project (pixiv Inc.)
+Credit:     Stella is AvatarSample_B by VRoid Project, © pixiv Inc.
+Source:     https://github.com/pixiv/ChatVRM/blob/b542aa00e19dccf9fc48ba340cf7eee011d2329a/public/AvatarSample_B.vrm
+Licence:    VRM Public License 1.0 (https://vrm.dev/licenses/1.0/)
+Terms page: https://vroid.pixiv.help/hc/ja/articles/4402394424089-AvatarSample-A-B-C
+
+The licence below is the one written inside the model file itself:
+  avatarPermission: everyone
+  commercialUsage: corporation
+  allowRedistribution: True
+  modification: allowModificationRedistribution
+  creditNotation: unnecessary
+  allowAntisocialOrHateUsage: False
+
+Cerebro ships the file unchanged (fetched at a pinned commit and checked by
+SHA-256 in packaging/fetch_models.py) and renders it for the desktop buddy.
+
+
+Resting motion: gestures/idle_loop.vrma from pixiv/ChatVRM (MIT License,
+Copyright (c) 2023 pixiv Inc.), unchanged.

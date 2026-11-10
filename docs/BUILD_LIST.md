@@ -308,7 +308,7 @@ template replies.
 - [x] **B14.2 Kokoro offline voice.** Kokoro-82M (Apache-2.0) via onnxruntime, with Cerebro's own
   text-to-phoneme converter on misaki's dictionaries (no eSpeak/GPL); cues as speed/loudness;
   Best available = offline first; blocked hosts named in errors.
-- [x] **B14.3 Built-in 3D characters.** CC0 VRM models in `assets/faces/vrm/`, gallery, tuned defaults,
+- [x] **B14.3 Built-in 3D characters.** VRM models (licences allowing redistribution) in `assets/faces/vrm/`, gallery, tuned defaults,
   pre-rendered buddy strips (`make_face.py --vrm`), read-only.
 - [x] **B14.4 Desktop buddy.** Follows the agent you're talking to; shows VRM faces from strips the app
   renders (`face.js capture()`).
@@ -318,8 +318,15 @@ template replies.
   headless wizard; clean upgrades; clearing parts of the old memory after a backup; new artwork.
 - [x] **B14.7 Fixes.** The hidden browser no longer hangs on an aborted response or runs two workers;
   Nova Sonic keeps botocore's awscrt.
-- [ ] **B14.8 Built-in models.** Add 2–3 CC0 VRoid models (needs a network that reaches VRoid's sites, to
-  verify the licence and fetch them).
+- [x] **B14.8 Built-in models.**
+  - Stella (AvatarSample_B), Kaori, Kuro and Seed-san, each with pixiv's idle loop as a resting motion.
+  - Every model's own licence allows redistribution, changes and company use.
+  - Fetched at pinned commits with SHA-256 checks.
+- [x] **B14.10 Live2D in one click.**
+  - Live2D's runtime and six free sample models are downloaded from Live2D after you agree.
+  - Available in the editor and from an installer checkbox; never bundled, because Live2D's licence treats an
+    app that loads any model as an "Expandable Application".
+- [x] **B14.11 Fixes.** PyAV is pinned below 19, which broke faster-whisper's decoding.
 - [ ] **B14.9 Real-world check** on the work network: install over 0.9, push-to-talk, Kokoro, Talk live,
   and the buddy following the active agent.
 

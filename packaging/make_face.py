@@ -170,11 +170,12 @@ def build_vrm() -> dict:
             page.wait_for_timeout(1500)
             for folder in sorted(f for f in VRM_DIR.iterdir() if (f / "model.vrm").is_file()) if VRM_DIR.is_dir() else []:
                 meta = json.loads((folder / "meta.json").read_text(encoding="utf-8")) if (folder / "meta.json").is_file() else {}
-                result = page.evaluate("""async ([id, framing, expressions]) => {
+                result = page.evaluate("""async ([id, framing, expressions, gestures]) => {
                   const f = await import('/static/ui/face.js');
                   const host = document.createElement('div'); host.style.width = host.style.height = '256px';
                   document.body.append(host);
-                  const style = { model: id, entry: 'model.vrm', framing: framing || {}, expressions: expressions || {} };
+                  const style = { model: id, entry: 'model.vrm', framing: framing || {}, expressions: expressions || {},
+                                  gestures: gestures || {} };
                   const face = f.createFace(host, { face: 'vrm', face_style: style });
                   const toB64 = b => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(',')[1]); fr.readAsDataURL(b); });
                   const strips = await face.capture({ size: %d });
@@ -183,7 +184,8 @@ def build_vrm() -> dict:
                   for (const [name, blob] of Object.entries(strips.strips)) out.files[name] = await toB64(blob);
                   face.destroy();
                   return out;
-                }""" % SIZE, [f"builtin-{folder.name}", meta.get("framing"), meta.get("expressions_map")])
+                }""" % SIZE, [f"builtin-{folder.name}", meta.get("framing"), meta.get("expressions_map"),
+                                 {k: v for k, v in (meta.get("gestures") or {}).items() if (folder / v).is_file()}])
                 target = folder / "strips"
                 target.mkdir(exist_ok=True)
                 for name, data in result["files"].items():

@@ -6694,6 +6694,31 @@ def test_install_and_avatars():
     from tests_support import make_vrm
     import brain_frames
 
+    # The characters that ship: each has its credit, its licence and its renders committed,
+    # and the model itself is fetched at a pinned commit and checked by SHA-256.
+    import importlib.util as _ilu
+
+    _spec = _ilu.spec_from_file_location("fetch_models", ROOT / "packaging" / "fetch_models.py")
+    fetch_models = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(fetch_models)
+    shipped = ROOT / "assets" / "faces" / "vrm"
+    metas = {slug: _json.loads((shipped / slug / "meta.json").read_text(encoding="utf-8"))
+             for slug in fetch_models.VRM_MODELS if (shipped / slug / "meta.json").is_file()}
+    check("Every built-in 3D character has its credit, licence, renders and a pinned source",
+          len(metas) == len(fetch_models.VRM_MODELS) >= 3
+          and all(m.get("credit") and m.get("license") and m.get("source_url") for m in metas.values())
+          and all((shipped / slug / "LICENSE.txt").is_file() and (shipped / slug / "preview.png").is_file()
+                  and (shipped / slug / "strips" / "face.json").is_file() for slug in metas)
+          and all(len(spec["sha256"]) == 64 and len(spec["rev"]) == 40 for spec in fetch_models.VRM_MODELS.values()),
+          sorted(metas))
+    if all((shipped / slug / "model.vrm").is_file() for slug in fetch_models.VRM_MODELS):
+        real = faces_api.builtin_faces()
+        check("…and with the models fetched, Stella comes first, with her resting motion",
+              real and real[0]["name"] == "Stella" and real[0].get("default_gestures", {}).get("loop"),
+              [f["name"] for f in real])
+    else:
+        print("  - skipped the fetched-models check: run packaging/fetch_models.py (CI does)")
+
     client = TestClient(app)
     root = Path(tempfile.mkdtemp(dir=_TEMP_DIR))
     builtin = root / "builtin"
@@ -6701,7 +6726,14 @@ def test_install_and_avatars():
     (builtin / "miko" / "model.vrm").write_bytes(make_vrm.build())
     (builtin / "miko" / "meta.json").write_text(_json.dumps({
         "name": "Miko", "author": "pixiv (VRoid)", "license": "CC0-1.0", "framing": {"zoom": 1.2, "y": 0.1},
-        "expressions_map": {"happy": {"name": "happy", "weight": 0.9}}}))
+        "order": 2, "credit": "Miko by pixiv",
+        "expressions_map": {"happy": {"name": "happy", "weight": 0.9}},
+        "gestures": {"loop": "gestures/idle_loop.vrma", "done": "gestures/missing.vrma"}}))
+    (builtin / "miko" / "gestures").mkdir()
+    (builtin / "miko" / "gestures" / "idle_loop.vrma").write_bytes(b"glTF")
+    (builtin / "aoi").mkdir()
+    (builtin / "aoi" / "model.vrm").write_bytes(make_vrm.build())
+    (builtin / "aoi" / "meta.json").write_text(_json.dumps({"name": "Aoi", "order": 9, "license": "VRM Public License 1.0"}))
     faces_dir = root / "faces"
 
     with mock.patch.object(faces_api, "builtin_dir", lambda: builtin), mock.patch.object(faces_api, "FACES_DIR", faces_dir):
@@ -6710,6 +6742,11 @@ def test_install_and_avatars():
         check("Built-in 3D models are listed, with their credit and licence",
               miko.get("builtin") and miko.get("license") == "CC0-1.0" and miko.get("kind") == "vrm"
               and miko.get("framing") == {"zoom": 1.2, "y": 0.1}, miko)
+        check("…first in their own order, with the credit their licence asks for",
+              [f["id"] for f in listed if f.get("builtin")][:2] == ["builtin-miko", "builtin-aoi"]
+              and miko.get("credit") == "Miko by pixiv", [f["id"] for f in listed if f.get("builtin")])
+        check("…and their resting motion, if its file is there",
+              miko.get("default_gestures") == {"loop": "gestures/idle_loop.vrma"}, miko.get("default_gestures"))
         served = client.get("/faces/builtin-miko/model.vrm")
         check("…and served to the page", served.status_code == 200 and served.content[:4] == b"glTF")
         check("…but can't be removed", client.delete("/api/faces/builtin-miko").status_code == 400
@@ -6717,10 +6754,11 @@ def test_install_and_avatars():
         check("…nor reached outside their folder", client.get("/faces/builtin-miko/../../secret").status_code == 404)
 
         db = session()
-        fresh = agents.create(db, "inbox", name="Mei")
+        fresh = agents.create(db, list(agents.TEMPLATES)[0], name="Mei")  # the first template gets the first model
         check("A new agent starts with a built-in 3D model, with its tuned framing and expressions",
               fresh.face == "vrm" and fresh.style().get("model") == "builtin-miko"
-              and fresh.style().get("expressions", {}).get("happy", {}).get("name") == "happy", (fresh.face, fresh.style()))
+              and fresh.style().get("expressions", {}).get("happy", {}).get("name") == "happy"
+              and fresh.style().get("gestures") == {"loop": "gestures/idle_loop.vrma"}, (fresh.face, fresh.style()))
 
         # The desktop buddy follows the agent you're talking to.
         client.post("/api/faces/active", json={"agent_id": fresh.id})
@@ -6783,6 +6821,7 @@ def test_install_and_avatars():
                       VOICE_PERSONALITY=settings.VOICE_PERSONALITY, VOICE_SPEAK_REPLIES=settings.VOICE_SPEAK_REPLIES)
         try:
             with mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None), \
                     mock.patch("app.core.settings_store.update",
                                lambda changes: (settings.__dict__.update({k: v for k, v in changes.items()})
                                                 or {"ok": True, "applied": list(changes)})):
@@ -6799,10 +6838,28 @@ def test_install_and_avatars():
                   default.face == "vrm" and default.style().get("model") == "builtin-miko"
                   and default.persona().get("preset") == "professional", (default.face, default.style()))
             with mock.patch.object(faces_api, "builtin_faces", lambda: []), \
-                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test):
+                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None):
                 install_setup.run({"agent": {"face": "builtin"}})
             check("…and without built-in 3D models, \"3D character\" falls back to the anime face",
                   agents.default_agent(session()).face == "anime")
+            def blocked():
+                raise RuntimeError("couldn't reach cubism.live2d.com")
+
+            # (Never let these runs mark setup complete: that saves the settings to disk.)
+            with mock.patch.object(faces_api, "install_live2d_samples", blocked), \
+                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None):
+                ticked = install_setup.run({"live2d": True})
+            live2d_step = next((s for s in ticked["steps"] if s["step"] == "live2d"), {})
+            check("Ticking Live2D in the installer downloads it; if Live2D is blocked it says so, without failing setup",
+                  live2d_step.get("optional") and not live2d_step["ok"] and "cubism.live2d.com" in live2d_step["detail"]
+                  and ticked["ok"] == all(s["ok"] for s in ticked["steps"] if s["step"] != "live2d"), ticked)
+            with mock.patch.object(faces_api, "install_live2d_samples", lambda: {"added": [{}], "skipped": []}), \
+                    mock.patch.object(llm_module.LLMService, "test_connection", fake_test), \
+                    mock.patch("app.core.settings_store.mark_setup_complete", lambda *a, **k: None):
+                ticked = install_setup.run({"live2d": True})
+            check("…and when it works, Live2D is ready", any(s["step"] == "live2d" and s["ok"] for s in ticked["steps"]))
             check("…the choices file (it can hold keys) is removed, and a readable summary is written",
                   not choice_file.exists() and "OK" in (root / "result.txt").read_text(encoding="utf-8") and code in (0, 2))
         finally:
@@ -7042,8 +7099,11 @@ def test_agents_and_scope():
     check("There is always a default agent", default.is_default and default.name == "Cerebro")
     inbox = agents.create(db, "inbox")
     writer = agents.create(db, "kb-writer", name="Article writer")
-    check("Agents are made from templates", inbox.name == "Inbox assistant"
-          and "messaging" in inbox.scope() and inbox.face == "anime" and writer.name == "Article writer")
+    from app.api.faces import builtin_faces
+
+    check("Agents are made from templates (a built-in 3D character when there are any, else the anime face)",
+          inbox.name == "Inbox assistant" and "messaging" in inbox.scope()
+          and inbox.face == ("vrm" if builtin_faces() else "anime") and writer.name == "Article writer")
 
     ctx = ToolContext(db=db, context=agents.context_for(inbox))
     names = {t.name for t in available_tools(ctx)}
@@ -7512,6 +7572,47 @@ def test_faces():
         check("Live2D's runtime is never assumed — it needs the user's agreement",
               client.get("/api/faces/live2d/runtime").json()["installed"] is False
               and client.post("/api/faces/live2d/runtime", json={}).status_code == 400)
+
+        # Live2D's free sample models: from Live2D, only when asked, each file checked.
+        import hashlib as _hashlib
+
+        files = {"Hiyori.model3.json": b'{"Version": 3}', "Hiyori.moc3": b"MOC3 data"}
+        sample_spec = {"repo": "Live2D/CubismWebSamples", "rev": "a" * 40, "folder": "Samples/Resources",
+                       "license": "Live2D Free Material License Agreement", "license_url": "https://x.test/l",
+                       "models": {"Hiyori": [{"path": p, "bytes": len(d), "sha256": _hashlib.sha256(d).hexdigest()}
+                                             for p, d in files.items()]}}
+        spec_file = Path(_TEMP_DIR) / "live2d_samples.json"
+        spec_file.write_text(_json.dumps(sample_spec), encoding="utf-8")
+        vendor = Path(_TEMP_DIR) / "vendor-l2d"
+        fetched = []
+
+        def fake_fetch(url):
+            fetched.append(url)
+            if url == faces_api.CUBISM_CORE_URL:
+                return b"/* Live2DCubismCore */"
+            return files[url.rsplit("/", 1)[1]]
+
+        with mock.patch.object(faces_api, "SAMPLES_MANIFEST", spec_file), \
+                mock.patch.object(faces_api, "VENDOR_DIR", vendor), mock.patch.object(faces_api, "_fetch", fake_fetch):
+            refused = client.post("/api/faces/live2d/samples", json={})
+            check("Live2D's free models aren't downloaded without the user's agreement",
+                  refused.status_code == 400 and not fetched)
+            got = client.post("/api/faces/live2d/samples", json={"agree": True}).json()
+            sample = (got.get("added") or [{}])[0]
+            check("With it, the runtime and the sample models come from Live2D, pinned and checked",
+                  sample.get("kind") == "live2d" and sample.get("entry") == "Hiyori.model3.json"
+                  and (vendor / faces_api.CUBISM_FILE).is_file()
+                  and (folder / sample["id"] / "Hiyori.moc3").read_bytes() == b"MOC3 data"
+                  and all(("/" + "a" * 40 + "/") in u for u in fetched if u != faces_api.CUBISM_CORE_URL), got)
+            check("…listed as faces you can pick, and not fetched twice",
+                  any(f.get("sample") == "Hiyori" for f in client.get("/api/faces").json()["faces"])
+                  and client.post("/api/faces/live2d/samples", json={"agree": True}).json()["skipped"] == ["Hiyori"])
+            files["Hiyori.moc3"] = b"tampered"
+            client.delete(f"/api/faces/{sample['id']}")
+            bad = client.post("/api/faces/live2d/samples", json={"agree": True})
+            check("…and a file that doesn't match its checksum is refused, leaving nothing behind",
+                  bad.status_code == 502 and "checksum" in bad.json()["detail"]
+                  and not any(f.get("sample") for f in client.get("/api/faces").json()["faces"]), bad.text)
 
     db = session()
     default = agents.default_agent(db)
@@ -8365,6 +8466,11 @@ def test_secretary():
               "promised" in kinds and kinds["promised"].due_at and kinds["promised"].due_at.weekday() == 4,
               kinds.get("promised") and kinds["promised"].to_dict())
         check("Something you were asked becomes a to-do", "asked" in kinds and kinds["asked"].who == "Ana")
+        friday_morning, friday_evening = datetime(2026, 11, 6, 9, 0), datetime(2026, 11, 6, 18, 30)
+        check("'By Friday' said on a Friday morning is today; said that evening, next Friday",
+              followups.due_from("by Friday", friday_morning).date() == friday_morning.date()
+              and (followups.due_from("by Friday", friday_evening) - friday_evening).days == 6
+              and followups.due_from("by Friday", datetime(2026, 11, 2, 9, 0)).day == 6)
         followups.detect(db)
         check("…found once, not again on the next pass",
               db.query(FollowUp).filter(FollowUp.kind == "waiting_on").count() == 1)

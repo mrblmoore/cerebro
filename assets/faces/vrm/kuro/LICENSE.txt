@@ -1,0 +1,23 @@
+Kuro — built-in 3D character for Cerebro
+
+Model:      three-vrm-girl
+Author:     pixiv Inc.
+Credit:     Kuro is three-vrm-girl by pixiv Inc.
+Source:     https://github.com/pixiv/three-vrm/tree/48019ebcbbf021ef011ea26bc87d195834e02e03/packages/three-vrm/examples/models
+Licence:    VRoid Hub licence: redistribution, modification and corporate commercial use allowed, credit not required
+Licence URL: https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=allow&credit=unnecessary&modification=allow&personal_commercial_use=profit&redistribution=allow&sexual_expression=allow&version=1&violent_expression=allow
+
+The licence below is the one written inside the model file itself:
+  allowedUserName: Everyone
+  commercialUssageName: Allow
+  redistribution: allow
+  modification: allow
+  corporate_commercial_use: allow
+  credit: unnecessary
+
+Cerebro ships the file unchanged (fetched at a pinned commit and checked by
+SHA-256 in packaging/fetch_models.py) and renders it for the desktop buddy.
+
+
+Resting motion: gestures/idle_loop.vrma from pixiv/ChatVRM (MIT License,
+Copyright (c) 2023 pixiv Inc.), unchanged.

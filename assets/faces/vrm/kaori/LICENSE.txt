@@ -1,0 +1,22 @@
+Kaori — built-in 3D character for Cerebro
+
+Model:      VRM1_Constraint_Twist_Sample
+Author:     pixiv Inc.
+Credit:     Kaori is VRM1_Constraint_Twist_Sample, © 2022 pixiv Inc.
+Source:     https://github.com/vrm-c/vrm-specification/tree/94e82dd346fa6cf0337c4421728640e5252dd38e/samples/VRM1_Constraint_Twist_Sample
+Licence:    VRM Public License 1.0 (https://vrm.dev/licenses/1.0/)
+
+The licence below is the one written inside the model file itself:
+  avatarPermission: everyone
+  commercialUsage: corporation
+  allowRedistribution: True
+  modification: allowModificationRedistribution
+  creditNotation: unnecessary
+  allowAntisocialOrHateUsage: False
+
+Cerebro ships the file unchanged (fetched at a pinned commit and checked by
+SHA-256 in packaging/fetch_models.py) and renders it for the desktop buddy.
+
+
+Resting motion: gestures/idle_loop.vrma from pixiv/ChatVRM (MIT License,
+Copyright (c) 2023 pixiv Inc.), unchanged.
